@@ -535,6 +535,9 @@ def test_batch1_brake_holds_the_power_cut(batch1):
     assert held["drive_hold_Nm"] == pytest.approx(2 * j.torque, rel=0.02)
     assert held["brake_use_Nm"] == pytest.approx(held["drive_hold_Nm"], rel=0.05)
     assert held["mount_fatigue_flag"] and held["finger_torque_Nm"] == j.torque
+    assert held["friction_use_sustained"] <= held["friction_use"] + 1e-12
+    assert held["pressure_kPa_sustained"] <= held["pressure_kPa"] + 1e-9
+    assert held["passed_sustained"] in (True, False) and "friction" in held["margins_sustained"]
     loose = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5, brake=1.0)
     assert not loose["power_cut_held"]
 
@@ -551,3 +554,10 @@ def test_batch1_rescore_uses_the_first_pass_objects(batch1):
     scan = {**next(j for j in jobs if j["job"] == "scan" and j.get("nominal_only")), "simulate": True, "depth_mm": 20.0,
             "table_cap_mm": 200.0, "stop_mm": None}
     assert [f["case"] for f in batch1.t1_followups(scan)] == ["nominal"]
+
+
+def test_batch1_mount_flag_includes_the_limit(batch1):
+    j = batch1.get_jaw("S3", 45.0)
+    assert j.torque == pytest.approx(4.0)
+    assert batch1._torque_flag(j) == {"finger_torque_Nm": j.torque, "mount_fatigue_flag": True}
+    assert not batch1._torque_flag(batch1.get_jaw("S1", 45.0))["mount_fatigue_flag"]

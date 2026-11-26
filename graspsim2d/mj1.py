@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import math
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -522,6 +523,21 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     fill_rel = -obj.headspace if box else -math.inf
     band = lim.band_mm * 1e-3
     every = 4
+    # Scored peaks are single samples. Beside them go "sustained" peaks of the contact-force readings, taken
+    # on a running median, because the contact solver chatters for one or two samples at a time (friction use
+    # pinned at 1, element pressure up to 3x); which one a test scores is the test conditions' call.
+    k_med = max(1, int(round(float(b1.get("peak_filter_ms", 2.0)) * 1e-3 / (every * dt)))) | 1
+    n_mean = max(1, int(round(float(b1.get("friction_mean_ms", 10.0)) * 1e-3 / (every * dt))))
+    med_buf: dict[Any, deque] = {}
+    fric_win = {1: deque(maxlen=n_mean), -1: deque(maxlen=n_mean)}
+    cone_run = {1: 0, -1: 0}
+
+    def med(key, x: float) -> float:
+        buf = med_buf.get(key)
+        if buf is None:
+            buf = med_buf[key] = deque(maxlen=k_med)
+        buf.append(x)
+        return sorted(buf)[len(buf) // 2] if len(buf) == k_med else min(buf)
 
     def contacts():
         n = data.ncon
@@ -600,6 +616,8 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     p_grip_local = None
     peaks = {k: 0.0 for k in ("band", "panel", "bed", "press", "body", "fric", "slip", "rot", "crease",
                               "i_band", "i_panel", "i_bed", "i_body")}
+    peaks_s = {k: 0.0 for k in ("band", "panel", "bed", "press", "body", "fric", "i_band", "i_panel", "i_bed", "i_body",
+                                "fric_mean", "cone_n")}
     stop_rec: list[dict[str, float]] = []
     stop_ref = None
     stop_peak = None
@@ -619,7 +637,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     torque_peak = 0.0
     b_exit = None
     dropped_in = ""
-    trace: dict[str, list[float]] = {k: [] for k in ("t", "phi", "slip", "grip", "band", "panel", "body", "fric")} if record else {}
+    trace: dict[str, list[float]] = {k: [] for k in ("t", "phi", "slip", "grip", "band", "panel", "body", "fric", "press")} if record else {}
 
     def grip_rel() -> np.ndarray:
         R = data.xmat[obj_body].reshape(3, 3)
@@ -670,13 +688,16 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         if not math.isfinite(first_contact) and F.sum() + body[1] + body[-1] > 1e-3:
             first_contact = float(data.qpos[a_jR])
         zn = zones(F)
+        zn_s = {sd: tuple(med(("zone", sd, q), v) for q, v in enumerate(zn[sd])) for sd in (1, -1)}
+        body_s = {sd: med(("body", sd), body[sd]) for sd in (1, -1)}
+        fric_s = {sd: med(("fric", sd), fric[sd]) for sd in (1, -1)}
         if phase == "close":
             for sd in (1, -1):
-                fb, fp, pb, _ = zn[sd]
-                peaks["i_band"] = max(peaks["i_band"], fb)
-                peaks["i_panel"] = max(peaks["i_panel"], fp)
-                peaks["i_bed"] = max(peaks["i_bed"], pb)
-                peaks["i_body"] = max(peaks["i_body"], body[sd])
+                for pk, z, b_ in ((peaks, zn[sd], body[sd]), (peaks_s, zn_s[sd], body_s[sd])):
+                    pk["i_band"] = max(pk["i_band"], z[0])
+                    pk["i_panel"] = max(pk["i_panel"], z[1])
+                    pk["i_bed"] = max(pk["i_bed"], z[2])
+                    pk["i_body"] = max(pk["i_body"], b_)
             if t >= tl.t_settle - 0.02 - every * dt and ref is None:
                 pass
             continue
@@ -704,17 +725,23 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
             trace["t"].append(t), trace["phi"].append(phi), trace["slip"].append(slip)
             trace["grip"].append(float(F[(el_side == 1) & el_grip].sum())), trace["band"].append(zn[1][0])
             trace["panel"].append(zn[1][1]), trace["body"].append(max(body.values())), trace["fric"].append(max(fric.values()))
+            trace["press"].append(max(zn[1][3], zn[-1][3]))
         if phase == "main":
             if t > tl.t_lift:
                 torque_hold.append(act)
             for sd in (1, -1):
-                fb, fp, pb, pm = zn[sd]
-                peaks["band"] = max(peaks["band"], fb)
-                peaks["panel"] = max(peaks["panel"], fp)
-                peaks["bed"] = max(peaks["bed"], pb)
-                peaks["press"] = max(peaks["press"], pm)
-                peaks["body"] = max(peaks["body"], body[sd])
-                peaks["fric"] = max(peaks["fric"], fric[sd])
+                for pk, z, b_, f_ in ((peaks, zn[sd], body[sd], fric[sd]), (peaks_s, zn_s[sd], body_s[sd], fric_s[sd])):
+                    pk["band"] = max(pk["band"], z[0])
+                    pk["panel"] = max(pk["panel"], z[1])
+                    pk["bed"] = max(pk["bed"], z[2])
+                    pk["press"] = max(pk["press"], z[3])
+                    pk["body"] = max(pk["body"], b_)
+                    pk["fric"] = max(pk["fric"], f_)
+                fric_win[sd].append(fric[sd])
+                if len(fric_win[sd]) == n_mean:
+                    peaks_s["fric_mean"] = max(peaks_s["fric_mean"], sum(fric_win[sd]) / n_mean)
+                cone_run[sd] = cone_run[sd] + 1 if fric[sd] >= 0.99 else 0
+                peaks_s["cone_n"] = max(peaks_s["cone_n"], cone_run[sd])
             peaks["slip"] = max(peaks["slip"], slip)
             peaks["rot"] = max(peaks["rot"], rot)
             at_stop = el_pad & (F > 0.01) & (data.qpos[el_qadr] <= el_lo + 2e-5)
@@ -781,40 +808,48 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         row.update(reason="never reached the lift")
         return row
     held_main = dropped_in != "main"
-    margins = {
-        "slip": (sc.max_slip / max(peaks["slip"], 1e-9)) if held_main else 0.0,
-        "rotation": sc.max_rotation / max(peaks["rot"], 1e-9),
-        "friction": 1.0 / (float(b1.get("friction_margin_min", 1.25)) * max(peaks["fric"], 1e-9)),
-    }
-    demand = {"slip": peaks["slip"] * 1e3, "rotation": math.degrees(peaks["rot"]), "friction": peaks["fric"]}
     body_lim = float(b1.get("body_contact_limit_N", 1.0))
-    if task in ("T1", "T2", "T3") and peaks["body"] > 0.1 * body_lim:
-        margins["body"] = body_lim / peaks["body"]
-        demand["body"] = peaks["body"]
-    if box:
-        for k, lim_v, key in (("band", lim.band_force, "band"), ("panel", lim.panel_force, "panel"), ("bed", lim.bed_pressure, "pressure")):
-            if peaks[k] > 1e-6:
-                margins[key] = lim_v / (peaks[k] * (sc.pressure_sf if key == "pressure" else 1.0))
-                demand[key] = peaks[k] / (1e3 if key == "pressure" else 1.0)
-            ik = "i_" + k
-            if peaks[ik] > 1e-6:
-                margins["impact_" + key] = lim_v / (peaks[ik] * (sc.pressure_sf if key == "pressure" else 1.0))
-                demand["impact_" + key] = peaks[ik] / (1e3 if key == "pressure" else 1.0)
-        if task in ("T1", "T2", "T3") and peaks["i_body"] > 0.1 * body_lim:
-            margins["impact_body"] = body_lim / peaks["i_body"]
-            demand["impact_body"] = peaks["i_body"]
-    else:
-        margins["pressure"] = obj.material.allow_pressure / (sc.pressure_sf * max(peaks["press"], 1e-9))
-        demand["pressure"] = peaks["press"] / 1e3
-        if len(hinge_adr):
-            bw = b_exit if (b_exit and sc.crease_width == "pad") else obj.width
-            cap = obj.material.bending_strength * bw
-            margins["crease"] = cap / (sc.crease_safety_factor * max(peaks["crease"], 1e-9))
-            demand["crease"] = peaks["crease"]
-            row["crease_width_mm"] = bw * 1e3
-    margins = {k: float(min(v, 99.0)) for k, v in margins.items()}
+
+    def score_peaks(pk: dict[str, float]) -> tuple[dict[str, float], dict[str, float]]:
+        margins = {
+            "slip": (sc.max_slip / max(pk["slip"], 1e-9)) if held_main else 0.0,
+            "rotation": sc.max_rotation / max(pk["rot"], 1e-9),
+            "friction": 1.0 / (float(b1.get("friction_margin_min", 1.25)) * max(pk["fric"], 1e-9)),
+        }
+        demand = {"slip": pk["slip"] * 1e3, "rotation": math.degrees(pk["rot"]), "friction": pk["fric"]}
+        if task in ("T1", "T2", "T3") and pk["body"] > 0.1 * body_lim:
+            margins["body"] = body_lim / pk["body"]
+            demand["body"] = pk["body"]
+        if box:
+            for k, lim_v, key in (("band", lim.band_force, "band"), ("panel", lim.panel_force, "panel"), ("bed", lim.bed_pressure, "pressure")):
+                if pk[k] > 1e-6:
+                    margins[key] = lim_v / (pk[k] * (sc.pressure_sf if key == "pressure" else 1.0))
+                    demand[key] = pk[k] / (1e3 if key == "pressure" else 1.0)
+                ik = "i_" + k
+                if pk[ik] > 1e-6:
+                    margins["impact_" + key] = lim_v / (pk[ik] * (sc.pressure_sf if key == "pressure" else 1.0))
+                    demand["impact_" + key] = pk[ik] / (1e3 if key == "pressure" else 1.0)
+            if task in ("T1", "T2", "T3") and pk["i_body"] > 0.1 * body_lim:
+                margins["impact_body"] = body_lim / pk["i_body"]
+                demand["impact_body"] = pk["i_body"]
+        else:
+            margins["pressure"] = obj.material.allow_pressure / (sc.pressure_sf * max(pk["press"], 1e-9))
+            demand["pressure"] = pk["press"] / 1e3
+            if len(hinge_adr):
+                bw = b_exit if (b_exit and sc.crease_width == "pad") else obj.width
+                cap = obj.material.bending_strength * bw
+                margins["crease"] = cap / (sc.crease_safety_factor * max(pk["crease"], 1e-9))
+                demand["crease"] = pk["crease"]
+                row["crease_width_mm"] = bw * 1e3
+        return {k: float(min(v, 99.0)) for k, v in margins.items()}, demand
+
+    margins, demand = score_peaks(peaks)
     worst = min(margins, key=margins.get)
     passed = margins[worst] >= 1.0 and held_main
+    margins_s, _ = score_peaks({**peaks, **{k: v for k, v in peaks_s.items() if k in peaks}})
+    worst_s = min(margins_s, key=margins_s.get)
+    passed_s = margins_s[worst_s] >= 1.0 and held_main
+    sample_ms = every * dt * 1e3
     held_levels = []
     for rec in stop_rec:
         ok_lvl = rec["slip_mm"] <= sc.max_slip * 1e3 and math.radians(rec["rot_deg"]) <= sc.max_rotation
@@ -851,8 +886,16 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         "brake_use_Nm": float(np.median(brake_net[len(brake_net) // 2:])) if brake_net else 0.0,
         "brake_peak_Nm": brake_use,
         "brake_on_s": brake_on if brake_on is not None else math.nan, "power_cut_s": tl.t_power,
+        "passed_sustained": bool(passed_s), "score_sustained": margins_s[worst_s] if held_main else 0.0,
+        "limiting_sustained": worst_s if held_main else "slip", "margins_sustained": margins_s,
+        "friction_use_sustained": peaks_s["fric"], "friction_use_mean": peaks_s["fric_mean"],
+        "friction_cone_ms": peaks_s["cone_n"] * sample_ms,
+        "band_N_sustained": peaks_s["band"], "panel_N_sustained": peaks_s["panel"], "bed_kPa_sustained": peaks_s["bed"] / 1e3,
+        "pressure_kPa_sustained": peaks_s["press"] / 1e3, "body_N_sustained": peaks_s["body"],
+        "impact_band_N_sustained": peaks_s["i_band"], "impact_panel_N_sustained": peaks_s["i_panel"],
+        "impact_bed_kPa_sustained": peaks_s["i_bed"] / 1e3, "impact_body_N_sustained": peaks_s["i_body"],
         "finger_torque_Nm": tau,
-        "mount_fatigue_flag": bool(tau > float(b1.get("mount_fatigue_Nm_per_finger", 4.0))),
+        "mount_fatigue_flag": bool(tau >= float(b1.get("mount_fatigue_Nm_per_finger", 4.0)) - 1e-9),
         "pad_elements_at_stop": bottomed,
         "load_by_surface_N": surf_load,
         "mu_pad": obj.material.friction * lim.friction_scale,

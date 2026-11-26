@@ -187,7 +187,13 @@ batch1:
   shake_s: 3.0                    # lateral 2 Hz, vertical 3 Hz
   sheet_shake_hz: [1.5, 2.0, 3.0] # the carton blank's lateral shake, every design (its second mode is 1.84 - 2.11 Hz)
   drive_Nm_per_gripper: {continuous: [7.0, 10.0], peak: 25.0}   # both finger motors together; flag over 7
-  mount_fatigue_Nm_per_finger: 4.0  # rev 2.12: flag any pinch above this finger torque, the as-built mount's fatigue limit
+  mount_fatigue_Nm_per_finger: 4.0  # rev 2.12, inclusive since 3:14 AM PST: flag any pinch at or above this finger torque, the as-built mount's fatigue limit
+  # MuJoCo scores single-sample peaks. Each row also carries "sustained" peaks of the contact-force readings
+  # (friction use, element pressure, band, panel, bed and body loads, and their closing-impact peaks), taken
+  # on a running median this long, with margins and a verdict from them (sm_*, passed_sustained): the contact
+  # solver chatters for one or two 0.4 ms samples at a time. Slip, rotation and crease come from positions.
+  peak_filter_ms: 2.0
+  friction_mean_ms: 10.0  # friction_use_mean: the largest running mean of friction use over this window
   short_face_mm: 20.0             # pads and bare faces shorter than this run at fine_pitch_mm
   fine_pitch_mm: 1.5
   bare_travel_mm: 1.5             # bare-face elements travel this far before the body behind them

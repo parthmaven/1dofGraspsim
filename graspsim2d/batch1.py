@@ -163,7 +163,7 @@ def job_scan(job: dict[str, Any]) -> dict[str, Any]:
 
 def _torque_flag(j) -> dict[str, Any]:
     lim = float(ctx()["b1"].get("mount_fatigue_Nm_per_finger", 4.0))
-    return {"finger_torque_Nm": j.torque, "mount_fatigue_flag": bool(j.torque > lim)}
+    return {"finger_torque_Nm": j.torque, "mount_fatigue_flag": bool(j.torque >= lim - 1e-9)}
 
 
 def job_sheet_screen(job: dict[str, Any]) -> dict[str, Any]:
@@ -194,6 +194,8 @@ def job_mj(job: dict[str, Any]) -> dict[str, Any]:
     for k, v in r.items():
         if k == "margins":
             out.update(_flat("m_", v))
+        elif k == "margins_sustained":
+            out.update(_flat("sm_", v))
         elif k == "demand":
             out.update(_flat("d_", v))
         elif k == "trace":
