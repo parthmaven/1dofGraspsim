@@ -46,6 +46,8 @@ DROP = 0.02  # m of slip counted as a drop
 E_H = 0.4  # mm, half-thickness of an element geom
 STOP_SPEED = 2.0  # m/s
 RETURN_G = 0.25  # g, the gentle return after each stop level
+BAD_STATE = tuple(int(w) for w in (mujoco.mjtWarning.mjWARN_BADQPOS, mujoco.mjtWarning.mjWARN_BADQVEL,
+                                   mujoco.mjtWarning.mjWARN_BADQACC))
 
 
 def _fmt(v: Any) -> str:
@@ -459,6 +461,9 @@ def simulate(jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, task: str, dept
   </actuator>
 </mujoco>"""
     model = mujoco.MjModel.from_xml_string(xml)
+    # Otherwise MuJoCo resets a blown-up run to t = 0 from qpos0 and carries on, with finite
+    # accelerations, so a run can loop forever or finish with a meaningless verdict.
+    model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
     data = mujoco.MjData(model)
     return _run(model, data, jaw, obj, sc, b1, lim, b, task, depth, lateral, phi0, phi_touch, tau, brake, shake_hz, stops,
                 power_s, record, hinge_names, hinge_k, top_body, box, plan)
@@ -630,7 +635,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     bottomed = 0
     surf_load = {}
     released = False
-    unstable = False
+    unstable, unstable_s = False, math.nan
     first_contact = math.nan
     grip_settle = 0.0
     torque_hold: list[float] = []
@@ -676,9 +681,12 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
             model.dof_frictionloss[d_jR] = brake_motor
             model.dof_frictionloss[d_jL] = brake_motor
             brake_on = t
+        t_step = data.time
         mujoco.mj_step(model, data)
-        if not np.isfinite(data.qacc).all() or abs(data.qpos[a_jR]) > 3.0:
+        if (data.time < t_step or any(data.warning[w].number for w in BAD_STATE)
+                or not np.isfinite(data.qacc).all() or abs(data.qpos[a_jR]) > 3.0):
             unstable = True
+            unstable_s = t_step
             break
         if i % every:
             continue
@@ -802,7 +810,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
                            "contact_angle_deg": math.degrees(first_contact - jaw.phi_meet) if math.isfinite(first_contact) else math.nan,
                            "close_s": tl.t_close}
     if unstable:
-        row.update(reason="simulation went unstable")
+        row.update(reason="simulation went unstable", unstable_s=unstable_s, unstable_phase=phase)
         return row
     if ref is None:
         row.update(reason="never reached the lift")

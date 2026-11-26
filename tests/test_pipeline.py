@@ -542,6 +542,25 @@ def test_batch1_brake_holds_the_power_cut(batch1):
     assert not loose["power_cut_held"]
 
 
+def test_batch1_blown_up_runs_stop_instead_of_restarting(batch1, monkeypatch):
+    from graspsim2d import mj1
+
+    c = batch1.ctx()
+    step, seen = mj1.mujoco.mj_step, {}
+
+    def reset_once(m, d):
+        seen["autoreset_off"] = bool(m.opt.disableflags & int(mj1.mujoco.mjtDisableBit.mjDSBL_AUTORESET))
+        if d.time >= 0.2 and not seen.get("reset"):
+            seen["reset"] = True
+            mj1.mujoco.mj_resetData(m, d)  # what MuJoCo's auto-reset does to a run that blows up
+        step(m, d)
+
+    monkeypatch.setattr(mj1.mujoco, "mj_step", reset_once)
+    r = mj1.simulate(batch1.get_jaw("r2-09", 45.0), batch1.get_obj("c_flute_4mm"), c["sc"], c["b1"], "T2", 30.0)
+    assert seen["autoreset_off"] and r["reason"] == "simulation went unstable"
+    assert r["unstable_s"] == pytest.approx(0.2, abs=1e-3) and r["unstable_phase"] == "close"
+
+
 def test_batch1_rescore_uses_the_first_pass_objects(batch1):
     lib = batch1.fp_library()
     assert len(lib.objects) == 14 and lib.by_id("b_flute_3mm").material.bare_friction == pytest.approx(0.35)
