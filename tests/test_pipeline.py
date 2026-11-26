@@ -867,23 +867,35 @@ def test_t3_tips_enter_the_gap_and_hold(batch1):
     g = entry_check(j, box.thickness * 1e3, 1.3, 15.0)
     # SR's toed-in chisels: on Family Size the tips sweep 2.02 - 2.06 mm, a 0.7 - 0.8 mm push at the 1.3 mm gap.
     assert g["ok"] and 2.0 < g["sweep_R_mm"] < 2.1 and 0.7 < g["push_need_R_mm"] < 0.8
-    assert g["capture_lo_mm"] < 0.0 < g["capture_hi_mm"] < 0.5
+    # The entry opening is the least that clears the target over the entry depth, so by SIM's rule (the target-side
+    # clearance over the whole depth) it captures no offset; the tip ends alone would take +-0.11 mm.
+    assert g["clear_R_mm"] == pytest.approx(0.0, abs=0.01)
+    assert g["capture_lo_mm"] == pytest.approx(0.0, abs=0.01) and g["capture_hi_mm"] == pytest.approx(0.0, abs=0.01)
+    assert g["capture_land_lo_mm"] < -0.05 and 0.05 < g["capture_land_hi_mm"] < 0.5
+    # Opened to centre the tip ends in the gaps, the tips clear the target up the depth and capture an offset either way.
+    assert g["centred_opening_deg"] > g["entry_opening_deg"]
+    assert g["centred_land_target_R_mm"] == pytest.approx(g["centred_land_neighbour_R_mm"], abs=0.01)
+    assert g["centred_clear_R_mm"] > 0.0 and g["centred_capture_lo_mm"] < 0.0 < g["centred_capture_hi_mm"]
     # A tip 3 mm off, or at a closed gap, lands on a box top: the entry fails without a MuJoCo run.
     for kw in ({"lateral": 3.0}, {"gap": 0.0}):
         r = simulate_t3(j, box, c["sc"], c["b1"], **kw)
         assert r["landed"] and not r["passed"] and r["limiting"] == "entry" and "elements" not in r
-        assert r["cam_radius_R_mm"] > 1.0
-    # The shoulder 15.5 mm up S2's tips is a depth stop over the target's top, so 20 mm is out of reach.
+        assert r["cam_radius_R_mm"] > 1.0 and r["cam_radius_mm"] >= r["cam_radius_R_mm"]
+        assert not r["enters_at_sensitivity_radius"]
+    # The shoulder 15.5 mm up S2's tips is a depth stop over the target's top: the 20 mm sensitivity reports it.
     r = simulate_t3(j, box, c["sc"], c["b1"], entry=20.0)
-    assert not r["passed"] and r["limiting"] == "entry" and 15.0 < r["depth_stop_R_mm"] < 16.0 and "elements" not in r
+    assert r["passed"] is None and r["limiting"] == "depth stop" and 15.0 < r["depth_stop_mm"] < 16.0
+    assert r["reason"].startswith("depth stop at 15.") and "elements" not in r
     assert math.isnan(g["depth_stop_R_mm"])
     r = simulate_t3(j, box, c["sc"], c["b1"], friction_scale=0.8, drag_scale=1.2, power_s=0.2)
-    assert r["ok"] and not r["reset_flag"] and not r["stalled"]
+    assert r["ok"] and not r["reset_flag"] and not r["stalled"] and not r["target_contact_in_entry"]
     assert r["entry_reached_mm"] == pytest.approx(15.0, abs=0.05)
     # The neighbours tip out of the way: the push matches the geometry, under 5 N on the 5 ms average.
     for s in "RL":
         assert r[f"push_{s}_mm"] == pytest.approx(g[f"push_need_{s}_mm"], abs=0.15)
         assert r[f"push_{s}_N"] < 5.0 and r[f"drag_{s}_mm"] < 0.5
+        assert 0.0 < r[f"push_{s}_N_10ms"] <= r[f"push_{s}_N"] + 1e-9 <= r[f"push_{s}_peak_N"] + 1e-9
+    assert r["edge_sensitive"] == (max(r["push_R_N"], r["push_L_N"]) > 4.0)
     assert r["passed"] and r["pass_rule"].startswith("entry depth, then push") and r["slip_mm"] < 0.5
     assert r["band_N"] > 10.0 and r["power_cut_held"] and 0.0 <= r["brake_use_Nm"] <= 30.0
 
@@ -892,8 +904,14 @@ def test_t3_tips_enter_the_gap_and_hold(batch1):
     assert {x["case"] for x in jobs if x["design"] == "S2"} == {
         "nominal", "friction x0.8", "corner +3 mm", "gap 0 mm", "gap 3 mm", "entry 20 mm", "case wall L"}
     assert {"corner -3 mm", "case wall R"} <= {x["case"] for x in jobs if x["design"] == "S4"}
+    # Revision 2.23: the corners and the 20 mm entry are reported, not rated.
+    assert {x["case"] for x in jobs if x["design"] == "S4" and not x["rated"]} == {
+        "corner +3 mm", "corner -3 mm", "entry 20 mm"}
     row = batch1.run_job({**next(x for x in jobs if x["design"] == "S2" and x["case"] == "gap 0 mm")})
     assert row["kind"] == "mujoco" and row["landed"] and row["gap_mm"] == 0.0 and row["passed"] is False
+    rows = [row, {**row, "case": "nominal", "passed": True}, {**row, "case": "corner +3 mm", "rated": False}]
+    batch1.add_verdicts(rows)
+    assert rows[1]["verdict"] is False and rows[1]["verdict_basis"] == "rated rows fail: gap 0 mm"
 
 
 def test_batch1_t5_cut_block_runs_revision_2_18(batch1):

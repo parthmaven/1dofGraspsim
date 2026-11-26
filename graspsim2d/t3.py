@@ -8,15 +8,22 @@ while it descends until the tips are `entry` below the box tops. It then closes 
 50 mm and holds 1 s, with no shake, and ends with the power cut on the brake.
 
 A tip whose bottom doesn't fit between the target and its neighbour (a placement corner, a closed gap) lands on a box
-top: that fails the entry without a MuJoCo run. In MuJoCo a neighbour meets each tip as one rigid hull of the tip's
-outline, through a softer, critically damped edge contact. The descent stops where a neighbour's push passes 5 N
-(a 5 ms average), as a guarded move would, and the hold then runs from the depth reached.
+top: that fails the entry without a MuJoCo run. The box edges are square; the row reports the least edge radius that
+would cam each landed tip in, and whether a 0.5 mm radius would (a sensitivity, not scored). In MuJoCo a neighbour
+meets each tip as one rigid hull of the tip's outline, through a softer, critically damped edge contact. The descent
+stops where a neighbour's push passes 5 N (a 5 ms average), as a guarded move would, and the hold then runs from the
+depth reached. A depth stop short of the 20 mm entry sensitivity is reported as one, not as an entry fail.
 
-Entry is scored on reaching the entry depth, on each neighbour's push at its top edge (3 mm, 5 N; the case wall's
-force is reported, not capped) and on how far each is dragged up (2 mm). The hold is scored on the target's slip on
-the jaw (2 mm), with the box limits at the tips. The tips slide in at the drag friction (0.5, x1.2 in the robust run)
-and grip at the bare friction (x0.8 in the robust run). No stop is run: after a 50 mm pull-out the target is still
-deep in its row.
+The target-side clearance is the least over the whole entry depth (SIM round 10), both for the capture range, the
+span of offsets at which neither tip lands or meets the target's face, and for running the entry with the target's
+contact off. The capture range is also given at the opening that centres the tip ends in the gaps.
+
+Entry is scored on reaching the entry depth, on each neighbour's push at its top edge (3 mm, 5 N as a 5 ms average;
+the case wall's force is reported, not capped) and on how far each is dragged up (2 mm). The 10 ms average is
+recorded as a convergence check, the single-sample peak as the solver's, not scored, and a 5 ms push over 4 N is
+flagged as sensitive to the edge contact's stiffness. The hold is scored on the target's slip on the jaw (2 mm), with
+the box limits at the tips. The tips slide in at the drag friction (0.5, x1.2 in the robust run) and grip at the bare
+friction (x0.8 in the robust run). No stop is run (revision 2.24: the power cut covers it).
 """
 
 from __future__ import annotations
@@ -37,9 +44,9 @@ from .scenario import Scenario
 from .screen1 import Limits, _band_min, _geometry, _view
 
 # a neighbour or the case wall; the next box out, which stops a neighbour; the fingers' rigid tip hulls; the target
-# while the tips enter, when it touches only the shelf (the entry opening keeps the tips' lowest `entry` mm clear of
-# its faces, and a hull bridges the concave corners on a tip's inner side). The neighbours, the wall and the hulls
-# touch only through explicit pairs.
+# while the tips enter, when it touches only the shelf (only while both fingers' lowest `entry` mm clear its faces,
+# and a hull bridges the concave corners on a tip's inner side). The neighbours, the wall and the hulls touch only
+# through explicit pairs.
 NB, NEXT, OUTLINE, OBJ_ENTRY = 8, 16, 32, 64
 TAGS = {1: "R", -1: "L"}
 LAND_MM = 0.5  # the bottom of a tip that must fit the gap
@@ -97,32 +104,38 @@ def _shoulder(jaw: Jaw, side: int, phi: float, top: float) -> float:
     return math.nan
 
 
-def entry_check(jaw: Jaw, box_mm: float, gap: float, entry: float, lateral: float = 0.0) -> dict[str, Any]:
-    """The geometric entry: the opening both fingers share (planned for a centred target), how far each finger's band in
-    the gap reaches out past the target's face (its sweep) and the push that leaves on the neighbour. With the boxes
-    `lateral` mm along +x, each tip's lowest LAND_MM must still fit between the target's face and the neighbour's, or it
-    lands on a box top; the capture range is the span of offsets at which neither tip lands. A shoulder within the
-    entry depth is a depth stop over the target's top: `depth_stop_*_mm` is how deep it lets the tips go, read at the
-    opening that clears the tip below it."""
-    half = box_mm / 2
-    phis = {s: entry_opening(jaw, s, half, entry) for s in (1, -1)}
-    if not all(math.isfinite(p) for p in phis.values()):
-        return {"ok": False, "reason": "the open fingers' tips never clear the target's faces"}
-    phi = max(phis.values())
-    stops = {}
-    for s, tag in TAGS.items():
-        h = _shoulder(jaw, s, phi, entry)
-        if math.isfinite(h):
-            p = entry_opening(jaw, s, half, max(h - 0.25, LAND_MM))
-            h2 = _shoulder(jaw, s, p, entry + 5.0) if math.isfinite(p) else math.nan
-            h = h2 if math.isfinite(h2) else h
-        stops[f"depth_stop_{tag}_mm"] = h
+def _land(jaw: Jaw, side: int, phi: float) -> tuple[float, float]:
+    """The inner and outer edges (mm, the finger's own view) of a tip's lowest LAND_MM at opening phi."""
+    v = _finger(jaw, side, phi)
+    z = _low(v)
+    return _band_min(v, z, z + LAND_MM)[0], _band_max(v, z, z + LAND_MM)
+
+
+def centring_opening(jaw: Jaw, half: float, gap: float) -> float:
+    """The opening (rad) that puts the tip ends, on the mean of the two fingers, in the middle of the gaps between the
+    target's faces at `half` and the neighbours', or nan if the stroke doesn't reach it."""
+    mid = half + gap / 2
+
+    def off(phi: float) -> float:
+        return sum(0.5 * sum(_land(jaw, s, phi)) - mid for s in (1, -1))
+
+    lo, hi = jaw.phi_meet, jaw.phi_max
+    if off(lo) > 0.0 or off(hi) < 0.0:
+        return math.nan
+    for _ in range(30):
+        m = 0.5 * (lo + hi)
+        lo, hi = (m, hi) if off(m) < 0.0 else (lo, m)
+    return 0.5 * (lo + hi)
+
+
+def _tips(jaw: Jaw, phi: float, half: float, gap: float, entry: float, lateral: float) -> tuple[dict[str, Any], tuple, tuple]:
+    """Each tip's sweep, push and landing numbers at opening phi with the boxes `lateral` mm along +x, and the capture
+    range at that opening: by the target-side clearance over the whole entry depth, and by the tip end's alone."""
     views = {s: _finger(jaw, s, phi) for s in (1, -1)}
     z_low = {s: _low(v) for s, v in views.items()}
     z_top = min(z_low.values()) + entry
-    out: dict[str, Any] = {"ok": True, "phi": phi, "entry_opening_deg": math.degrees(phi - jaw.phi_meet),
-                           "z_low_mm": min(z_low.values()), "z_top_mm": z_top, **stops}
-    cap_lo, cap_hi = -math.inf, math.inf
+    out: dict[str, Any] = {"z_low_mm": min(z_low.values()), "z_top_mm": z_top}
+    cap, cap_land = [-math.inf, math.inf], [-math.inf, math.inf]
     for s, tag in TAGS.items():
         face = half + s * lateral
         if z_low[s] >= z_top:
@@ -136,9 +149,46 @@ def entry_check(jaw: Jaw, box_mm: float, gap: float, entry: float, lateral: floa
                     f"push_need_{tag}_mm": max(0.0, x_out - (face + gap)) if math.isfinite(x_out) else 0.0,
                     f"tip_width_{tag}_mm": b_out - b_in,
                     f"land_target_{tag}_mm": face - b_in, f"land_neighbour_{tag}_mm": b_out - (face + gap)})
-        lo, hi = b_out - half - gap, b_in - half
-        cap_lo, cap_hi = (max(cap_lo, lo), min(cap_hi, hi)) if s > 0 else (max(cap_lo, -hi), min(cap_hi, -lo))
-    out.update({"capture_lo_mm": cap_lo, "capture_hi_mm": cap_hi})
+        for c, inner in ((cap, min(x_in, b_in) if math.isfinite(x_in) else b_in), (cap_land, b_in)):
+            lo, hi = b_out - half - gap, inner - half
+            c[:] = [max(c[0], lo), min(c[1], hi)] if s > 0 else [max(c[0], -hi), min(c[1], -lo)]
+    return out, tuple(cap), tuple(cap_land)
+
+
+def entry_check(jaw: Jaw, box_mm: float, gap: float, entry: float, lateral: float = 0.0) -> dict[str, Any]:
+    """The geometric entry: the opening both fingers share (planned for a centred target), how far each finger's band in
+    the gap reaches out past the target's face (its sweep) and the push that leaves on the neighbour. With the boxes
+    `lateral` mm along +x, each tip's lowest LAND_MM must still fit between the target's face and the neighbour's, or it
+    lands on a box top. `clear_*_mm` is a finger's least clearance to the target's face over the whole entry depth. The
+    capture range is the span of offsets at which neither tip lands on the neighbour's top nor meets the target's face
+    over the entry depth (`capture_land_*` takes the tip end's clearance alone), at the entry opening and at the opening
+    that centres the tip ends in the gaps. A shoulder within the entry depth is a depth stop over the target's top:
+    `depth_stop_*_mm` is how deep it lets the tips go, read at the opening that clears the tip below it."""
+    half = box_mm / 2
+    phis = {s: entry_opening(jaw, s, half, entry) for s in (1, -1)}
+    if not all(math.isfinite(p) for p in phis.values()):
+        return {"ok": False, "reason": "the open fingers' tips never clear the target's faces"}
+    phi = max(phis.values())
+    stops = {}
+    for s, tag in TAGS.items():
+        h = _shoulder(jaw, s, phi, entry)
+        if math.isfinite(h):
+            p = entry_opening(jaw, s, half, max(h - 0.25, LAND_MM))
+            h2 = _shoulder(jaw, s, p, entry + 5.0) if math.isfinite(p) else math.nan
+            h = h2 if math.isfinite(h2) else h
+        stops[f"depth_stop_{tag}_mm"] = h
+    tips, cap, cap_land = _tips(jaw, phi, half, gap, entry, lateral)
+    out: dict[str, Any] = {"ok": True, "phi": phi, "entry_opening_deg": math.degrees(phi - jaw.phi_meet), **tips, **stops,
+                           "capture_lo_mm": cap[0], "capture_hi_mm": cap[1],
+                           "capture_land_lo_mm": cap_land[0], "capture_land_hi_mm": cap_land[1]}
+    phi_c = centring_opening(jaw, half, gap)
+    out["centred_opening_deg"] = math.degrees(phi_c - jaw.phi_meet)
+    if math.isfinite(phi_c):
+        tc, cap_c, cap_land_c = _tips(jaw, phi_c, half, gap, entry, 0.0)
+        out.update({"centred_capture_lo_mm": cap_c[0], "centred_capture_hi_mm": cap_c[1],
+                    "centred_capture_land_lo_mm": cap_land_c[0], "centred_capture_land_hi_mm": cap_land_c[1]})
+        out.update({f"centred_{k}": tc[k] for tag in TAGS.values()
+                    for k in (f"clear_{tag}_mm", f"land_target_{tag}_mm", f"land_neighbour_{tag}_mm", f"push_need_{tag}_mm")})
     return out
 
 
@@ -193,13 +243,18 @@ def simulate_t3(jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, gap: float |
         return {**row, "passed": False, "score": 0.0, "limiting": "entry"}
     stop = min(geo["depth_stop_R_mm"], geo["depth_stop_L_mm"], key=lambda h: h if math.isfinite(h) else math.inf)
     if math.isfinite(stop) and stop < entry - 0.05:
-        return {**row, "passed": False, "score": stop / entry, "limiting": "entry", "landed": False,
+        if entry > float(cfg["entry_mm"]) + 0.05:
+            return {**row, "passed": None, "score": None, "limiting": "depth stop", "landed": False, "depth_stop_mm": stop,
+                    "reason": f"depth stop at {stop:.1f} mm: a shoulder over the target's top ends the entry there, "
+                              f"short of the {entry:g} mm sensitivity; geometric, no MuJoCo run"}
+        return {**row, "passed": False, "score": stop / entry, "limiting": "entry", "landed": False, "depth_stop_mm": stop,
                 "reason": f"a shoulder {stop:.1f} mm up the tips is a depth stop over the target's top: they enter "
                           f"{stop:.1f} of {entry:g} mm; geometric, no MuJoCo run"}
     # The model's carton edges are square. Over a top edge rounded to r, a tip's corner `over` mm onto the top meets
     # the round at sin(a) = (r - over)/r from vertical, and slides off it instead of sticking once tan(a) > mu.
     mu_d = float(cfg.get("drag_friction", 0.5)) * drag_scale
     cam = 1.0 - mu_d / math.hypot(1.0, mu_d)
+    r_sens = float(cfg.get("edge_radius_sensitivity_mm", 0.5))
     landed = []
     for tag in TAGS.values():
         over = {key: geo[f"land_{key}_{tag}_mm"] for key in ("target", "neighbour")}
@@ -209,9 +264,16 @@ def simulate_t3(jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, gap: float |
                    f"{'target' if key == 'target' else 'case wall' if TAGS.get(wall_side) == tag else 'neighbour'}'s top, "
                    f"{o:.2f} mm over (a top edge rounded to {o / cam:.2f} mm would cam it in)" for key, o in hits.items()]
     row["landed"] = bool(landed)
+    radii = [row[f"cam_radius_{tag}_mm"] for tag in TAGS.values() if math.isfinite(row[f"cam_radius_{tag}_mm"])]
+    row["cam_radius_mm"] = max(radii) if radii else math.nan
+    row["edge_radius_sensitivity_mm"] = r_sens
+    row["enters_at_sensitivity_radius"] = bool(not radii or max(radii) <= r_sens)
     if landed and land_check:
         return {**row, "passed": False, "score": 0.0, "limiting": "entry",
-                "reason": "; ".join(landed) + "; geometric, no MuJoCo run"}
+                "reason": "; ".join(landed) + f"; the least top-edge radius that cams it in is {max(radii):.2f} mm; "
+                          "geometric, no MuJoCo run"}
+    target_off = all(geo[f"clear_{tag}_mm"] >= -LAND_TOL_MM for tag in TAGS.values())
+    row["target_contact_in_entry"] = not target_off
     phi_e = geo["phi"]
     z_top_view = geo["z_top_mm"]
     b = _Builder(jaw, box, sc, b1, entry, {1: phi_e, -1: phi_e}, lim.friction_scale, lim.band_factor, z_top_view)
@@ -257,7 +319,7 @@ def simulate_t3(jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, gap: float |
 
     world = [f'<geom name="table" type="box" pos="0 0 -0.01" size="0.8 0.4 0.01" friction="0.4 0.005 0.0001" '
              f'priority="1" contype="{TABLE}" conaffinity="{GRIP | OBJ}" rgba="0.8 0.8 0.8 1"/>',
-             carton("obj", xl, "0.9 0.75 0.35 1", OBJ_ENTRY, TABLE)]
+             carton("obj", xl, "0.9 0.75 0.35 1", OBJ_ENTRY if target_off else OBJ, TABLE if target_off else GRIP | TABLE)]
     pr = f'condim="3" solref="{_fmt(tc)} 1" solimp="0.95 0.99 0.0005 0.5 2"'
     pr_edge = f'condim="3" solref="{_fmt(float(cfg.get("edge_contact_tc_s", 0.002)))} 1" solimp="0.95 0.99 0.0005 0.5 2"'
     mu_c, mu_s = float(cfg.get("carton_friction", 0.4)), float(cfg.get("shelf_friction", 0.35))
@@ -439,7 +501,10 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
     push_n = {s: 0.0 for s in (1, -1)}
     push_raw = {s: 0.0 for s in (1, -1)}
     n_avg = max(1, int(round(float(cfg.get("push_average_s", 0.005)) / (every * dt))))
+    n_avg10 = max(1, int(round(float(cfg.get("push_check_average_s", 0.010)) / (every * dt))))
     pf_buf = {s: collections.deque(maxlen=n_avg) for s in (1, -1)}
+    pf_buf10 = {s: collections.deque(maxlen=n_avg10) for s in (1, -1)}
+    push_n10 = {s: 0.0 for s in (1, -1)}
     push_n_entry = {s: 0.0 for s in (1, -1)}
     drag = {s: 0.0 for s in (1, -1)}
     wall_mm = 0.0
@@ -509,8 +574,10 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
         pf_avg = {}
         for s in (1, -1):
             pf_buf[s].append(pf[s])
+            pf_buf10[s].append(pf[s])
             pf_avg[s] = sum(pf_buf[s]) / len(pf_buf[s])
             push_n[s] = max(push_n[s], pf_avg[s])
+            push_n10[s] = max(push_n10[s], sum(pf_buf10[s]) / len(pf_buf10[s]))
             push_raw[s] = max(push_raw[s], pf[s])
         if t < t_close0:
             z_min = min(z_min, float(data.qpos[a_bz]))
@@ -624,6 +691,12 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
     else:
         score, limiting = rule[worst], worst
         reason = "" if passed else f"{worst} margin {rule[worst]:.2f}"
+    sens_n = float(cfg.get("edge_sensitive_N", 4.0))
+    any_n = max(push_n.values())
+    edge_sensitive = any_n > sens_n
+    if edge_sensitive:
+        reason = "; ".join(x for x in (reason, f"a 5 ms push of {any_n:.1f} N is over {sens_n:g} N: "
+                                               "sensitive to the edge contact's stiffness") if x)
     row.update({
         "passed": bool(passed), "score": score, "limiting": limiting, "reason": reason,
         "pass_rule": ("entry depth, then push, push force, drag, slip and rotation" if robust
@@ -631,6 +704,8 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
         "margins": margins, "dropped_in": dropped,
         "entry_reached_mm": reached, "stalled": z_stop is not None, "stall_s": stall_s,
         "push_R_mm": push[1], "push_L_mm": push[-1], "push_R_N": push_n[1], "push_L_N": push_n[-1],
+        "push_R_N_10ms": push_n10[1], "push_L_N_10ms": push_n10[-1], "edge_sensitive": bool(edge_sensitive),
+        # single samples: the solver's, not scored
         "push_R_peak_N": push_raw[1], "push_L_peak_N": push_raw[-1],
         "entry_push_R_mm": push_entry[1], "entry_push_L_mm": push_entry[-1],
         "entry_push_R_N": push_n_entry[1], "entry_push_L_N": push_n_entry[-1],

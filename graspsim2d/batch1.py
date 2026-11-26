@@ -549,10 +549,12 @@ def block_t3() -> list[dict[str, Any]]:
     """T3, tips between boxes, per design and reading: nominal and friction x0.8 (drag x1.2) at the full-case gap
     and the 15 mm entry; then, at nominal friction, the +-3 mm placement corners, the 0 and 3 mm gaps, the 20 mm
     entry and the first box out against the case wall. An asymmetric pair takes both corners and the wall on each
-    side. Only the nominal run holds its power cut the full 5 s."""
+    side. Only the nominal run holds its power cut the full 5 s. A row is `rated` unless its case is one of
+    `reported_cases` (revision 2.23: the corners and the 20 mm entry)."""
     b1 = ctx()["b1"]
     cfg = b1["t3"]
     place = float(b1.get("placement_mm", 3.0))
+    reported = tuple(cfg.get("reported_cases", ()))
     base = dict(job="t3", test="T3", object=cfg["box"], fill=cfg.get("fill", "catalog"), depth_mm=float(cfg["entry_mm"]),
                 gap_mm=float(cfg["gap_mm"]), lateral_mm=0.0)
     jobs = []
@@ -562,7 +564,7 @@ def block_t3() -> list[dict[str, Any]]:
             sides = (1,) if get_jaw(d, reading).symmetric else (1, -1)
 
             def add(case: str, **kw: Any) -> None:
-                jobs.append(_base("t3", d, reading, **{**base, "case": case, **kw}))
+                jobs.append(_base("t3", d, reading, **{**base, "case": case, "rated": not case.startswith(reported), **kw}))
 
             add("nominal")
             add("friction x0.8", friction_scale=float(b1.get("robust_friction", 0.8)),
@@ -628,15 +630,26 @@ def add_verdicts(rows: list[dict[str, Any]]) -> None:
         if r.get("kind") == "mujoco" and not r.get("reset_flag"):
             done[_job_key(r)] = r
     x08 = {}
+    t3: dict[tuple, list[dict[str, Any]]] = {}
     for r in done.values():
         if r.get("case") == "friction x0.8":
             x08[_job_key({**r, "case": None, "friction_scale": None, "power_s": None}, ("lateral_mm",))] = r
+        if r.get("test") == "T3" and r.get("rated"):
+            t3.setdefault((r.get("block"), r.get("design"), r.get("reading"), r.get("values")), []).append(r)
     for r in rows:
         if r.get("kind") != "mujoco" or r.get("case") not in ("nominal", "pinch 30"):
             continue
         if r.get("reset_flag"):
             r.update(verdict=None, verdict_basis="blew up: flagged, not scored; its rerun carries the verdict"
                      if _job_key(r) in done else "blew up: flagged, not scored, and no rerun held together")
+            continue
+        if r.get("test") == "T3":
+            # Revision 2.23: the centred runs, the gap sensitivities and the first box out; the corners and the 20 mm
+            # entry are reported only.
+            rated = t3.get((r.get("block"), r.get("design"), r.get("reading"), r.get("values")), [])
+            fails = sorted(x["case"] for x in rated if not x.get("passed"))
+            r.update(verdict=not fails, verdict_basis=(f"rated rows fail: {', '.join(fails)}" if fails else
+                                                       f"all {len(rated)} rated rows pass"))
             continue
         f = x08.get(_job_key({**r, "case": None, "friction_scale": None, "power_s": None}, ("lateral_mm",)))
         if f is None:

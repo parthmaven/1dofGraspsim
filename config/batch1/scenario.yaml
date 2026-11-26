@@ -274,9 +274,15 @@ batch1:
     push_limit_mm: 3.0            # entry, per neighbour, measured at its top edge
     push_limit_N: 5.0             # the neighbours only: a mark inside the shipping case does no harm
     push_average_s: 0.005         # the push force is scored, and the descent stops on it, as a 5 ms average
+    push_check_average_s: 0.010   # recorded beside it as a convergence check (SIM round 10)
+    edge_sensitive_N: 4.0         # a 5 ms push above this is flagged as sensitive to the edge contact's stiffness
     # A neighbour's top edge dents under a tip: the tip meets it through a critically damped contact at this time
     # constant (about 50 N/mm at the corner), against MuJoCo's stiff default, on which a free box chatters.
     edge_contact_tc_s: 0.002
+    edge_radius_sensitivity_mm: 0.5  # the edges are square; a landed row reports whether this radius would cam it in
     drag_limit_mm: 2.0
     case_wall: {flex_mm: 5.0, at_N: 20.0, thickness_mm: 4.0, mass_kg: 0.05}   # the first box out
+    # Revision 2.23: T3 is judged on the centred runs, the gap sensitivities and the first box out. These cases are
+    # reported, not rated.
+    reported_cases: ["corner", "entry"]
     designs: {P0: [45], S1: [45], S2: [45], S3: [45], S4: [45], S5: [45], S6: [45]}
