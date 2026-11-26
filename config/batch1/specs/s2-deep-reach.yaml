@@ -30,7 +30,7 @@ idea: >
 strategy:
   T1: "Deep side grip. The box's top edge rides past the set-back arm, and the tooth pad meets the box side 85 to 92 mm below its top at 160 mm, below the fill line on 7 of the 8 library boxes. CFS is the exception at 75 to 87 mm against 91 mm of headspace."
   T2: "The tooth pads meet at the 2.5 mm closed gap, so the sheet is pinched pad to pad over 8 to 11 mm, inside the 30 mm band. The chisels are 5.5 mm back and stay off it."
-  T3: "The chisel is toed in 14.0 deg, so at CFS's 14.5 deg grasp angle it hangs within 0.5 deg of plumb. The inserted 15 mm sweeps 2.1 mm: a 0.8 mm push at a full case's 1.3 mm gap and none at 3 mm, and 2.57 mm at the worst range corner, inside the neighbour's 1.3 mm of free travel. The pad's distal corner sits 15.6 mm above the point at that angle (at least 15.3 across the ranges), so it lands on the target's top edge just past the 15 mm entry, and the 20 mm sensitivity isn't reached. The toe-in is set for CFS: on 60 and 45 mm boxes the tip sweeps 3.6 and 4.3 mm (sr-spec-check.py; fp-t3-chisel-lean.py agrees on CFS)."
+  T3: "The chisel's toe-in follows the reach (14.0 deg at nominal), so at CFS's 14.5 deg grasp angle it hangs within 0.6 deg of plumb at every reach, the flagged 170 mm included. The inserted 15 mm sweeps 2.1 mm: a 0.8 mm push at a full case's 1.3 mm gap and none at 3 mm, and 2.16 mm at the worst range corner (2.17 at 170 mm), inside the neighbour's 1.3 mm of free travel. The pad's distal corner sits 15.6 mm above the point at that angle (at least 15.3 across the ranges), so it lands on the target's top edge just past the 15 mm entry, and the 20 mm sensitivity isn't reached. The toe-in is set for CFS: on 60 and 45 mm boxes the tip sweeps 3.6 and 4.3 mm (sr-spec-check.py; fp-t3-chisel-lean.py agrees on CFS)."
   T4: "The tooth (26 to 29 mm, far wall to tip) fits the 30 mm of free wall. The far wall, level-cut or back-cut by up to 2 mm, carries the lip on printed PA12 at the dam, not on the pad's edge. The pocket is 16 to 30 mm deep."
   T5: "The case bears on the tooth pad's distal end at about 30 deg per finger, 144 mm from the pivot, on the pad and not the chisel. The actuator holds the opening, backed by a power-off brake."
   durability: "A 16 to 24 mm arm 100 to 110 mm wide, 30 mm at the ramp, a 6 mm root fillet at the ramp's foot and 3 mm at the far wall. The pad sits behind a printed dam and is the only wear part."
@@ -48,10 +48,10 @@ fingers:
       - ["finger_reach - tooth_len + 2.5", "16.25 - tooth_wedge"]              # printed dam, 2.5 mm long
       - ["finger_reach - tooth_len + 2.5", "17.75 - tooth_wedge - pad_thickness"]  # pad seat, proximal end
       - ["finger_reach - chisel_len", "17.75 - pad_thickness"]                 # pad seat, distal end
-      - ["finger_reach - chisel_len + 1.5", "17.75 - chisel_setback - chisel_rise"]  # step to the chisel's root; the pad's distal corner is the T3 depth stop
+      - ["finger_reach - chisel_len + 1.5", "17.75 - chisel_setback - ((chisel_len - 1.5) * tan(radians(13.96 + 0.093 * (160 - finger_reach) - 0.36 * (chisel_setback - 5.5))))"]  # step to the chisel's root; the pad's distal corner is the T3 depth stop
       - ["finger_reach", "17.75 - chisel_setback"]                             # chisel inner face, toed in to the point
       - ["finger_reach", "17.75 - chisel_setback - tip_land"]                  # the land
-      - ["finger_reach - chisel_len", "17.75 - chisel_setback - chisel_rise * chisel_len / (chisel_len - 1.5) - chisel_t"]  # chisel back at its root, toed in with the face
+      - ["finger_reach - chisel_len", "17.75 - chisel_setback - (chisel_len * tan(radians(13.96 + 0.093 * (160 - finger_reach) - 0.36 * (chisel_setback - 5.5)))) - chisel_t"]  # chisel back at its root, toed in with the face
       - ["finger_reach - chisel_len", "17.75 - arm_offset - arm_depth"]        # tooth's distal face, down to the arm's back
       - ["46 + ramp_len", "17.75 - arm_offset - arm_depth"]                    # arm back
       - [46.0, -21.25]                                                         # root junction (the platform's back)
@@ -110,13 +110,16 @@ search:
     tooth_wedge: {range: [0, 3], unit: mm, nominal: 2, meaning: "pad face's proximal end sits this far below the face plane (up to about 20 deg over the 8 mm pad), so a leaning box meets the whole pad, not its proximal edge"}
     arm_depth: {range: [16, 24], unit: mm, nominal: 20, meaning: "in-plane depth of the set-back arm (batch rule: beam at least 15 to 20 mm)"}
     ramp_len: {range: [8, 16], unit: mm, nominal: 12, meaning: "u length of the root ramp from the platform face down to the arm (steeper lets boxes in deeper)"}
-    tooth_len: {range: [26, 29], unit: mm, nominal: 28, meaning: "far wall to tip; must fit the 30 mm of free wall under the T4 lip"}
+    tooth_len: {range: [27, 29], unit: mm, nominal: 28, meaning: "far wall to tip; must fit the 30 mm of free wall under the T4 lip"}
     far_backcut: {range: [0, 2], unit: mm, nominal: 1, meaning: "far wall's foot runs this far distal of its mouth (0 = level-cut)"}
     chisel_len: {range: [17.5, 18], unit: mm, nominal: 17.5, meaning: "chisel length from the step to the point; at least 17.5 keeps the pad's distal corner above the 15 mm T3 line at CFS's grasp angle; each mm more shortens the tooth pad by 1 mm"}
-    chisel_t: {range: [2.0, 2.6], unit: mm, nominal: 2.4, meaning: "chisel thickness at its root, across u; it tapers to tip_land at the point"}
-    tip_land: {range: [0.8, 1.2], unit: mm, nominal: 1.0, meaning: "land at the point"}
+    chisel_t: {range: [2.0, 2.5], unit: mm, nominal: 2.4, meaning: "chisel thickness at its root, across u; it tapers to tip_land at the point"}
+    tip_land: {range: [0.8, 1.1], unit: mm, nominal: 1.0, meaning: "land at the point"}
     chisel_setback: {range: [5.5, 6], unit: mm, nominal: 5.5, meaning: "the point's set-back from the face plane, so the T5 case and the sheets bear on the pad, not the chisel"}
-    chisel_rise: {range: [3.6, 4.45], unit: mm, nominal: 4.0, meaning: "chisel toe-in: the face's root end sits this much further out than the point; atan(chisel_rise / (chisel_len - 1.5)) = 14.0 deg at nominal, within 1 deg of plumb at CFS's grasp angle in T3; at most 4.45 keeps T3's worst range corner within the neighbour's 1.3 mm of free travel (a 2.57 mm gap needed, against 2.6)"}
+    # chisel toe-in, derived and no longer searched (S1's formula): the face's root end sits (chisel_len - 1.5) * tan(13.96 + 0.093 * (160 - finger_reach) - 0.36 * (chisel_setback - 5.5) deg)
+    # further out than the point, written into the outline. 3.92 - 4.39 mm over the ranges, 3.98 at nominal (14.0 deg);
+    # it keeps the chisel 0.5 deg short of plumb at CFS's T3 entry opening for every reach, fitted for 150 - 160 mm (worst corner needs a 2.16 mm gap, against 2.6);
+    # the flagged 170 mm run extrapolates it: 3.65 - 3.82 mm, 0.6 deg of lean, 2.17 mm worst gap and no corner landing
   fixed_by_spec:
     - "root and hinge (u <= 46), the platform's: a hardware rule"
     - "face plane v = 17.75 at the tooth pad: keeps the platform's 2.5 mm closed gap for T2"
@@ -204,7 +207,7 @@ notes: >
 expected:
   T1: "The strongest of my lanes: 6 to 7 of 8 boxes at 160 mm, if the sim's tooth contact matches the geometry, and CFS joins at 170 mm. A contact below the fill line lets the force rise to the 25 kPa bed limit (about 20 N on the 8 x 100 mm pad), against 9 to 20 N needed at mu 0.5 with the safety factor. The one torque must also suit the sheets, so the heaviest boxes are the ones at risk."
   T2: "Good: 5 to 6 of 6 sheets. Pad to pad over 8 to 11 mm, 100 mm wide, so pressure stays near 20 to 25 kPa at 20 N, under the 90 kPa flute limit."
-  T3: "Enters: 2.1 mm swept at CFS's grasp angle (2.57 mm at the worst range corner), a 0.8 mm push at 1.3 mm and none at 3 mm; the pad's corner stops the entry at about 15.6 mm. Holding CFS on bare chisels at mu 0.3 within 10 N is marginal."
+  T3: "Enters: 2.1 mm swept at CFS's grasp angle (2.16 mm at the worst range corner, 2.17 at 170 mm), a 0.8 mm push at 1.3 mm and none at 3 mm; the pad's corner stops the entry at about 15.6 mm. Holding CFS on bare chisels at mu 0.3 within 10 N is marginal."
   T4: "T4b passes, with the lip on the far wall and the tooth under it. T4a can't be reached at the 45 deg reading; at 90 deg it passes."
   T5: "Supports only with the brake. 40 to 45 N m per gripper at 23 kg, at 142.5 mm. Arm stress is 4.0 MPa with K_t 2 at 23 kg and 2.1 MPa at the 12 kg duty (110 by 20 mm section at u 70); the tooth's base (9.5 mm along u by 100 mm) is at most 6.4 MPa with K_t 2, with the pad's full friction, and the root 4.7 MPa with K_t 2 at the outer M5. The printed mount's arm, 36 MPa with K_t 2 at the duty, needs the next phase's machined mount."
 

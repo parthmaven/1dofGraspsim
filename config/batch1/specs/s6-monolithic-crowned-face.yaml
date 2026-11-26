@@ -27,7 +27,7 @@ idea: >
 strategy:
   T1: "Square near-top grip. At the deepest insertion, the crown's start meets the box's top edge within about 5 deg of square, because the crown's slope there takes up most of the 20 to 30 deg lean. At shallower insertions the tangent point moves 10 to 40 mm down the panel. Every contact is above the fill line, so the 10 N panel limit sets the torque."
   T2: "The skinned tooth faces pinch the sheet over about 6.5 mm, at the 2.5 mm closed gap; the chisels are 5.5 mm back."
-  T3: "As S1: toed in 14.6 deg, within 0.5 deg of plumb at CFS's 14.9 deg grasp angle. The inserted 15 mm sweeps 2.0 mm: a 0.7 mm push at a full case's 1.3 mm gap, none at 3 mm, and 2.57 mm at the worst range corner, inside the neighbour's 1.3 mm of free travel. The skin's distal corner sits 16.0 mm above the point at that angle (at least 15.3 across the ranges), so it stops the entry just past 15 mm, short of the 20 mm sensitivity. The toe-in is set for CFS: on 60 and 45 mm boxes the tip sweeps 3.6 and 4.4 mm (sr-spec-check.py; fp-t3-chisel-lean.py agrees on CFS)."
+  T3: "As S1: the toe-in follows the reach (14.4 deg at nominal), within 0.6 deg of plumb at CFS's 14.9 deg grasp angle at every reach. The inserted 15 mm sweeps 2.0 mm: a 0.7 mm push at a full case's 1.3 mm gap, none at 3 mm, and 2.16 mm at the worst range corner, inside the neighbour's 1.3 mm of free travel. The skin's distal corner sits 16.0 mm above the point at that angle (at least 15.3 across the ranges), so it stops the entry just past 15 mm, short of the 20 mm sensitivity. The toe-in is set for CFS: on 60 and 45 mm boxes the tip sweeps 3.6 and 4.4 mm (sr-spec-check.py; fp-t3-chisel-lean.py agrees on CFS)."
   T4: "An 18 to 22 by 8 to 9 mm pocket, a level-cut or back-cut far wall (up to 2 mm), a 26 to 28 mm tooth, the lip on the printed dam, and at least 10 mm of ligament behind the pocket."
   T5: "No cradle. The case bears on the tooth's skin, just behind the chisel, at about 30 deg per finger. The actuator holds the opening, backed by a power-off brake."
   durability: "One printed part plus a cast skin. No pad joints, clips or carriers. A 70 mm wide distal arm, at least 15 mm deep at the crown's start, 20 mm at the pocket and 18 mm at the tooth. The skin is re-cast in place when it wears."
@@ -54,10 +54,10 @@ fingers:
       - ["finger_reach - tooth_len + 2.5", 16.25]                        # printed dam
       - ["finger_reach - tooth_len + 2.5", "17.75 - pad_thickness"]      # tooth skin seat
       - ["finger_reach - chisel_len", "17.75 - pad_thickness"]
-      - ["finger_reach - chisel_len + 1.5", "17.75 - chisel_setback - chisel_rise"]  # step to the chisel's root; the skin's distal corner is the T3 depth stop
+      - ["finger_reach - chisel_len + 1.5", "17.75 - chisel_setback - ((chisel_len - 1.5) * tan(radians(13.96 + 0.093 * (160 - finger_reach) - 0.36 * (chisel_setback - 5.5))))"]  # step to the chisel's root; the skin's distal corner is the T3 depth stop
       - ["finger_reach", "17.75 - chisel_setback"]                       # chisel inner face, toed in to the point
       - ["finger_reach", "17.75 - chisel_setback - tip_land"]            # the land
-      - ["finger_reach - chisel_len", "17.75 - chisel_setback - chisel_rise * chisel_len / (chisel_len - 1.5) - chisel_t"]  # chisel back at its root, toed in with the face
+      - ["finger_reach - chisel_len", "17.75 - chisel_setback - (chisel_len * tan(radians(13.96 + 0.093 * (160 - finger_reach) - 0.36 * (chisel_setback - 5.5)))) - chisel_t"]  # chisel back at its root, toed in with the face
       - ["finger_reach - tooth_len", "17.75 - hook_depth - hook_lig"]    # tooth back, under the far wall
       - [90.0, -18.25]                                                   # the platform's back taper
       - [46.0, -21.25]
@@ -101,7 +101,7 @@ fingers:
         thickness_profile_mm:
           - ["finger_reach", "tip_land"]
           - ["finger_reach - chisel_len + 1.5", "chisel_t"]
-          - ["finger_reach - chisel_len", "chisel_setback + chisel_rise * chisel_len / (chisel_len - 1.5) + chisel_t"]
+          - ["finger_reach - chisel_len", "chisel_setback + (chisel_len * tan(radians(13.96 + 0.093 * (160 - finger_reach) - 0.36 * (chisel_setback - 5.5)))) + chisel_t"]
           - ["finger_reach - tooth_len", "hook_depth + hook_lig"]
       undercut:
         u_from: "finger_reach - tooth_len - hook_len"
@@ -140,10 +140,12 @@ search:
     hook_lig: {range: [10, 14], unit: mm, nominal: 12, meaning: "in-plane ligament behind the pocket's far end"}
     tooth_len: {range: [26, 28], unit: mm, nominal: 27, meaning: "far wall to tip; must fit the 30 mm of free wall under the T4 lip"}
     chisel_len: {range: [17.5, 18.5], unit: mm, nominal: 18, meaning: "chisel length from the step to the point; at least 17.5 keeps the skin's distal corner above the 15 mm T3 line at CFS's grasp angle, and at most 18.5 keeps the T5 bearing on the tooth at a 5.5 mm setback"}
-    chisel_t: {range: [2.0, 2.6], unit: mm, nominal: 2.4, meaning: "chisel thickness at its root, across u; it tapers to tip_land at the point"}
-    tip_land: {range: [0.8, 1.2], unit: mm, nominal: 1.0, meaning: "land at the point"}
+    chisel_t: {range: [2.0, 2.5], unit: mm, nominal: 2.4, meaning: "chisel thickness at its root, across u; it tapers to tip_land at the point"}
+    tip_land: {range: [0.8, 1.1], unit: mm, nominal: 1.0, meaning: "land at the point"}
     chisel_setback: {range: [5.5, 6], unit: mm, nominal: 5.5, meaning: "the point's set-back from the face plane, so the T5 case bears on the tooth's skin, not the chisel"}
-    chisel_rise: {range: [3.8, 4.45], unit: mm, nominal: 4.3, meaning: "chisel toe-in: the face's root end sits this much further out than the point; atan(chisel_rise / (chisel_len - 1.5)) = 14.6 deg at nominal, within 1 deg of plumb at CFS's grasp angle in T3; at most 4.45 keeps T3's worst range corner within the neighbour's 1.3 mm of free travel (a 2.57 mm gap needed, against 2.6)"}
+    # chisel toe-in, derived and no longer searched: the face's root end sits (chisel_len - 1.5) * tan(13.96 + 0.093 * (160 - finger_reach) - 0.36 * (chisel_setback - 5.5) deg)
+    # further out than the point, written into the outline and the inside finger's features. 3.92 - 4.52 mm over the ranges, 4.24 at nominal (14.4 deg);
+    # it keeps the chisel 0.5 deg short of plumb at CFS's T3 entry opening for every reach, fitted for 150 - 160 mm only (worst corner needs a 2.16 mm gap, against 2.6)
   fixed_by_spec:
     - "root and hinge (u <= 46), the platform's: a hardware rule"
     - "crown from u = 50 to 2 mm before the pocket: the hub cap keeps box tops at u >= 49.5"
@@ -224,7 +226,7 @@ notes: >
 expected:
   T1: "Weak to fair: 2 to 4 of 8 boxes (the mini, Cheerios 8.9 oz, perhaps Grape-Nuts). No squeeze-out at any lean, but every contact is on the empty panel, so a 0.5 to 0.9 kg box needs 11 to 20 N against the 10 N limit, as S1."
   T2: "Good: 5 to 6 of 6 sheets. A skin on the tooth pinches pad to pad, as S2 but over about 6.5 mm, 70 mm wide."
-  T3: "Enters: 2.0 mm swept at CFS's grasp angle (2.57 mm at the worst range corner), a 0.7 mm push at 1.3 mm and none at 3 mm; the skin's corner stops the entry at about 16 mm. Holding CFS on bare chisels at mu 0.3 within 10 N is marginal."
+  T3: "Enters: 2.0 mm swept at CFS's grasp angle (2.16 mm at the worst range corner), a 0.7 mm push at 1.3 mm and none at 3 mm; the skin's corner stops the entry at about 16 mm. Holding CFS on bare chisels at mu 0.3 within 10 N is marginal."
   T4: "Passes T4b and fails T4a at both readings, as S1. T4b: the pocket seats the tote's lip on the printed dam and the 26 to 28 mm tooth fits the 30 mm of free wall under it; at T4b's 110 N per hook the neck, 8.1 by 70 mm, sees about 3 MPa with K_t 2. In T4's strength case (a 15 kg crate on one far wall, x1.5, K_t 2 at the sharp foot; FP memo, tooth neck) it sees 6.8 MPa hanging plumb and 8.2 held level on the reference brake at nominal, and 12.0 and 13.8 at the thinnest corner of the ranges, against 16, now that the pocket is 8 to 9 mm deep (19.9 and 22.8 at 11). T4a: the 9 mm pocket hooks lips only 60 mm across at either reading, against the bin's 212 mm (FP memo, T4a lip spans; test-conditions revision 2.9)."
   T5: "Supports only with the brake. 39 to 43 N m per gripper at 23 kg, at 138 mm. Arm stress is 2.6 MPa with K_t 2 at the pocket ligament (70 by 17 mm) at 23 kg and 1.4 MPa at the 12 kg duty; the tooth's neck at most 6.4 MPa with the skin's friction; the root 4.4 MPa with K_t 2 at the outer M5. The printed mount's arm, 34 MPa with K_t 2 at the duty, needs the next phase's machined mount."
 
