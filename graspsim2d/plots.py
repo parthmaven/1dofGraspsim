@@ -434,17 +434,28 @@ def fig_bracket_clearance(path: Path, result: dict[str, Any], sc: Scenario) -> N
         if d is base:
             base_prof = {k: np.where(openings_deg <= top + 1e-9, v, np.nan) for k, v in prof.items()}
     colors = {"hub": "#c0392b", **{br.name: BRACKET_COLORS[k % len(BRACKET_COLORS)] for k, br in enumerate(ko.brackets)}}
+    inside = openings_deg <= stroke + 1e-9
+    past = openings_deg >= stroke - 1e-9
     for i, (k, v) in enumerate(least.items()):
         # the brackets share the fillets beside the hub, so their curves can coincide: draw wide to narrow
         lw = max(3.4 - 1.0 * i, 1.4)
-        a2.plot(openings_deg, np.where(np.isfinite(v), v, np.nan), lw=lw, color=colors[k], alpha=0.85,
-                label=f"{k}: least over all {len(designs)} designs")
+        v = np.where(np.isfinite(v), v, np.nan)
+        if k == "hub":
+            # past the stroke the root's own clearance comes from the 3D check, so only the parts beyond it are measured
+            a2.plot(openings_deg[inside], v[inside], lw=lw, color=colors[k], alpha=0.85, label=f"hub, over the stroke: least of {len(designs)} designs")
+            a2.plot(openings_deg[past], v[past], lw=1.6, ls="-.", color=colors[k], alpha=0.85, label="hub, past the stroke: parts beyond the root")
+        else:
+            a2.plot(openings_deg, v, lw=lw, color=colors[k], alpha=0.85, label=f"{k}: least of {len(designs)} designs")
         if base_prof is not None:
-            a2.plot(openings_deg, base_prof[k], lw=1.0, ls=":", color=colors[k], label=f"{k}: baseline as drawn")
+            b = base_prof[k]
+            if k == "hub":
+                b = np.where(inside, b, np.nan)
+            a2.plot(openings_deg, b, lw=1.0, ls=":", color=colors[k], label=f"{k}: platform finger as drawn")
     a2.axhline(0.0, color="k", lw=0.8)
     a2.text(1, 0.3, "touching", fontsize=7)
     a2.axvline(stroke, color="k", lw=0.8, ls="--")
-    a2.text(stroke + 1, 0.97, f"end of the {stroke:.0f} deg stroke", transform=a2.get_xaxis_transform(), fontsize=7, va="top")
+    a2.text(stroke - 1, 0.25, f"end of the {stroke:.0f} deg stroke", transform=a2.get_xaxis_transform(), fontsize=7, va="center", ha="right",
+            rotation=90, bbox=dict(fc="white", ec="none", alpha=0.8, pad=1))
     lo_w = min(w for w in wide.values() if w is not None) if any(w is not None for w in wide.values()) else None
     if lo_w is not None and lo_w > stroke:
         a2.axvspan(lo_w, openings_deg[-1], color="#999999", alpha=0.15, lw=0)
@@ -455,10 +466,11 @@ def fig_bracket_clearance(path: Path, result: dict[str, Any], sc: Scenario) -> N
     a2.set_xlabel("opening from where the fingers meet (deg)")
     a2.set_ylabel("gap (mm)")
     a2.grid(alpha=0.3)
-    a2.legend(fontsize=7, loc="upper right", bbox_to_anchor=(1.0, 0.75))
+    a2.legend(fontsize=7, loc="upper left")
     a2.set_title("Least gap to the hub and to each bracket, over the stroke and on to the widest opening each design\n"
                  f"reaches before its platform root meets a bracket (hub: its circle at R{ko.circles[0][2]:g}; brackets: "
-                 "the parts at their heights; past the stroke, the parts beyond the root)" if ko.circles else "", fontsize=8)
+                 "the parts at their heights;\npast the stroke, only the parts beyond the root, which clears the hub and brackets in 3D)"
+                 if ko.circles else "", fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=110, bbox_inches="tight")
     plt.close(fig)

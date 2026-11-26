@@ -35,7 +35,7 @@ from scipy.optimize import differential_evolution
 from scipy.stats import qmc
 
 from .analytic import GripResult, solve_grip
-from .geometry import build_finger, widest_opening
+from .geometry import build_finger, drawn_length, widest_opening
 from .objects import ObjectLibrary, load_objects
 from .scenario import Scenario, load_scenario
 from .schema import Concept, DesignSpace, GripperDesign, load_concepts, load_design_space
@@ -427,6 +427,7 @@ class SearchRun:
                     "sim_J": objective_from_scores(sim_scores, self.cfg.min_margin_weight),
                     "sim_worst": worst,
                     "meet_deg": math.degrees(fz.phi_meet),
+                    "drawn_length_mm": drawn_length(fz),
                     "hub_clearance_mm": _finite(fz.hub_clearance),
                     "hub_clearance_phi_deg": _finite(fz.hub_clearance_phi),
                     "ligament_mm": _finite(fz.ligament),

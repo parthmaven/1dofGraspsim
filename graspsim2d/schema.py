@@ -234,7 +234,7 @@ def load_design_space(path: str | Path) -> DesignSpace:
         hi = _convert(hi, unit, v.unit, v.name)
         if hi < lo:
             raise ValueError(f"{path}: {v.name} upper bound {hi} is below lower bound {lo}")
-        nominal = _convert(e["nominal"], unit, v.unit, v.name) if "nominal" in e else v.nominal
+        nominal = _convert(e["nominal"], unit, v.unit, v.name) if "nominal" in e else (lo if "value" in e else v.nominal)
         if not lo - 1e-9 <= nominal <= hi + 1e-9:
             warnings.warn(f"{v.name}: nominal {nominal} {v.unit} lies outside [{lo}, {hi}]; nominal designs clip it")
         ranges[v.name] = VariableRange(

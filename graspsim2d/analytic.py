@@ -460,6 +460,36 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
     if pivot_pad is not None:
         margins["rotation"] = sc.max_rotation / rot if rot > 1e-9 else math.inf
 
+    # Least grip per finger that holds at margin 1, with and without the safety factors, keeping this
+    # contact's geometry: hold scales the squeeze-out with the grip; pitch also gains the friction couple.
+    sq_ratio = f_sq / N
+    mu_eff = mu / (1.0 - mu * r_t / arm) if arm > mu * r_t else math.inf
+    w_half = m * (G + az) / 2
+
+    def grip_for_hold(sf: float) -> float:
+        net = mu_eff - sf * sq_ratio
+        return sf * w_half / net if net > 1e-9 else math.inf
+
+    def pitch_capacity(n: float) -> float:
+        fric = max(0.0, 2 * mu * n - m * (G + az)) * x_face * 1e-3
+        if pivot_pad is not None:
+            return 2 * k_pp * theta_allow + (2 * n * e_max if spare <= sc.max_rotation else 0.0) + fric
+        return 2 * n * e_max + fric
+
+    def grip_for_pitch(sf: float) -> float:
+        need = sf * m_dem
+        if need <= pitch_capacity(0.0):
+            return 0.0
+        lo, hi = 0.0, 1.0
+        while pitch_capacity(hi) < need:
+            hi *= 2.0
+            if hi > 1e6:
+                return math.inf
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if pitch_capacity(mid) < need else (lo, mid)
+        return hi
+
     share = m_norm / m_cap if m_cap > 0 else 1.0
     m_pad = min(share * m_dem, m_cap) / 2
     p_dem = p_max * n_dem / N + 6 * m_pad / (b * contact_len**2)
@@ -497,6 +527,10 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
         "pad_align_deg": math.degrees(_pad_rotation(ld) - math.radians(d.pad_angle)) if pivot_pad is not None else 0.0,
         "pad_pitch_rotation_deg": math.degrees(rot),
         "max_pad_strain": float(ld.pad_strain.max()),
+        "min_grip_hold_N": grip_for_hold(1.0),
+        "min_grip_hold_sf_N": grip_for_hold(sc.friction_sf),
+        "min_grip_pitch_N": grip_for_pitch(1.0),
+        "min_grip_pitch_sf_N": grip_for_pitch(sc.pitch_sf),
     }
     return GripResult(d, obj.id, ok=True, margins=margins, info=info)
 

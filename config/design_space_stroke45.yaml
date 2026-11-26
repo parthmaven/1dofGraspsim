@@ -1,0 +1,54 @@
+# Bounding box of design variables for the 2D 1-DoF two-finger gripper.
+#
+# PLACEHOLDER RANGES, centred on the baseline: the platform finger
+# (Finger, Left, MV-UMI01-3DP-001 A in gripper-umi-platform-v0.1). Its two
+# pivots are 38 mm apart and geared 1:1, the tip is 150 mm from the pivot line,
+# and the flat face is parallel to the other finger's when closed (2.5 mm gap):
+# wide from 49.9 mm (where it clears the bracket hub) to 101.5 mm (95 mm mean
+# out of plane), a 28 mm recessed notch, then a 16 mm wide tip to 150 mm.
+# Variables the CAD does not set (pad thickness and hardness, drive torque)
+# keep generic ranges; the stroke is Parth's (more than 90 deg per finger). To
+# use Parth's own bounding box, edit the ranges below and rerun; nothing else
+# changes.
+#
+# Per variable:
+#   range: [lower, upper]   searched interval (set lower == upper, or use
+#                           `value: x`, to fix a variable)
+#   unit:                   optional; mm, cm, m, in, deg, rad, N*m, lbf*in, ...
+#                           values are converted to the schema unit
+#   nominal:                optional; used for inactive variables
+#   placeholder: true       marks a range that nobody has confirmed yet
+# Variables left out are fixed at the schema nominal (graspsim2d/schema.py).
+
+variables:
+  pivot_spacing:      {value: 38,         unit: mm,      placeholder: true,
+                        note: "fixed: the FT Dynamic bracket carries both pivots 38 mm apart and the 1:1 gear pair spans them; a range here implies a new bracket and gears"}
+  finger_reach:       {range: [130, 170], unit: mm,      nominal: 150,  placeholder: true}
+  finger_thickness:   {range: [12, 32],   unit: mm,      nominal: 21.6, placeholder: true,
+                        note: "baseline 21.6 puts the face 17.8 mm inboard of the pivot with a 6 mm pad"}
+  crank_offset:       {range: [0, 24],    unit: mm,      nominal: 0,    placeholder: true}
+  crank_position:     {range: [0.25, 0.6], unit: "1",    nominal: 0.45, placeholder: true}
+  pad_length:         {range: [25, 78],   unit: mm,      nominal: 51.6, placeholder: true}
+  pad_thickness:      {range: [2, 12],    unit: mm,      nominal: 6,    placeholder: true}
+  pad_angle:          {range: [-15, 15],  unit: deg,     nominal: 0,    placeholder: true}
+  pad_tip_margin:     {range: [0, 97],    unit: mm,      nominal: 48.5, placeholder: true,
+                        note: "baseline: 28 mm notch plus a 20.5 mm tip; single-pad concepts narrow this to 0-30"}
+  pad_width:          {range: [50, 140],  unit: mm,      nominal: 95,   placeholder: true,
+                        note: "the platform finger is 161 mm tall out of plane"}
+  tab_width:          {range: [6, 26],    unit: mm,      nominal: 16,   placeholder: true}
+  tab_gap:            {range: [2, 54],    unit: mm,      nominal: 28,   placeholder: true,
+                        note: "recessed notch between paddle and tip; 2 mm on the earlier UMI6 revision"}
+  pad_shore:          {range: [30, 70],   unit: shoreA,  nominal: 40,   placeholder: true}
+  pad_crown_curvature: {range: [0, 33],   unit: 1/m,     nominal: 0,    placeholder: true,
+                        note: "0 = flat face; 33 1/m = 30 mm crown radius"}
+  finger_torque:      {range: [1, 12],    unit: N*m,     nominal: 5,    placeholder: true,
+                        note: "at each finger pivot; the 1:1 gears give both fingers the same torque, one limit for every object"}
+  max_opening:        {value: 45,         unit: deg,
+                        note: "stroke of each finger from where the fingers meet; the second reading of Parth's 90 deg (Nov 25 2026): the angle between the fingers, so 45 deg per finger. Each grasp records the opening it needs (approach_opening_deg)"}
+  pad2_offset:        {range: [35, 75],   unit: mm,      nominal: 55,   placeholder: true}
+  pad2_length:        {range: [15, 40],   unit: mm,      nominal: 30,   placeholder: true}
+  pad2_angle:         {range: [-5, 15],   unit: deg,     nominal: 6,    placeholder: true}
+  pad2_protrusion:    {range: [-6, 6],    unit: mm,      nominal: 0,    placeholder: true}
+  pivot_depth:        {range: [4, 20],    unit: mm,      nominal: 8,    placeholder: true}
+  pivot_stiffness:    {range: [0.02, 3],  unit: N*m/rad, nominal: 0.3,  placeholder: true}
+  pivot_range:        {range: [3, 20],    unit: deg,     nominal: 8,    placeholder: true}

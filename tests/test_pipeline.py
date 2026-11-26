@@ -47,6 +47,17 @@ def test_bounding_box_swap_is_a_config_change(tmp_path, setup):
         assert 177.8 - 1e-9 <= d.finger_reach <= 203.2 + 1e-9
 
 
+def test_fixed_value_sets_the_nominal():
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        space = load_design_space(CFG / "design_space_stroke45.yaml")
+    v = space["max_opening"]
+    assert v.fixed and v.lower == v.upper == v.nominal == pytest.approx(45.0)
+    assert all(c.make(space).max_opening == pytest.approx(45.0) for c in load_concepts(CFG / "concepts.yaml", space))
+
+
 def test_unknown_variable_is_rejected(tmp_path):
     p = tmp_path / "ds.yaml"
     p.write_text(yaml.safe_dump({"variables": {"finger_lenght": {"range": [1, 2], "unit": "mm"}}}))
@@ -162,11 +173,17 @@ def test_cheerios_family_size_validation(setup):
     assert r.info["squeeze_out_ratio"] == pytest.approx(0.36, abs=0.01)
     # Deeper, the top edges land on the paddle's main face. The CAD study's deepest case has the
     # box top 51 mm below the pivots (99 mm insertion) and 65 mm inside the open tips, touching
-    # 55 mm from the pivot line at 46.5 deg per jaw, where holding needs mu 1.05.
+    # 55 mm from the pivot line at 46.5 deg per jaw, where holding needs mu 1.05 = tan(46.5 deg).
+    # Loaded, the jaws sit about half a degree further closed, and the screen's mu is tan of the
+    # loaded face angle; the drive torque alone sets the normal force, with no overshoot.
     r = solve_grip(stock, rigid, sc, depth=0.099)
     assert r.ok and r.info["pads"] == "paddle"
     assert r.info["phi_touch_deg"] == pytest.approx(46.5, abs=0.3)
-    assert r.info["squeeze_out_ratio"] == pytest.approx(1.05, abs=0.03)
+    assert math.tan(math.radians(r.info["phi_touch_deg"])) == pytest.approx(1.05, abs=0.01)
+    assert r.info["contact_face_tilt_deg"] == pytest.approx(r.info["phi_touch_deg"] - 0.5, abs=0.2)
+    assert r.info["squeeze_out_ratio"] == pytest.approx(math.tan(math.radians(r.info["contact_face_tilt_deg"])), abs=0.005)
+    assert r.info["squeeze_out_ratio"] == pytest.approx(1.04, abs=0.01)
+    assert r.info["normal_force_N"] * r.info["arm_mm"] / 1000 == pytest.approx(stock.finger_torque, rel=1e-6)
     assert r.info["phi_touch_deg"] < r.info["approach_opening_deg"] < r.info["phi_touch_deg"] + 1.0
     # With the modelled box wall, the screen's own pick puts the corner on the main face, where the
     # squeeze needs more friction than the carton's 0.5, so the hold fails.
@@ -182,6 +199,31 @@ def test_force_balance_of_the_analytic_grip(setup):
     assert r.ok
     # drive torque = normal force x lever arm about the pivot
     assert r.info["normal_force_N"] * r.info["arm_mm"] / 1000 == pytest.approx(d.finger_torque, rel=1e-6)
+
+
+def test_least_grip_for_hold_and_pitch(setup):
+    """The screen's least grip per finger for hold and for pitch: each margin reaches 1 where the
+    applied grip passes it, and the safety factors only raise it."""
+    space, concepts, lib, sc = setup
+    seen = set()
+    for name in ("baseline_paddle", "self_aligning", "crowned"):
+        d = concepts[name].make(space)
+        for oid in ("mini_1oz", "hbo_28oz", "gm_cheerios_family_18oz"):
+            r = solve_grip(d, lib.by_id(oid), sc)
+            assert r.ok
+            i = r.info
+            assert (r.margins["hold"] >= 1.0) == (i["min_grip_hold_sf_N"] <= i["normal_force_N"])
+            assert (r.margins["pitch"] >= 1.0) == (i["min_grip_pitch_sf_N"] <= i["normal_force_loaded_N"])
+            assert i["min_grip_hold_N"] <= i["min_grip_hold_sf_N"] and i["min_grip_pitch_N"] <= i["min_grip_pitch_sf_N"]
+            seen.add(r.margins["hold"] >= 1.0)
+    assert seen == {True, False}
+    # with no squeeze-out the hold needs about half the load over the friction coefficient; the
+    # friction moment about the pivot shifts it by under a tenth here
+    o = lib.by_id("chipboard_1p5mm")
+    r = solve_grip(concepts["baseline_paddle"].make(space), o, sc)
+    w = o.mass * (9.81 + sc.vertical_accel)
+    assert r.info["squeeze_out_ratio"] == 0.0
+    assert r.info["min_grip_hold_N"] == pytest.approx(w / (2 * o.material.friction * sc.friction_scale), rel=0.1)
 
 
 def test_diverging_box_and_converging_sheet(setup):
@@ -321,6 +363,30 @@ def test_close_time_grows_with_the_start_opening(setup):
     f = build_finger(concepts["crowned"].make(space), sc.keep_out, sc.closed_limit)
     assert close_time(sc, f, f.phi_meet + math.radians(10.0)) == sc.close_time
     assert close_time(sc, f, f.phi_max) == pytest.approx(math.radians(90.0) / sc.closing_speed + sc.squeeze_time)
+
+
+def test_dropped_runs_keep_every_margin(setup):
+    from graspsim2d.mjsim import simulate
+
+    space, concepts, lib, sc = setup
+    d = concepts["baseline_paddle"].make(space).replace(finger_torque=0.25)
+    r = simulate(d, lib.by_id("hbo_28oz"), sc, record=False)
+    assert not r.passed and r.reason == "dropped" and r.score == 0.0
+    m = r.metrics["margins"]
+    assert m["slip"] == 0.0 and {"rotation", "pressure", "panel"} <= set(m)
+    assert m["panel"] == pytest.approx(lib.by_id("hbo_28oz").unsupported_force / r.metrics["panel_force_N"])
+
+
+def test_drawn_length_includes_the_cranked_tip(setup):
+    from graspsim2d.geometry import drawn_length
+
+    space, concepts, _, sc = setup
+    straight = concepts["baseline_paddle"].make(space)
+    assert drawn_length(build_finger(straight, sc.keep_out, sc.closed_limit)) == pytest.approx(straight.finger_reach)
+    cranked = concepts["cranked_flat"].make(space)
+    assert cranked.crank_offset > 0
+    f = build_finger(cranked, sc.keep_out, sc.closed_limit)
+    assert drawn_length(f) == pytest.approx(cranked.finger_reach + cranked.finger_thickness / 4)
 
 
 def test_fingers_are_geared_one_to_one(setup):

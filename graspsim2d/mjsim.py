@@ -656,7 +656,8 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
         "margins": {k: float(min(v, 99.0)) for k, v in margins.items()},
     }
     if dropped:
-        metrics["margins"] = {"slip": 0.0}
+        # the other margins cover the run up to the drop
+        metrics["margins"] = {**metrics["margins"], "slip": 0.0}
         return SimResult(design, obj.id, False, "dropped", metrics, trace, depth * 1e3)
     worst = min(margins, key=margins.get)
     passed = margins[worst] >= 1.0

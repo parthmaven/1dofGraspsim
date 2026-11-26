@@ -617,6 +617,13 @@ def widest_opening(f: Finger, ko: KeepOut, step: float = math.radians(1.0)) -> t
     return top, "the platform root (3D)" if math.isfinite(ko.root_clear[1]) else ""
 
 
+def drawn_length(f: Finger) -> float:
+    """How far (mm) the finger as drawn, body and pads, reaches ahead of the pivot line. A cranked
+    beam's distal piece runs past finger_reach by a quarter of its thickness."""
+    pts = [b.poly for b in f.body] + [p.outline() for p in f.pads]
+    return float(max(np.asarray(P)[:, 0].max() for P in pts))
+
+
 def _region_gap(solid, region, phi: float, pivot_x: float) -> float:
     """Gap (mm) from the finger-local `solid` to a gripper-frame region at opening `phi`;
     an overlap counts as minus the square root of its area. Holes in the region are ignored."""
