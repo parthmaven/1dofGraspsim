@@ -371,9 +371,14 @@ class SearchRun:
                 tasks.append((f["design"], oid, depth))
         t0 = time.perf_counter()
         res = list(pool.map(_simulate_task, tasks, chunksize=1))
-        self.log(f"   dynamic check done: {len(res)} runs in {time.perf_counter() - t0:.0f}s")
+        unscored = [r for r in res if r["passed"] is None]
+        rerun = sum(r["metrics"].get("resets", 0) > 0 for r in res) - len(unscored)
+        self.log(f"   dynamic check done: {len(res)} runs in {time.perf_counter() - t0:.0f}s"
+                 f" ({rerun} rerun after a reset, {len(unscored)} unscored: blew up at every timestep)")
         for r, (dd, _, _) in zip(res, tasks):
             r["design_name"] = dd["label"]
+        for r in unscored:
+            self.log(f"   flagged: {r['design_name']} is unscored on {r['object_id']}")
         return res
 
     # -- step 4
@@ -412,9 +417,12 @@ class SearchRun:
             fz = build_finger(GripperDesign.from_dict(f["design"]), self.sc.keep_out, self.sc.closed_limit)
             wide, wide_by = widest_opening(fz, self.sc.keep_out) if self.sc.keep_out else (math.nan, "")
             row = table.get(f["name"], {})
-            n_pass = sum(1 for o in ids if row.get(o, {}).get("passed"))
-            worst = min((min(row[o]["score"], 2.0) if row.get(o, {}).get("passed") else 0.0) for o in ids) if row else 0.0
-            sim_scores = [min(row.get(o, {}).get("score", 0.0), 2.0) if row.get(o, {}).get("passed") else min(row.get(o, {}).get("score", 0.0), 0.99) for o in ids]
+            # a run left unscored (MuJoCo blew up at every timestep) is neither a pass nor a fail
+            unscored = [o for o in ids if o in row and row[o]["passed"] is None]
+            scored = [o for o in ids if o not in unscored]
+            n_pass = sum(1 for o in scored if row.get(o, {}).get("passed"))
+            worst = min((min(row[o]["score"], 2.0) if row.get(o, {}).get("passed") else 0.0) for o in scored) if row and scored else 0.0
+            sim_scores = [min(row.get(o, {}).get("score", 0.0), 2.0) if row.get(o, {}).get("passed") else min(row.get(o, {}).get("score", 0.0), 0.99) for o in scored]
             designs.append(
                 {
                     "name": f["name"],
@@ -424,7 +432,10 @@ class SearchRun:
                     "analytic_J": f["J"],
                     "analytic_pass": f["n_pass"],
                     "sim_pass": n_pass,
-                    "sim_J": objective_from_scores(sim_scores, self.cfg.min_margin_weight),
+                    "sim_fail": len(scored) - n_pass,
+                    "sim_unscored": len(unscored),
+                    "unscored": unscored,
+                    "sim_J": objective_from_scores(sim_scores, self.cfg.min_margin_weight) if sim_scores else 0.0,
                     "sim_worst": worst,
                     "meet_deg": math.degrees(fz.phi_meet),
                     "drawn_length_mm": drawn_length(fz),
@@ -439,7 +450,7 @@ class SearchRun:
                     "results": {o: _slim(row.get(o)) for o in ids},
                 }
             )
-        designs.sort(key=lambda d: (-d["sim_pass"], -d["sim_J"], -d["analytic_J"]))
+        designs.sort(key=_rank)
         return {
             "round": rnd,
             "concepts": {
@@ -466,11 +477,11 @@ class SearchRun:
         for r in rounds:
             for name, whys in r.get("carried", {}).items():
                 by_name[name]["why"] = by_name[name]["why"] + [f"{w} (round {r['round']}, no better design found)" for w in whys]
-        all_designs.sort(key=lambda d: (-d["sim_pass"], -d["sim_J"], -d["analytic_J"]))
+        all_designs.sort(key=_rank)
         best = all_designs[0]
         per_object = {}
         for o in ids:
-            cands = [(d, d["results"][o]) for d in all_designs if d["results"].get(o)]
+            cands = [(d, d["results"][o]) for d in all_designs if d["results"].get(o) and d["results"][o]["passed"] is not None]
             cands.sort(key=lambda t: (-(1 if t[1]["passed"] else 0), -t[1]["score"]))
             if cands:
                 d, r = cands[0]
@@ -484,10 +495,17 @@ class SearchRun:
             "all_rounder": best["name"],
             "per_object": per_object,
             "best_by_concept": best_by_concept,
+            "flagged": {d["name"]: d["unscored"] for d in all_designs if d["unscored"]},
             "designs": {d["name"]: d for d in all_designs},
             "ranking": [d["name"] for d in all_designs],
             "rounds": [{k: v for k, v in r.items() if k != "designs"} | {"ranking": [d["name"] for d in r["designs"]]} for r in rounds],
         }
+
+
+def _rank(d: dict[str, Any]) -> tuple[float, ...]:
+    """Fewest fails in the dynamic check, then most passes, then the higher dynamic and analytic J.
+    An unscored run counts as neither, so it never ranks a design down as a fail would."""
+    return (d["sim_fail"], -d["sim_pass"], -d["sim_J"], -d["analytic_J"])
 
 
 def _evaluate_local(pool: ProcessPoolExecutor, cname: str, x: np.ndarray) -> dict[str, Any]:
@@ -535,6 +553,8 @@ def _slim(r: dict[str, Any] | None) -> dict[str, Any] | None:
         "grip_N": m.get("grip_N"),
         "friction_use": m.get("friction_use"),
         "closing_impact_pressure_kPa": m.get("closing_impact_pressure_kPa"),
+        "resets": m.get("resets"),
+        "timestep_s": m.get("timestep_s"),
         "analytic_score": r["analytic_score"],
         "analytic_limiting": r["analytic_limiting"],
         "analytic_margins": r["analytic_margins"],

@@ -377,6 +377,106 @@ def test_dropped_runs_keep_every_margin(setup):
     assert m["panel"] == pytest.approx(lib.by_id("hbo_28oz").unsupported_force / r.metrics["panel_force_N"])
 
 
+def test_a_run_that_resets_is_flagged_and_rerun(setup, monkeypatch):
+    from graspsim2d import mjsim
+
+    space, concepts, lib, sc = setup
+    d, o = concepts["self_aligning"].make(space), lib.by_id("mini_1oz")
+    depth = solve_grip(d, o, sc).info["insertion_mm"] / 1e3
+    ref = mjsim.simulate(d, o, sc, depth=depth, record=False)
+    assert ref.passed and ref.metrics["resets"] == 0 and not ref.blowups
+
+    step, seen = mjsim.mujoco.mj_step, {}
+
+    def reset_once(m, dd):
+        seen["autoreset_off"] = bool(m.opt.disableflags & int(mjsim.mujoco.mjtDisableBit.mjDSBL_AUTORESET))
+        if dd.time >= 0.2 and "reset" not in seen:
+            seen["reset"] = True
+            mjsim.mujoco.mj_resetData(m, dd)  # what MuJoCo's auto-reset does to a run that blows up
+        step(m, dd)
+
+    monkeypatch.setattr(mjsim.mujoco, "mj_step", reset_once)
+    r = mjsim.simulate(d, o, sc, depth=depth, record=False)
+    dt = sc.sim["timestep_s"]
+    assert seen["autoreset_off"]
+    assert r.metrics["resets"] == 1 and r.metrics["reset_s"] == pytest.approx(0.2, abs=1e-3)
+    assert r.blowups == [{"t_s": pytest.approx(0.2, abs=1e-3), "phase": "close", "timestep_s": pytest.approx(dt)}]
+    assert r.metrics["timestep_s"] == pytest.approx(dt / 2)
+    m, m_ref = r.metrics["margins"], ref.metrics["margins"]
+    assert r.passed and min(m, key=m.get) == min(m_ref, key=m_ref.get)
+    assert r.score == pytest.approx(ref.score, rel=0.1)
+
+
+def test_a_run_that_keeps_blowing_up_is_never_scored(setup, monkeypatch, capsys):
+    from graspsim2d import mjsim
+    from graspsim2d.cli import _passes, _print_outcome
+    from graspsim2d.simulator import MujocoSimulator, verdict
+
+    space, concepts, lib, sc = setup
+    d = concepts["baseline_paddle"].make(space).replace(finger_torque=0.25)
+    step, warned = mjsim.mujoco.mj_step, []
+
+    def blow_up(m, dd):
+        if dd.time >= 0.1:
+            dd.qvel[:] = 1e11  # past MuJoCo's bad-state limit, on every try
+        step(m, dd)
+        warned.append(any(dd.warning[w].number for w in mjsim.BAD_STATE))
+
+    monkeypatch.setattr(mjsim.mujoco, "mj_step", blow_up)
+    r = mjsim.simulate(d, lib.by_id("hbo_28oz"), sc, record=False)
+    dt = sc.sim["timestep_s"]
+    assert warned[-1]
+    assert (r.passed, r.reason, r.score, "margins" in r.metrics) == (None, "simulation went unstable", None, False)
+    assert r.metrics["resets"] == 4 and r.metrics["timestep_s"] == pytest.approx(dt / 8)
+    assert [b["timestep_s"] for b in r.blowups] == pytest.approx([dt, dt / 2, dt / 4, dt / 8])
+    assert all(b["phase"] == "close" and b["t_s"] == pytest.approx(0.1, abs=1e-3) for b in r.blowups)
+    out = MujocoSimulator().run(d, lib.by_id("hbo_28oz"), sc).to_dict()
+    assert (out["passed"], out["score"], verdict(out)) == (None, None, "UNSCORED")
+    _print_outcome(out)
+    line = capsys.readouterr().out
+    assert "UNSCORED  score   n/a  simulation went unstable" in line and "flagged, not scored" in line
+    assert _passes([out, {**out, "passed": True}, {**out, "passed": False}]) == "1/2 scored, 1 unscored (blew up at every timestep)"
+
+
+def test_an_unscored_run_is_counted_apart_never_as_a_fail(tmp_path, setup, monkeypatch):
+    from graspsim2d import sweep
+    from graspsim2d.cli import CONFIG_FILES
+    from graspsim2d.mjsim import UNSTABLE
+    from graspsim2d.search import SearchConfig, SearchRun, objective_from_scores
+
+    space, concepts, lib, sc = setup
+    base = concepts["baseline_paddle"].make(space)
+
+    def run(oid, passed, score, reason=""):
+        return {"object_id": oid, "passed": passed, "score": score, "reason": reason, "limiting": reason or "hold",
+                "metrics": {} if passed is None else {"margins": {"hold": score}},
+                "analytic_score": 1.0, "analytic_limiting": "hold", "analytic_margins": {"hold": 1.0}}
+
+    rows = [{"point": 0, **run("a", True, 1.4)}, {"point": 0, **run("b", None, None, UNSTABLE)},
+            {"point": 0, **run("c", False, 0.6, "hold margin 0.60")}]
+    monkeypatch.setattr(sweep, "run_batch", lambda *a, **k: rows)
+    (s,) = sweep.run_sweep(base, [("finger_torque", [3.0])], ["a", "b", "c"], {"objects": "", "scenario": ""})["summary"]
+    assert (s["n_pass"], s["n_unscored"], s["n_objects"], s["worst_object"]) == (1, 1, 3, "c")
+    assert s["J"] == pytest.approx(objective_from_scores([1.4, 0.6], 0.25))
+
+    # "flagged" is unscored on the object that "steady" fails, and both pass the rest
+    search = SearchRun({k: str(CFG / v) for k, v in CONFIG_FILES.items()}, tmp_path, SearchConfig(), log=lambda s: None)
+    search._carried = {}
+    ids = search.lib.ids()
+    x = ids[0]
+    fin = [{"name": n, "concept": "baseline_paddle", "why": [n], "design": dict(base.to_dict(), label=n), "J": 5.0, "n_pass": 3}
+           for n in ("steady", "flagged")]
+    dyn = [dict(run(o, True, 1.5), design_name=n) for n in ("steady", "flagged") for o in ids[1:]]
+    dyn += [dict(run(x, False, 0.5, "hold margin 0.50"), design_name="steady"), dict(run(x, None, None, UNSTABLE), design_name="flagged")]
+    rnd = search._summarise_round(1, {}, {}, fin, dyn, {})
+    by = {d["name"]: d for d in rnd["designs"]}
+    tally = lambda d: (d["sim_pass"], d["sim_fail"], d["sim_unscored"], d["unscored"])
+    assert tally(by["flagged"]) == (len(ids) - 1, 0, 1, [x]) and tally(by["steady"]) == (len(ids) - 1, 1, 0, [])
+    final = search._final([rnd])
+    assert final["ranking"] == ["flagged", "steady"] and final["flagged"] == {"flagged": [x]}
+    assert final["per_object"][x]["design"] == "steady"
+
+
 def test_drawn_length_includes_the_cranked_tip(setup):
     from graspsim2d.geometry import drawn_length
 

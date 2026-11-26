@@ -45,6 +45,10 @@ TABLE_FRICTION = 0.4
 DROP_DISTANCE = 0.02  # m of slip counted as a drop
 BODY_CONTACT_LIMIT = 1.0  # N: load the bare finger body and pad mounts may put on the object
 START_MARGIN = math.radians(1.0)  # beyond the approach opening, where each grasp starts
+BAD_STATE = tuple(int(w) for w in (mujoco.mjtWarning.mjWARN_BADQPOS, mujoco.mjtWarning.mjWARN_BADQVEL,
+                                   mujoco.mjtWarning.mjWARN_BADQACC))
+RERUN_STEPS = (2, 4, 8)  # a run that blows up is rerun at the timestep divided by each of these in turn
+UNSTABLE = "simulation went unstable"
 
 
 @dataclass
@@ -60,15 +64,18 @@ class _Element:
 class SimResult:
     design: GripperDesign
     object_id: str
-    passed: bool
+    passed: bool | None  # None: not scored, because the run blew up at every timestep tried
     reason: str
     metrics: dict[str, float] = field(default_factory=dict)
     trace: dict[str, np.ndarray] = field(default_factory=dict)
     insertion_mm: float = 0.0
+    blowups: list[dict[str, Any]] = field(default_factory=list)  # each try that blew up: time, phase, timestep
 
     @property
-    def score(self) -> float:
-        """Smallest pass-criterion margin (>= 1 passes)."""
+    def score(self) -> float | None:
+        """Smallest pass-criterion margin (>= 1 passes); None for a run that isn't scored."""
+        if self.passed is None:
+            return None
         m = self.metrics.get("margins", {})
         return float(min(m.values())) if m else 0.0
 
@@ -421,6 +428,13 @@ class Trajectory:
         self.ax = sc.lateral_accel / (wx * wx) if wx > 0 else 0.0
         self.az = sc.vertical_accel / (wz * wz) if wz > 0 else 0.0
 
+    def phase(self, t: float) -> str:
+        for name, end in (("close", self.t_close), ("settle", self.t_settle), ("lift", self.t_lift), ("hold", self.t_hold),
+                          ("shake", self.t_shake)):
+            if t < end:
+                return name
+        return "final hold"
+
     def __call__(self, t: float) -> tuple[float, float, float, float]:
         sc = self.sc
         x = z = vx = vz = 0.0
@@ -485,7 +499,13 @@ def _body_contact(data: mujoco.MjData, is_body: np.ndarray, is_obj: np.ndarray) 
 
 def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float | None = None,
              finger: Finger | None = None, record: bool = True) -> SimResult:
-    """Close, settle, release (sheets), lift, hold, shake, hold; then score."""
+    """Close, settle, release (sheets), lift, hold, shake, hold; then score.
+
+    A run that blows up is never scored (test conditions 2.15). It is flagged (metrics `resets`
+    and `reset_s`, and `blowups`) and rerun at a finer timestep, a half, a quarter and then an
+    eighth of the scenario's, with every time constant kept; `timestep_s` records the step of the
+    run that was scored. If every try blows up, the run is left unscored: `passed` and `score` are
+    None, the reason is "simulation went unstable", and there are no margins."""
     f = finger or build_finger(design, sc.keep_out, sc.closed_limit)
     if not f.feasible:
         return SimResult(design, obj.id, False, "infeasible geometry")
@@ -494,6 +514,27 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
         depth = an.info.get("insertion_mm", sc.for_kind(obj.kind).insertion_depth * 1e3) / 1e3
     xml, meta = build_model(design, obj, sc, depth, finger=f)
     model = mujoco.MjModel.from_xml_string(xml)
+    # Otherwise MuJoCo resets a run that blows up to t = 0 from qpos0 and carries on, with finite
+    # accelerations, so the run finishes with a meaningless verdict.
+    model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
+    dt = model.opt.timestep
+    blowups: list[dict[str, Any]] = []
+    for div in (1, *RERUN_STEPS):
+        model.opt.timestep = dt / div
+        r = _run(model, meta, design, obj, sc, f, depth, record)
+        if r.reason != UNSTABLE:
+            break
+        blowups += r.blowups
+    r.blowups = blowups
+    r.metrics.update(resets=float(len(blowups)), timestep_s=float(model.opt.timestep))
+    if blowups:
+        r.metrics["reset_s"] = blowups[0]["t_s"]
+    return r
+
+
+def _run(model: mujoco.MjModel, meta: dict[str, Any], design: GripperDesign, obj: GraspObject, sc: Scenario, f: Finger,
+         depth: float, record: bool) -> SimResult:
+    """One try at the model's current timestep; stops at the first bad state."""
     data = mujoco.MjData(model)
     jid = lambda n: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)
     qadr = lambda n: model.jnt_qposadr[jid(n)]
@@ -529,6 +570,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     dt = model.opt.timestep
     n_steps = int(math.ceil(traj.t_end / dt))
     rec_every = max(int(round(1.0 / (float(sc.sim.get("record_hz", 200)) * dt))), 1)
+    contact_every = max(int(round(1e-3 / dt)), 1)  # contact sums every 1 ms
     tr: dict[str, list[float]] = {k: [] for k in ("t", "base_x", "base_z", "phi", "rel_x", "rel_z", "rel_th", "grip_N", "p_max", "hinge_M",
                                                    "friction_use")}
 
@@ -544,7 +586,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     body_peak = 0.0
     grip_settle = 0.0
     released = False
-    unstable = False
+    unstable_s = math.nan
     p_grip_local = None
 
     def grip_point_rel() -> np.ndarray:
@@ -565,8 +607,9 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
             data.eq_active[eq] = 0
             released = True
         mujoco.mj_step(model, data)
-        if not np.isfinite(data.qacc).all() or abs(data.qpos[a_jR]) > 3.0:
-            unstable = True
+        if (data.time < t or any(data.warning[w].number for w in BAD_STATE)
+                or not np.isfinite(data.qacc).all() or abs(data.qpos[a_jR]) > 3.0):
+            unstable_s = t
             break
         q = data.qpos[el_adr]
         force = el_k * np.maximum(-q, 0.0)
@@ -599,7 +642,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
             rot_peak = max(rot_peak, abs(float(data.qpos[a_oth] - ref_th)))
             if len(hinge_adr):
                 crease_peak = max(crease_peak, float(np.max(np.abs(hinge_k * data.qpos[hinge_adr]))))
-            if i % 10 == 0:
+            if i % contact_every == 0:
                 fric_peak = max(fric_peak, _friction_use(data, geom_side, is_obj))
                 body_peak = max(body_peak, _body_contact(data, is_body, is_obj))
             if slip_peak > DROP_DISTANCE:
@@ -625,8 +668,9 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
 
     trace = {k: np.asarray(v) for k, v in tr.items()}
     trace["close_s"] = np.array([traj.t_close])
-    if unstable:
-        return SimResult(design, obj.id, False, "simulation went unstable", {}, trace, depth * 1e3)
+    if math.isfinite(unstable_s):
+        blowup = {"t_s": unstable_s, "phase": traj.phase(unstable_s), "timestep_s": dt}
+        return SimResult(design, obj.id, None, UNSTABLE, {"unstable_s": unstable_s}, trace, depth * 1e3, [blowup])
     if ref is None:
         return SimResult(design, obj.id, False, "never reached the lift", {}, trace, depth * 1e3)
 
