@@ -220,13 +220,18 @@ boxes:
 # (net mass / density / footprint), then to fill_fraction; a blank
 # com_height_mm uses the carton-plus-contents estimate; a blank box_mass_g
 # uses the carton blank area times the board grammage. A relative file is
-# relative to this YAML file. Rows with confidence `placeholder` are labelled
-# so. The General Mills table holds one placeholder row until the sourced
-# table replaces it.
+# relative to this YAML file. A row's id is id_prefix plus its UPC unless
+# `names` (keyed by UPC) gives a short id and label. Rows with confidence
+# `placeholder` are labelled so. general_mills_cereal_boxes.csv is a copy of
+# the General Mills catalog (docs/general-mills-cereal-boxes.csv in the
+# project store), which so far holds Cheerios Family Size: 94 mm deep, fill
+# and centre of mass modelled from its bulk density.
 box_tables:
   - file: general_mills_cereal_boxes.csv
     material: cereal_carton_flakes
     id_prefix: gm_
+    names:
+      "016000170032": {id: cheerios_family_18oz, label: "Cheerios Family Size 18 oz"}
 
 # Sheet size is an assumption: 400 mm hanging below the pinched edge, 400 mm wide.
 sheet_defaults:

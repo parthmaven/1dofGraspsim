@@ -11,7 +11,8 @@
    angle, crown, partial overlap with the box top and the pad's own pivot
    (self-aligning pads) all fall out of one calculation.
 4. Margins against the lift and shake loads: friction hold (including the
-   jaw-opening moment of the friction force and squeeze-out at a box corner),
+   jaw-opening moment of the friction force and the squeeze-out of a box by a
+   tilted pad face),
    pitch moment, peak pressure, unsupported-panel force, sheet creasing and
    pad rotation. Every margin must be >= 1 for a pass.
 """
@@ -36,6 +37,7 @@ FIT_CLEARANCE = 1.0  # mm
 TABLE_CLEARANCE = 2.0  # mm
 BODY_TOLERANCE = 0.0  # mm of finger-body interference ignored; the dynamic check treats any overlap as rigid contact
 MAX_PAD_STRAIN = 0.8
+TIP_BAND = 0.01  # mm above the lowest point of the finger counted as its tip
 
 
 @dataclass
@@ -95,6 +97,27 @@ def registered_depth(f: Finger, obj: GraspObject, sc: Scenario) -> float:
     pad = f.pad_for(obj.kind)
     u_prox = pad.face_u - (pad.length / 2) * math.cos(pad.angle)
     return (f.design.finger_reach - u_prox) / 1000.0 + pres.clearance
+
+
+def tip_half_gap(f: Finger, phi: float) -> float:
+    """Distance (mm) from the jaw centreline to the inside of the fingertip at jaw angle phi."""
+    polys = finger_polys(f, phi)
+    z_low = min(float(P[:, 1].min()) for P in polys)
+    return band_min_x(polys, z_low, z_low + TIP_BAND)
+
+
+def pass_opening(f: Finger, obj: GraspObject, sc: Scenario) -> float:
+    """Smallest jaw angle (rad) at which the object passes between the fingertips, or nan if it never does."""
+    half = obj.thickness * 1000.0 / 2
+    lo, hi = sc.closed_limit, math.radians(f.design.max_opening)
+    if tip_half_gap(f, hi) < half:
+        return math.nan
+    if tip_half_gap(f, lo) >= half:
+        return lo
+    for _ in range(30):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (lo, mid) if tip_half_gap(f, mid) >= half else (mid, hi)
+    return hi
 
 
 def _depth_limits(f: Finger, obj: GraspObject, sc: Scenario) -> float:
@@ -181,6 +204,7 @@ class _Load:
     fx: np.ndarray  # N, force on the pad (+x pushes the right finger open)
     owner: np.ndarray  # pad index per sample
     pad_strain: np.ndarray
+    slope: np.ndarray  # dx/dz of the pad face per sample; < 0 where the face opens toward the fingertips
 
     @property
     def N(self) -> float:
@@ -191,7 +215,7 @@ class _Load:
 
 
 def _load_at(f: Finger, models: list[_PadModel], phi: float, x_face: float, z_lo: float, z_hi: float) -> _Load:
-    zs, ps, fs, own, st = [], [], [], [], []
+    zs, ps, fs, own, st, sl = [], [], [], [], [], []
     for i, m in enumerate(models):
         v = to_view(m.pts, phi, f.pivot_x)
         inside = (v[:, 1] >= z_lo) & (v[:, 1] <= z_hi)
@@ -202,8 +226,10 @@ def _load_at(f: Finger, models: list[_PadModel], phi: float, x_face: float, z_lo
         fs.append(p * m.w * m.ds)
         own.append(np.full(len(p), i))
         st.append(p / m.k_pad / (m.thick * 1e-3))
+        dz = np.gradient(v[:, 1])
+        sl.append(np.gradient(v[:, 0]) / np.where(np.abs(dz) < 1e-9, 1e-9, dz))
     cat = np.concatenate
-    return _Load(phi, models, cat(zs), cat(ps), cat(fs), cat(own), cat(st))
+    return _Load(phi, models, cat(zs), cat(ps), cat(fs), cat(own), cat(st), cat(sl))
 
 
 def _align_pivoting(f: Finger, base: list[_PadModel], phi: float, x_face: float, z_lo: float, z_hi: float) -> _Load:
@@ -356,19 +382,19 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
     used_pads = tuple(ld.models[i].pad for i in used)
     b = min(ld.models[i].w for i in used)  # narrowest loaded contact carries the moment
 
-    # Box-corner contact: the pressure peaks at the top edge of the box and the
-    # pad face there is tilted, so the reaction follows the pad normal and
-    # pushes the object out of the jaw (lit review 4.4).
-    f_sq = 0.0
+    # Squeeze-out (lit review 4.4): where the pad face is tilted to the box
+    # side, the contact normal tilts by the box's share of the overlap. At the
+    # top edge, which meets the pad face edge-on, that share is all of it; on
+    # the side below it is the pad-and-box series split. A face that opens
+    # toward the fingertips pushes the box out of the jaw; one that closes
+    # toward them gets no credit for wedging it in.
+    f_sq, tilt = 0.0, math.nan
     if obj.kind == "box":
-        corner = loaded & (ld.z >= z_top - CORNER_ZONE)
-        if corner.any():
-            top_i = int(np.argmax(np.where(loaded, ld.z, -np.inf)))
-            if ld.p[top_i] >= 0.6 * p_max:
-                pad = ld.models[ld.owner[top_i]].pad
-                tv = to_view(np.array([[0.0, 0.0], pad.tangent]), phi, 0.0)
-                tv = tv[1] - tv[0]
-                f_sq = float(ld.fx[corner].sum()) * abs(tv[0]) / max(abs(tv[1]), 1e-9)
+        k_pad = np.concatenate([m.k_pad for m in ld.models])
+        share = np.where(ld.z >= z_top - CORNER_ZONE, 1.0, k_pad / (k_pad + obj.material.k_surface))
+        f_sq = max(0.0, float(np.sum(ld.fx * share * -ld.slope)))
+        top_i = int(np.argmax(np.where(loaded, ld.z, -np.inf)))
+        tilt = math.atan(abs(float(ld.slope[top_i])))
 
     m, mu = obj.mass, obj.material.friction * sc.friction_scale
     ax, az = sc.lateral_accel, sc.vertical_accel
@@ -432,6 +458,8 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
         "panel_force_N": f_panel,
         "arm_mm": arm * 1e3,
         "squeeze_out_N": f_sq,
+        "contact_face_tilt_deg": math.degrees(tilt),  # pad face to the box side at the topmost loaded point
+        "squeeze_out_ratio": f_sq / N,  # friction coefficient the squeeze-out alone needs; tan(tilt) for a contact at the box's top edge only
         "pitch_demand_Nm": m_dem,
         "pitch_capacity_Nm": m_cap,
         "pads": ",".join(p.name for p in used_pads),

@@ -254,15 +254,20 @@ def read_box_table(path: str | Path) -> list[dict[str, str]]:
 
 
 def boxes_from_table(path: str | Path, defaults: Mapping[str, Any], materials: Mapping[str, Material]) -> list[GraspObject]:
-    """One box per CSV row, on top of `defaults` (box_defaults plus the table entry)."""
+    """One box per CSV row, on top of `defaults` (box_defaults plus the table entry).
+
+    A row's id is `id_prefix` plus its UPC (or its title when there is none);
+    `names`, keyed by UPC, gives rows a short id and label instead."""
     out = []
     prefix = str(defaults.get("id_prefix", ""))
+    names = {str(k): v for k, v in (defaults.get("names") or {}).items()}
     for row in read_box_table(path):
         title = " ".join(x for x in (row["product_title"], row.get("size_label", "")) if x)
-        e: dict[str, Any] = {k: v for k, v in defaults.items() if k not in ("file", "id_prefix", "enabled")}
-        e["id"] = prefix + _slug(title)
+        e: dict[str, Any] = {k: v for k, v in defaults.items() if k not in ("file", "id_prefix", "enabled", "names")}
+        name = names.get(row.get("upc", ""), {})
+        e["id"] = prefix + str(name.get("id") or row.get("upc") or _slug(title))
         conf = row.get("confidence", "")
-        e["label"] = title + (" (placeholder)" if conf.lower() == "placeholder" else "")
+        e["label"] = str(name.get("label") or title) + (" (placeholder)" if conf.lower() == "placeholder" else "")
         for col, key in (("net_mass_g", "net_mass_g"), ("box_mass_g", "packaging_mass_g"), ("height_mm", "height_mm"),
                          ("width_mm", "width_mm"), ("depth_mm", "depth_mm"), ("fill_height_mm", "fill_height_mm"),
                          ("com_height_mm", "com_height_mm"), ("bulk_density_g_cm3", "bulk_density_g_cm3")):

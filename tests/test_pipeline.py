@@ -1,3 +1,4 @@
+import dataclasses
 import math
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import numpy as np
 import pytest
 import yaml
 
-from graspsim2d.analytic import band_min_x, solve_grip
+from graspsim2d.analytic import CORNER_ZONE, band_min_x, pass_opening, solve_grip, tip_half_gap
 from graspsim2d.geometry import build_finger, to_view
 from graspsim2d.objects import load_objects
 from graspsim2d.pads import compression_modulus, shore_a_to_E
@@ -106,16 +107,20 @@ def _objects_with(tmp_path, box_defaults=None, box_tables=None):
 
 
 def test_box_table_rows_become_boxes(tmp_path, setup):
-    gm = setup[2].by_id("gm_cheerios_family_size_18_oz")
-    assert gm.kind == "box" and gm.label.endswith("(placeholder)") and gm.confidence == "placeholder"
-    assert gm.fill_height == pytest.approx(0.289) and gm.com_height == pytest.approx(0.1506)
-    assert gm.headspace == pytest.approx(0.3613 - 0.289) and gm.mass == pytest.approx(0.6143)
+    gm = setup[2].by_id("gm_cheerios_family_18oz")
+    assert gm.kind == "box" and gm.label == "Cheerios Family Size 18 oz"
+    assert (gm.thickness, gm.width, gm.height) == pytest.approx((0.094, 0.196, 0.325))
+    assert gm.fill_height == pytest.approx(0.234) and gm.com_height == pytest.approx(0.126)
+    assert gm.headspace == pytest.approx(0.325 - 0.234) and gm.mass == pytest.approx(0.626)
     # Blank fill height: bulk density over the footprint, then fill_fraction; blank CoM: shell plus contents.
-    (tmp_path / "t.csv").write_text(BOX_COLUMNS + "\nTest,A,,300,60,300,200,50,,,0.15,x,low\nTest,B,,300,60,300,200,50,,,,x,low\n")
+    # Without `names`, a row's id is the prefix plus its UPC, else its title.
+    (tmp_path / "t.csv").write_text(BOX_COLUMNS + "\nTest,A,,300,60,300,200,50,,,0.15,x,low"
+                                    "\nTest,B,,300,60,300,200,50,,,,x,low\nTest,C,0123,300,60,300,200,50,,,,x,placeholder\n")
     lib = _objects_with(tmp_path, box_tables=[{"file": "t.csv", "material": "cereal_carton_flakes"}])
     a, b = lib.by_id("test_a"), lib.by_id("test_b")
     assert a.fill_height == pytest.approx(0.2)
     assert b.fill_height == pytest.approx(0.24) and b.com_height == pytest.approx((60 * 0.15 + 300 * 0.12) / 360)
+    assert lib.by_id("0123").label == "Test C (placeholder)"
     (tmp_path / "t.csv").write_text("product_title,net_mass_g,height_mm,width_mm\nTest,300,300,200\n")
     with pytest.raises(ValueError, match="depth_mm"):
         load_objects(tmp_path / "objects.yaml")
@@ -130,6 +135,36 @@ def test_box_grasp_axis_is_configurable(tmp_path, setup):
     assert wide.inertia > deep.inertia
     with pytest.raises(ValueError, match="grasp_axis"):
         _objects_with(tmp_path, box_defaults={"grasp_axis": "diagonal"})
+
+
+def test_cheerios_family_size_validation(setup):
+    """Platform finger on the 94 mm deep Cheerios Family Size box, against the CAD study in the
+    project store (docs/general-mills-cereal-boxes.md): the jaws open 17.4 deg each (94 mm tip gap)
+    to pass the box, then meet only its top edges, so the squeeze pushes the box out and holding
+    needs mu >= tan(theta): 0.36 at 20 deg per jaw, with the box top 18 mm inside the tips."""
+    space, concepts, lib, sc = setup
+    box = lib.by_id("gm_cheerios_family_18oz")
+    base = concepts["baseline_paddle"].make(space)
+    f = build_finger(base, sc.keep_out, sc.closed_limit)
+    phi = pass_opening(f, box, sc)
+    assert math.degrees(phi) == pytest.approx(17.4, abs=0.1) and 2 * tip_half_gap(f, phi) == pytest.approx(94.0)
+    # Rigid contact, as in the CAD study: the printed face (pad at 90 A, face kept where the CAD has
+    # it) on a rigid box edge. Insertion 20.8 mm puts the box top 18 mm inside the open tips.
+    stock = base.replace(pad_shore=90.0)
+    rigid = dataclasses.replace(box, material=dataclasses.replace(box.material, k_surface=1e10))
+    r = solve_grip(stock, rigid, sc, depth=0.0208)
+    assert r.ok and r.info["pads"] == "tab"
+    assert r.info["phi_touch_deg"] == pytest.approx(20.0, abs=0.1)
+    assert r.info["cop_below_top_mm"] < 1.0 and r.info["contact_length_mm"] < CORNER_ZONE
+    tilt = r.info["contact_face_tilt_deg"]
+    assert tilt == pytest.approx(20.0, abs=0.3)
+    assert r.info["squeeze_out_ratio"] == pytest.approx(math.tan(math.radians(tilt)), abs=0.005)
+    assert r.info["squeeze_out_ratio"] == pytest.approx(0.36, abs=0.01)
+    # With the modelled box wall, the screen's own pick puts the corner on the main face, where the
+    # squeeze needs more friction than the carton's 0.5, so the hold fails.
+    r = solve_grip(base, box, sc)
+    assert r.ok and r.info["pads"] == "paddle" and r.margins["hold"] < 1.0
+    assert r.info["squeeze_out_ratio"] > box.material.friction
 
 
 def test_force_balance_of_the_analytic_grip(setup):
@@ -279,4 +314,4 @@ def test_run_directory_keeps_its_box_tables(tmp_path):
     paths = {k: str(CFG / v) for k, v in CONFIG_FILES.items()} | {"objects": str(tmp_path / "objects.yaml")}
     save_inputs(tmp_path / "run", paths)
     assert yaml.safe_load((tmp_path / "run" / "objects.yaml").read_text())["box_tables"][0]["file"] == "general_mills_cereal_boxes.csv"
-    assert "gm_cheerios_family_size_18_oz" in load_objects(tmp_path / "run" / "objects.yaml").ids()
+    assert "gm_cheerios_family_18oz" in load_objects(tmp_path / "run" / "objects.yaml").ids()
