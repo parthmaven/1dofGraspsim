@@ -206,7 +206,10 @@ class SearchRun:
                 screen = self._screen_round(pool, rnd, seeds)
                 per_obj = self._per_object(pool, rnd, screen)
                 finalists = self._finalists(screen, per_obj, rnd)
-                self.log(f"   dynamic check: {len(finalists)} designs x {len(self.lib.objects)} objects")
+                self.log(
+                    f"   dynamic check: {len(finalists)} designs x {len(self.lib.objects)} objects"
+                    + (f" ({len(self._carried)} earlier designs reselected, not rerun)" if self._carried else "")
+                )
                 dyn = self._dynamic(pool, finalists)
             corrections = self._learn(dyn, corrections)
             summary = self._summarise_round(rnd, screen, per_obj, finalists, dyn, corrections)
@@ -325,11 +328,18 @@ class SearchRun:
 
     # -- step 3
     def _finalists(self, screen: dict[str, Any], per_obj: dict[str, Any], rnd: int) -> list[dict[str, Any]]:
+        """Distinct designs for the dynamic check. A design already checked in an
+        earlier round is not run again; its new reasons go to `self._carried`."""
         fin: list[dict[str, Any]] = []
         seen = set()
+        checked: dict[tuple, str] = getattr(self, "_checked", {})
+        self._carried: dict[str, list[str]] = {}
 
         def add(e: dict[str, Any], why: str) -> None:
             key = tuple(np.round(e["x"], 4)) + (e["concept"],)
+            if key in checked:
+                self._carried.setdefault(checked[key], []).append(why)
+                return
             if key in seen:
                 for f in fin:
                     if tuple(np.round(f["x"], 4)) + (f["concept"],) == key:
@@ -347,6 +357,9 @@ class SearchRun:
                 add(e, f"{cname} top {i + 1}")
         for oid, p in per_obj.items():
             add(p["entry"], f"best for {oid}")
+        for f in fin:
+            checked[tuple(np.round(f["x"], 4)) + (f["concept"],)] = f["name"]
+        self._checked = checked
         return fin
 
     def _dynamic(self, pool: ProcessPoolExecutor, finalists: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -429,12 +442,17 @@ class SearchRun:
             },
             "per_object_analytic": {o: {"score": p["score"], "concept": p["entry"]["concept"]} for o, p in per_obj.items()},
             "designs": designs,
+            "carried": dict(self._carried),
             "corrections": corrections,
         }
 
     def _final(self, rounds: list[dict[str, Any]]) -> dict[str, Any]:
         ids = self.lib.ids()
         all_designs = [d for r in rounds for d in r["designs"]]
+        by_name = {d["name"]: d for d in all_designs}
+        for r in rounds:
+            for name, whys in r.get("carried", {}).items():
+                by_name[name]["why"] = by_name[name]["why"] + [f"{w} (round {r['round']}, no better design found)" for w in whys]
         all_designs.sort(key=lambda d: (-d["sim_pass"], -d["sim_J"], -d["analytic_J"]))
         best = all_designs[0]
         per_object = {}

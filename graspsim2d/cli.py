@@ -110,10 +110,10 @@ def cmd_search(args: argparse.Namespace) -> None:
 
     paths = _paths(args)
     cfg = SearchConfig.load(paths["search"])
-    if args.rounds:
-        cfg.rounds = args.rounds
     if args.quick:
         cfg.n_lhs, cfg.de_maxiter, cfg.per_object_maxiter, cfg.finalists_per_concept, cfg.rounds = 24, 2, 2, 1, 1
+    if args.rounds:
+        cfg.rounds = args.rounds
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for k in ("design_space", "concepts", "objects", "scenario", "search"):
@@ -164,7 +164,8 @@ def make_figures(out: Path, paths: dict[str, str], log=print) -> list[Path]:
     fig_concepts(fdir / "concepts-nominal.png", concepts, space, lib, sc)
     made.append(fdir / "concepts-nominal.png")
     best = {c: GripperDesign.from_dict(result["designs"][n]["design"]) for c, n in result["best_by_concept"].items()}
-    fig_concepts(fdir / "concepts-best.png", concepts, space, lib, sc, designs=best)
+    sims = {c: result["designs"][n]["results"] for c, n in result["best_by_concept"].items()}
+    fig_concepts(fdir / "concepts-best.png", concepts, space, lib, sc, designs=best, sims=sims)
     made.append(fdir / "concepts-best.png")
     fig_objects(fdir / "object-library.png", lib)
     made.append(fdir / "object-library.png")

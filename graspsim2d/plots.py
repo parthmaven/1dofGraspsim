@@ -146,11 +146,14 @@ def _short(concept: str) -> str:
 
 
 def fig_concepts(path: Path, concepts: list[Concept], space: DesignSpace, lib: ObjectLibrary, sc: Scenario,
-                 designs: dict[str, GripperDesign] | None = None) -> None:
-    """Each concept: open, and closed on a box and on a sheet."""
+                 designs: dict[str, GripperDesign] | None = None,
+                 sims: dict[str, dict[str, Any]] | None = None) -> None:
+    """Each concept: open, and closed on a box and on a sheet. `sims` (concept ->
+    object id -> dynamic result) labels the closed panels with the MuJoCo result
+    instead of the analytic screen."""
     box = max((o for o in lib.objects if o.kind == "box"), key=lambda o: o.mass)
     sheet = next(o for o in lib.objects if o.kind == "sheet")
-    fig, axes = plt.subplots(3, len(concepts), figsize=(3.0 * len(concepts), 12))
+    fig, axes = plt.subplots(3, len(concepts), figsize=(3.0 * len(concepts), 13))
     for j, c in enumerate(concepts):
         d = (designs or {}).get(c.name) or c.make(space)
         ax = axes[0, j]
@@ -161,9 +164,12 @@ def fig_concepts(path: Path, concepts: list[Concept], space: DesignSpace, lib: O
         ax.axis("off")
         ax.set_title(f"{c.label}\nopen {d.max_opening:.0f} deg", fontsize=9)
         ax.text(0.5, -0.02, _wrap(c.idea, 38), transform=ax.transAxes, ha="center", va="top", fontsize=7)
-        draw_grasp(axes[1, j], d, box, sc, title=box.label)
-        draw_grasp(axes[2, j], d, sheet, sc, title=sheet.label)
-    fig.suptitle("Finger concepts (" + ("best first-pass design" if designs else "nominal design") + " of each)", fontsize=12)
+        for row, o in ((1, box), (2, sheet)):
+            sim = ((sims or {}).get(c.name) or {}).get(o.id)
+            draw_grasp(axes[row, j], d, o, sc, sim=sim, title=o.label, depth_mm=(sim or {}).get("insertion_mm"))
+    which = "best first-pass design" if designs else "nominal design"
+    source = "MuJoCo result" if sims else "analytic screen result"
+    fig.suptitle(f"Finger concepts ({which} of each); {source} under each closed panel", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(path, dpi=110)
     plt.close(fig)
@@ -259,26 +265,28 @@ def fig_iteration(path: Path, archive: list[dict[str, Any]], result: dict[str, A
         a1.plot(best, color=_color(c), label=_short(c))
     a1.axhline(n_objects, ls=":", color="k", lw=0.8)
     a1.text(0, n_objects + 0.1, "all objects pass (screen)", fontsize=7)
-    a1.set_xlabel("analytic evaluations (per concept, all rounds)")
-    a1.set_ylabel("best all-rounder objective J")
-    a1.set_title("Analytic search progress", fontsize=10)
+    a1.set_xlabel("archived designs per concept, in order: Latin hypercube, then the evolved population, round by round")
+    a1.set_ylabel("best all-rounder objective J (screen)")
+    a1.set_title("Analytic search progress (round 2 includes the learned corrections)", fontsize=10)
     a1.legend(fontsize=8)
     rounds = result["rounds"]
     designs = result["designs"]
     w = 0.8 / max(len(rounds), 1)
     concepts = list(CONCEPT_COLORS)
+    so_far: list[str] = []
     for k, r in enumerate(rounds):
+        so_far += r["ranking"]
         vals = []
         for c in concepts:
-            best = max((designs[n]["sim_pass"] for n in r["ranking"] if designs[n]["concept"] == c), default=0)
+            best = max((designs[n]["sim_pass"] for n in so_far if designs[n]["concept"] == c), default=0)
             vals.append(best)
         a2.bar(np.arange(len(concepts)) + k * w, vals, width=w, label=f"round {r['round']}",
                color=[_color(c) for c in concepts], alpha=0.5 + 0.5 * k / max(len(rounds) - 1, 1), ec="k")
     a2.set_xticks(np.arange(len(concepts)) + w * (len(rounds) - 1) / 2)
     a2.set_xticklabels([_short(c) for c in concepts], fontsize=8)
     a2.axhline(n_objects, ls=":", color="k", lw=0.8)
-    a2.set_ylabel("objects passed in the dynamic check (best design of the concept)")
-    a2.set_title("Dynamic check by concept and round (lighter = earlier round)", fontsize=10)
+    a2.set_ylabel("objects passed in the dynamic check\n(best design of the concept so far)")
+    a2.set_title("Dynamic check by concept, after each round (lighter = earlier round)", fontsize=10)
     fig.tight_layout()
     fig.savefig(path, dpi=110)
     plt.close(fig)
@@ -314,15 +322,17 @@ def fig_bounds(path: Path, result: dict[str, Any], space: DesignSpace) -> None:
 
 def fig_traces(path: Path, traces: dict[str, tuple[str, dict[str, np.ndarray]]], sc: Scenario) -> None:
     """Time histories from recorded dynamic runs: {object label: (design name, trace)}."""
-    keys = ["grip_N", "rel_z", "rel_th", "p_max", "hinge_M"]
-    labels = ["grip force per finger (N)", "slip of grip point (mm)", "object rotation (deg)", "peak pad pressure (kPa)",
-              "sheet bending moment at pinch (N*m)"]
-    scale = {"grip_N": 1, "rel_z": 1e3, "rel_th": 180 / math.pi, "p_max": 1e-3, "hinge_M": 1}
+    keys = ["grip_N", "rel_z", "rel_th", "friction_use", "p_max", "hinge_M"]
+    labels = ["grip force per finger (N)", "slip of grip point (mm)", "object rotation (deg)",
+              "share of available\nfriction used (worst pad)", "peak pad pressure (kPa)", "sheet bending moment at pinch (N*m)"]
+    scale = {"grip_N": 1, "rel_z": 1e3, "rel_th": 180 / math.pi, "friction_use": 1, "p_max": 1e-3, "hinge_M": 1}
     fig, axes = plt.subplots(len(keys), 1, figsize=(11, 2.1 * len(keys)), sharex=True)
     for lab, (dname, tr) in traces.items():
         if not len(tr.get("t", [])):
             continue
         for ax, k in zip(axes, keys):
+            if k not in tr and k != "rel_z":
+                continue
             if k == "rel_z":
                 y = np.hypot(tr["rel_x"], tr["rel_z"]) * 1e3
             else:

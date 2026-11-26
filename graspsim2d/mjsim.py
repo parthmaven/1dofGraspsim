@@ -499,7 +499,8 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     dt = model.opt.timestep
     n_steps = int(math.ceil(traj.t_end / dt))
     rec_every = max(int(round(1.0 / (float(sc.sim.get("record_hz", 200)) * dt))), 1)
-    tr: dict[str, list[float]] = {k: [] for k in ("t", "base_x", "base_z", "phi", "rel_x", "rel_z", "rel_th", "grip_N", "p_max", "hinge_M")}
+    tr: dict[str, list[float]] = {k: [] for k in ("t", "base_x", "base_z", "phi", "rel_x", "rel_z", "rel_th", "grip_N", "p_max", "hinge_M",
+                                                   "friction_use")}
 
     z_fill = meta["z_top"] - obj.headspace if obj.kind == "box" else -math.inf
     ref = None
@@ -581,6 +582,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
             tr["grip_N"].append(float(force[el_right].sum()))
             tr["p_max"].append(float((force / el_area).max()))
             tr["hinge_M"].append(float(np.max(np.abs(hinge_k * data.qpos[hinge_adr]))) if len(hinge_adr) else 0.0)
+            tr["friction_use"].append(_friction_use(data, geom_side, is_obj))
 
     trace = {k: np.asarray(v) for k, v in tr.items()}
     if unstable:
