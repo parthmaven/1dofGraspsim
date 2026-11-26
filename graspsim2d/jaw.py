@@ -44,7 +44,9 @@ class Face:
     kind: str  # "pad", "marked" (a stated bare contact) or "bare"
     width: float  # mm out of plane at the face's middle
     width_table: tuple[tuple[float, float], ...] | None = None
-    width_scale: float = 1.0  # 0.5 on a comb part that fills one layer
+    width_scale: float = 1.0  # 0.5 on a comb part that fills one layer and gives no width
+    # (u0, u1, width, scale) along a face that crosses comb parts: a part's own width, or the table's times the scale
+    width_runs: tuple[tuple[float, float, float | None, float], ...] | None = None
 
     @property
     def name(self) -> str:
@@ -63,6 +65,11 @@ class Face:
         return self.pad.profile is not None or self.pad.crowned
 
     def width_at(self, u: float) -> float:
+        if self.width_runs:
+            _, _, fixed, scale = min(self.width_runs, key=lambda r: max(r[0] - u, u - r[1], 0.0))
+            if fixed is not None:
+                return fixed
+            return (width_at(list(self.width_table), u) if self.width_table else self.pad.width) * scale
         if self.width_table:
             return width_at(list(self.width_table), u) * self.width_scale
         return self.width
@@ -207,16 +214,47 @@ def _marked(pad: Pad, rules: list[Mapping[str, Any]], v: Mapping[str, float]) ->
     return False
 
 
-def _layer_width(sf: SpecFinger, pad: Pad) -> tuple[float, tuple | None, float]:
-    """Width of a bare face: the part it lies on, halved where a comb part fills one layer."""
-    mid = Point(pad.face_u, pad.face_v)
-    table = tuple(sf.widths) if sf.widths else None
+def _part_rule(sf: SpecFinger, pt: Point) -> tuple[float | None, float]:
+    """(width, scale) from the part nearest a point on a face, the first part on a tie: a comb part's own width, half
+    the table's on a comb part that gives none, or the table's on the full finger."""
+    best, rule = 0.6, (None, 1.0)
     for p in sf.parts:
-        if p.layers != LAYERS and p.poly.distance(mid) < 0.6:
-            if p.width is not None:
-                return float(p.width), None, 1.0
-            return pad.width * 0.5, table, 0.5
-    return pad.width, table, 1.0
+        d = p.poly.distance(pt)
+        if d < best - 1e-6:
+            best = d
+            if p.layers == LAYERS:
+                rule = (None, 1.0)
+            else:
+                rule = (float(p.width), 1.0) if p.width is not None else (None, 0.5)
+    return rule
+
+
+def _layer_width(sf: SpecFinger, pad: Pad) -> tuple[float, tuple | None, float, tuple | None]:
+    """Width of a bare face, point by point: the comb part under each point decides it. A face that crosses parts gets
+    runs along u; one that stays on a part, or runs across u at one station, takes its middle's part."""
+    table = tuple(sf.widths) if sf.widths else None
+    # The end points sit on corners that the next part shares.
+    pts = pad.face_samples(max(9, int(pad.length / 0.25) + 1))[0][1:-1]
+    rules = [_part_rule(sf, Point(float(u), float(v))) for u, v in pts]
+    fixed, scale = _part_rule(sf, Point(pad.face_u, pad.face_v))
+    w_mid = fixed if fixed is not None else pad.width * scale
+    u = pts[:, 0]
+    if len(set(rules)) == 1 or float(np.ptp(u)) < 0.5:
+        if fixed is not None:
+            return w_mid, None, 1.0, None
+        return w_mid, table, scale, None
+    runs: list[list] = []
+    for k, r in enumerate(rules):
+        if runs and (runs[-1][2], runs[-1][3]) == r:
+            runs[-1][1] = float(u[k])
+            continue
+        if runs:
+            edge = 0.5 * (runs[-1][1] + float(u[k]))
+            runs[-1][1] = edge
+            runs.append([edge, float(u[k]), *r])
+        else:
+            runs.append([float(u[k]), float(u[k]), *r])
+    return w_mid, table, 1.0, tuple(sorted((min(a, b), max(a, b), f, s) for a, b, f, s in runs))
 
 
 def jaw_from_spec(g: SpecGripper, marks: Mapping[str, Any] | None = None, torque: float | None = None) -> Jaw:
@@ -232,8 +270,8 @@ def jaw_from_spec(g: SpecGripper, marks: Mapping[str, Any] | None = None, torque
         r = r or []
         faces = [Face(p, side, "pad", p.width) for p in sf.pads]
         for b in sf.bare:
-            w, table, scale = _layer_width(sf, b)
-            faces.append(Face(b, side, "marked" if _marked(b, r, v) else "bare", w, table, scale))
+            w, table, scale, runs = _layer_width(sf, b)
+            faces.append(Face(b, side, "marked" if _marked(b, r, v) else "bare", w, table, scale, runs))
         body = _polys(sf.body)
         bare_all = [f for f in faces if f.rigid]
         bare_marked = [f for f in faces if f.kind == "marked"]

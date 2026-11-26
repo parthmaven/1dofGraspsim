@@ -609,6 +609,31 @@ def test_batch1_specs_build_feasible_jaws(batch1):
         assert j.right.faces and all(f.width > 0 for f in j.right.faces)
 
 
+def test_batch1_comb_layers_keep_their_widths(batch1):
+    from graspsim2d.jaw import element_layout
+
+    def widths(face):
+        lay = element_layout(face, 2.0, 0.5)
+        return lay["c"][:, 0], lay["w"]
+
+    # body_width_mm already gives each comb step its half of the paddle: S5's 75 mm on both fingers, S4's thumb 70.
+    for rd in (45.0, 90.0):
+        j = batch1.get_jaw("S5", rd)
+        for side in (1, -1):
+            faces = {f.name: f for f in j.sides[side].faces}
+            for name in ("bare0", "bare1", "bare2"):
+                assert widths(faces[name])[1] == pytest.approx(75.0), (rd, side, name)
+    j = batch1.get_jaw("S4", 45.0)
+    thumb = {f.name: f for f in j.sides[-1].faces}
+    for name in ("bare1", "bare2", "bare3"):
+        assert widths(thumb[name])[1] == pytest.approx(70.0), name
+    # S4's outside floor crosses three parts, element by element: the 80 mm layer the relief leaves, half of the 97 mm
+    # station where the thumb's step sweeps past u 78, then the table's 97 and 60.
+    floor = next(f for f in j.sides[1].faces if f.name == "bare9")
+    for u, w in zip(*widths(floor)):
+        assert w == pytest.approx(80.0 if u < 78 else 48.5 if u < 82.8 else 97.0 if u < 90 else 60.0), u
+
+
 def test_batch1_screen_bed_and_depth_stop(batch1):
     from graspsim2d.screen1 import Limits, scan_box, solve
 

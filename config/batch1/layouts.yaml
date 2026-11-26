@@ -3,22 +3,25 @@
 # finger is cut away). Each rule puts the part of a finger inside a (u, v) box into one
 # half of the width, layer a or b; the rest of the finger fills both. Finger-to-finger
 # contact is checked per layer. Expressions use the spec's variables.
+# Give every rule its width: a one-layer part with none takes half of body_width_mm at its
+# stations, which is right only where body_width_mm gives both layers. The cut-away parts
+# that relief: auto adds take that half.
 S4:
   # relief: auto also cuts each finger away, in the other layer, wherever the other finger's
   # one-layer parts pass through it as the jaw closes ("the other finger is cut away there").
   relief: auto
-  # The outside finger is 80 mm wide over u 46 - 78 (spec body_width_mm): the relief that
-  # leaves the thumb's step room. The thumb's 38 mm step, 26 x 70 mm (step_length's
-  # meaning), fills the other half.
+  # The outside finger is 80 mm wide over u 46 - 78 (spec body_width_mm, already the one
+  # layer the relief leaves). The thumb's 38 mm step, 26 x 70 mm (step_length's meaning),
+  # fills the other half.
   outside:
-    - {u: [46, 78], layers: [a]}
+    - {u: [46, 78], layers: [a], width: 80}
   inside:
     - {u: [48, "48 + step_length"], v_above: 17.75, layers: [b], width: 70}
 S5:
   relief: auto
   # Each finger's step fills half the width, and the other finger is cut away there: both
-  # fingers are 75 mm wide over u 46 - 78 (spec body_width_mm).
+  # fingers are 75 mm wide over u 46 - 78 (spec body_width_mm, already the step's half).
   outside:
-    - {u: [46, 78], layers: [a]}
+    - {u: [46, 78], layers: [a], width: 75}
   inside:
-    - {u: [46, 78], layers: [b]}
+    - {u: [46, 78], layers: [b], width: 75}
