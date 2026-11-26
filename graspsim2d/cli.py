@@ -87,7 +87,8 @@ def cmd_describe(args: argparse.Namespace) -> None:
 
 def _print_outcome(r: dict) -> None:
     m = r["metrics"]
-    head = f"  {r['object_id']:18s} {'PASS' if r['passed'] else 'fail'}  score {r['score']:5.2f}"
+    verdict = "PASS" if r["passed"] else "UNSTABLE" if r["reason"] == "simulation went unstable" else "fail"
+    head = f"  {r['object_id']:18s} {verdict}  score {r['score']:5.2f}"
     if r["fidelity"] == "analytic":
         body = (f"  N {m['normal_force_N']:5.1f} N  insertion {r['insertion_mm']:5.1f} mm" if "normal_force_N" in m else "")
     else:
@@ -95,6 +96,8 @@ def _print_outcome(r: dict) -> None:
                 if "slip_mm" in m else "")
     margins = " ".join(f"{k}={v:.2f}" for k, v in r["margins"].items())
     tail = f"  ({r['seconds']:.1f} s)" if r["fidelity"] == "mujoco" else ""
+    if m.get("resets"):
+        tail += f"  [{m['resets']:.0f} reset(s) from {m['reset_s']:.3f} s; rerun at {m['timestep_s'] * 1e3:g} ms]"
     print(f"{head}{body}  {margins or r['reason']}{tail}")
 
 

@@ -423,6 +423,14 @@ so the hub notch stays open. A dropped object scores 0, and the run keeps every
 other margin measured up to the drop, with slip at 0. One run takes about 4 to
 6 s.
 
+A run that blows up is never scored. MuJoCo would reset it to t = 0 and carry
+on, so its automatic reset is off, and every step checks MuJoCo's bad-state
+warnings and whether time ran backwards. The run is flagged and rerun at half,
+then a quarter, of `timestep_s`, with every contact and joint time constant
+kept. The metrics record how many tries blew up (`resets`), when the first did
+(`reset_s`), and the timestep of the run that was scored (`timestep_s`). If all
+three blow up, the result is "simulation went unstable", with no margins.
+
 ### Search loop (`search.py`)
 
 Each round:

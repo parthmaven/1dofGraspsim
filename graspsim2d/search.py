@@ -371,7 +371,10 @@ class SearchRun:
                 tasks.append((f["design"], oid, depth))
         t0 = time.perf_counter()
         res = list(pool.map(_simulate_task, tasks, chunksize=1))
-        self.log(f"   dynamic check done: {len(res)} runs in {time.perf_counter() - t0:.0f}s")
+        rerun = sum(r["metrics"].get("resets", 0) > 0 for r in res)
+        unstable = sum(r["reason"] == "simulation went unstable" for r in res)
+        self.log(f"   dynamic check done: {len(res)} runs in {time.perf_counter() - t0:.0f}s"
+                 f" ({rerun} rerun after a reset, {unstable} still unstable)")
         for r, (dd, _, _) in zip(res, tasks):
             r["design_name"] = dd["label"]
         return res
@@ -535,6 +538,8 @@ def _slim(r: dict[str, Any] | None) -> dict[str, Any] | None:
         "grip_N": m.get("grip_N"),
         "friction_use": m.get("friction_use"),
         "closing_impact_pressure_kPa": m.get("closing_impact_pressure_kPa"),
+        "resets": m.get("resets"),
+        "timestep_s": m.get("timestep_s"),
         "analytic_score": r["analytic_score"],
         "analytic_limiting": r["analytic_limiting"],
         "analytic_margins": r["analytic_margins"],

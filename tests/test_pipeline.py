@@ -377,6 +377,59 @@ def test_dropped_runs_keep_every_margin(setup):
     assert m["panel"] == pytest.approx(lib.by_id("hbo_28oz").unsupported_force / r.metrics["panel_force_N"])
 
 
+def test_a_run_that_resets_is_flagged_and_rerun(setup, monkeypatch):
+    from graspsim2d import mjsim
+
+    space, concepts, lib, sc = setup
+    d, o = concepts["self_aligning"].make(space), lib.by_id("mini_1oz")
+    depth = solve_grip(d, o, sc).info["insertion_mm"] / 1e3
+    ref = mjsim.simulate(d, o, sc, depth=depth, record=False)
+    assert ref.passed and ref.metrics["resets"] == 0 and not ref.blowups
+
+    step, seen = mjsim.mujoco.mj_step, {}
+
+    def reset_once(m, dd):
+        seen["autoreset_off"] = bool(m.opt.disableflags & int(mjsim.mujoco.mjtDisableBit.mjDSBL_AUTORESET))
+        if dd.time >= 0.2 and "reset" not in seen:
+            seen["reset"] = True
+            mjsim.mujoco.mj_resetData(m, dd)  # what MuJoCo's auto-reset does to a run that blows up
+        step(m, dd)
+
+    monkeypatch.setattr(mjsim.mujoco, "mj_step", reset_once)
+    r = mjsim.simulate(d, o, sc, depth=depth, record=False)
+    dt = sc.sim["timestep_s"]
+    assert seen["autoreset_off"]
+    assert r.metrics["resets"] == 1 and r.metrics["reset_s"] == pytest.approx(0.2, abs=1e-3)
+    assert r.blowups == [{"t_s": pytest.approx(0.2, abs=1e-3), "phase": "close", "timestep_s": pytest.approx(dt)}]
+    assert r.metrics["timestep_s"] == pytest.approx(dt / 2)
+    m, m_ref = r.metrics["margins"], ref.metrics["margins"]
+    assert r.passed and min(m, key=m.get) == min(m_ref, key=m_ref.get)
+    assert r.score == pytest.approx(ref.score, rel=0.1)
+
+
+def test_a_run_that_keeps_blowing_up_is_never_scored(setup, monkeypatch):
+    from graspsim2d import mjsim
+
+    space, concepts, lib, sc = setup
+    d = concepts["baseline_paddle"].make(space).replace(finger_torque=0.25)
+    step, warned = mjsim.mujoco.mj_step, []
+
+    def blow_up(m, dd):
+        if dd.time >= 0.1:
+            dd.qvel[:] = 1e11  # past MuJoCo's bad-state limit, on every try
+        step(m, dd)
+        warned.append(any(dd.warning[w].number for w in mjsim.BAD_STATE))
+
+    monkeypatch.setattr(mjsim.mujoco, "mj_step", blow_up)
+    r = mjsim.simulate(d, lib.by_id("hbo_28oz"), sc, record=False)
+    dt = sc.sim["timestep_s"]
+    assert warned[-1]
+    assert (r.passed, r.reason, r.score, "margins" in r.metrics) == (False, "simulation went unstable", 0.0, False)
+    assert r.metrics["resets"] == 3 and r.metrics["timestep_s"] == pytest.approx(dt / 4)
+    assert [b["timestep_s"] for b in r.blowups] == pytest.approx([dt, dt / 2, dt / 4])
+    assert all(b["phase"] == "close" and b["t_s"] == pytest.approx(0.1, abs=1e-3) for b in r.blowups)
+
+
 def test_drawn_length_includes_the_cranked_tip(setup):
     from graspsim2d.geometry import drawn_length
 
