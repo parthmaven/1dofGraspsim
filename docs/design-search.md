@@ -94,7 +94,7 @@ The variables:
 
 | variable | unit | meaning |
 |---|---|---|
-| `pivot_spacing` | mm | distance between the two finger pivot axes |
+| `pivot_spacing` | mm | distance between the two finger pivot axes (fixed at 38: the bracket carries both pivots) |
 | `finger_reach` | mm | fingertip distance forward of the pivot line, fingers parallel |
 | `finger_thickness` | mm | in-plane depth of the finger beam |
 | `crank_offset` | mm | inward offset of the distal finger section (0 = straight) |
@@ -119,7 +119,7 @@ and use it in `graspsim2d/geometry.py`.
 
 | concept | idea |
 |---|---|
-| C1 `baseline_paddle` | Parth's finger: straight, a wide paddle (49 to 98 mm from the pivot line, 118 mm wide) and a 21 mm tab carrying the same face to the tip, parallel to the other finger's face when closed (2.4 mm gap) |
+| C1 `baseline_paddle` | Parth's finger: straight, a wide paddle (49.9 to 98.8 mm from the pivot line, 118 mm wide) and a 21 mm tab carrying the same face to the tip, parallel to the other finger's face when closed (2.4 mm gap) |
 | C2 `cranked_flat` | the distal section is offset inward, so the fingers can be parallel on a thin sheet while the proximal part clears a box |
 | C3 `crowned` | convex pad face; the contact point rolls along the pad as the jaw angle changes |
 | C4 `dual_zone` | a tip pad for sheets plus a proximal box pad; the closing angle picks the zone |
@@ -157,6 +157,7 @@ passes when every margin is at least 1:
 | crushing | peak pad pressure against the material's allowable pressure | same, from the simulated pad elements |
 | unsupported panel | pad force on the box face above the settled fill line against `unsupported_panel_force_N` | same |
 | creasing | bending moment at the pinch against the sheet's crease moment | same, from the hinged sheet chain |
+| bare finger | the finger body and pad mounts stay clear of the object, with no interference allowed | they put at most 1 N on the object (`BODY_CONTACT_LIMIT` in `mjsim.py`) |
 
 Box insertion depth (how far the box goes between the fingers) is chosen per
 object by the robot: `insertion: best` tries `insertion_scan` depths between
@@ -168,14 +169,16 @@ same drive torque.
 
 `gripper.keep_out` lists circles in the jaw plane that fingers and objects
 must stay out of. The shipped one is the FT Dynamic bracket (top)
-(MV-UMI01-3DP-001 A): its lobe between the pivots is a 17.5 mm radius arc
-centred on the jaw centreline 30 mm from the pivot line, and Parth's finger
-clears it with no margin. The geometry sweeps each circle through the finger's
-frame over the whole stroke, from where the fingers meet to full opening, and
-cuts that region out of the finger beam. A design is infeasible if a pad or pad
+(MV-UMI01-3DP-001 A): it carries both pivots, and its 35 mm hub is centred on
+the jaw centreline 31 mm from the pivot line. Parth's finger clears the hub with
+an R 18.36 cutout, a 0.86 mm gap, which `clearance_mm` keeps for every
+candidate. Because the bracket sets the pivots, `pivot_spacing` is fixed at
+38 mm; a range there implies a new bracket and gear pair. The geometry sweeps
+each circle through the finger's frame over the whole stroke, from where the
+fingers meet to full opening, and cuts that region out of the finger beam. A design is infeasible if a pad or pad
 mount would have to be cut, or if less than `min_ligament_mm` (5 mm) of finger
 is left beside the cutout. With `blocks_objects: true` an object's top must
-also stay below the circle, which caps box insertion at 102.5 mm for a 150 mm
+also stay below the circle, which caps box insertion at 100.6 mm for a 150 mm
 finger. `clearance_mm` adds to every radius.
 
 ## How it works
@@ -221,7 +224,7 @@ and contact width, riding a shear joint with the elastomer's shear stiffness
 rigid body on a table. A sheet is a chain of rigid segments joined by hinges
 with the board's bending stiffness, hanging from a holder that is released
 when the jaw has closed. Friction uses MuJoCo's elliptic cones. Each run
-records slip, rotation, pressure, panel force, bending moment and friction use
+records slip, rotation, pressure, panel force, bending moment, bare-finger load and friction use
 (the largest share of μ times the normal force either pad uses) from the start
 of the lift, so the closing impact (up to twice the static force at 1 rad/s)
 counts only as the `closing_impact_pressure_kPa` metric. One run takes about

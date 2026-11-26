@@ -117,7 +117,7 @@ def test_baseline_matches_parths_cad(setup):
     assert f.feasible, f.issues
     paddle, tab = f.pads
     assert (paddle.width, tab.width) == (118.0, 21.0)
-    assert paddle.face_u - paddle.length / 2 == pytest.approx(49.0)
+    assert paddle.face_u - paddle.length / 2 == pytest.approx(49.9)
     assert tab.face_u + tab.length / 2 == pytest.approx(d.finger_reach)
     # CAD: faces parallel and 2.4 mm apart when closed
     assert d.pivot_spacing - 2 * paddle.face_v == pytest.approx(2.4)
@@ -137,7 +137,8 @@ def test_keep_out_rejects_pads_in_the_bracket_and_limits_insertion(setup):
     d = c.make(space)
     r = solve_grip(d, lib.by_id("mini_1oz"), sc)
     z_top = -d.finger_reach + r.info["insertion_mm"]
-    assert z_top <= -30.0 - 17.5 + 1e-6
+    (cx, cz, rad), = sc.keep_out.radii()
+    assert z_top <= cz - rad + 1e-6
 
 
 def test_contact_width_is_capped_by_the_object(setup):

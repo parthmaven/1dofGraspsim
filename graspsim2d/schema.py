@@ -53,7 +53,7 @@ class VariableDef:
 # Parth's CAD finger (UMI6 paddles, parallel when closed): pivots 38 mm apart
 # and geared 1:1, tip 150 mm forward of the pivots, a flat face parallel to the
 # finger and 17.8 mm inboard of its pivot (2.4 mm gap when closed), wide from
-# 49 to 98 mm forward of the pivot line (about 118 mm mean projected width),
+# 49.9 to 98.8 mm forward of the pivot line (about 118 mm mean projected width),
 # then a 21 mm tab carrying the same face to the tip.
 SCHEMA: tuple[VariableDef, ...] = (
     VariableDef("pivot_spacing", "mm", 38.0, "Distance between the two finger pivot axes."),
@@ -61,10 +61,10 @@ SCHEMA: tuple[VariableDef, ...] = (
     VariableDef("finger_thickness", "mm", 21.6, "In-plane depth of the finger beam."),
     VariableDef("crank_offset", "mm", 0.0, "Inward offset of the distal finger section (0 = straight finger)."),
     VariableDef("crank_position", "1", 0.45, "Where the crank starts, as a fraction of the reach from the pivot."),
-    VariableDef("pad_length", "mm", 49.0, "Length of the (distal) pad face along the finger; the paddle for the paddle style."),
+    VariableDef("pad_length", "mm", 48.9, "Length of the (distal) pad face along the finger; the paddle for the paddle style."),
     VariableDef("pad_thickness", "mm", 6.0, "Elastomer pad thickness (at the crown apex for crowned pads)."),
     VariableDef("pad_angle", "deg", 0.0, "Pad face angle to the finger axis; + makes the distal end stand further inward."),
-    VariableDef("pad_tip_margin", "mm", 52.0, "Distance from the fingertip to the distal end of the pad (paddle style: tab length plus a 2 mm gap)."),
+    VariableDef("pad_tip_margin", "mm", 51.2, "Distance from the fingertip to the distal end of the pad (paddle style: tab length plus a 2 mm gap)."),
     VariableDef("pad_width", "mm", 118.0, "Out-of-plane width of the pad and finger (the 2D extrusion width); contact is capped at the object's width."),
     VariableDef("tab_width", "mm", 21.0, "Paddle style only: out-of-plane width of the tab that carries the paddle face on to the fingertip (0 = no tab)."),
     VariableDef("pad_shore", "shoreA", 40.0, "Pad hardness; sets the elastomer modulus (Gent 1958)."),

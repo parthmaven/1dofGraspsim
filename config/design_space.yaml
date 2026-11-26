@@ -3,8 +3,8 @@
 # PLACEHOLDER RANGES, centred on the baseline: Parth's finger
 # (UMI6_paddles_paralel_pockets_V01.stp). Its two pivots are 38 mm apart and
 # geared 1:1, the tip is 150 mm from the pivot line, and the flat face is
-# parallel to the other finger's when closed (2.4 mm gap): a paddle from 49 to
-# 98 mm (about 118 mm wide out of plane), then a 21 mm wide tab to the tip.
+# parallel to the other finger's when closed (2.4 mm gap): a paddle from 49.9
+# to 98.8 mm (about 118 mm wide out of plane), then a 21 mm wide tab to the tip.
 # Variables the CAD does not set (pad thickness and hardness, drive torque,
 # opening) keep generic ranges. To use Parth's own bounding box, edit the
 # ranges below and rerun; nothing else changes.
@@ -19,17 +19,18 @@
 # Variables left out are fixed at the schema nominal (graspsim2d/schema.py).
 
 variables:
-  pivot_spacing:      {range: [30, 46],   unit: mm,      nominal: 38,   placeholder: true}
+  pivot_spacing:      {value: 38,         unit: mm,      placeholder: true,
+                        note: "fixed: the FT Dynamic bracket carries both pivots 38 mm apart and the 1:1 gear pair spans them; a range here implies a new bracket and gears"}
   finger_reach:       {range: [130, 170], unit: mm,      nominal: 150,  placeholder: true}
   finger_thickness:   {range: [12, 32],   unit: mm,      nominal: 21.6, placeholder: true,
                         note: "baseline 21.6 puts the face 17.8 mm inboard of the pivot with a 6 mm pad"}
   crank_offset:       {range: [0, 24],    unit: mm,      nominal: 0,    placeholder: true}
   crank_position:     {range: [0.25, 0.6], unit: "1",    nominal: 0.45, placeholder: true}
-  pad_length:         {range: [20, 78],   unit: mm,      nominal: 49,   placeholder: true}
+  pad_length:         {range: [20, 78],   unit: mm,      nominal: 48.9, placeholder: true}
   pad_thickness:      {range: [2, 12],    unit: mm,      nominal: 6,    placeholder: true}
   pad_angle:          {range: [-15, 15],  unit: deg,     nominal: 0,    placeholder: true}
-  pad_tip_margin:     {range: [0, 104],   unit: mm,      nominal: 52,   placeholder: true,
-                        note: "baseline: 50 mm tab plus a 2 mm gap; single-pad concepts narrow this to 0-30"}
+  pad_tip_margin:     {range: [0, 104],   unit: mm,      nominal: 51.2, placeholder: true,
+                        note: "baseline: 49.2 mm tab plus a 2 mm gap; single-pad concepts narrow this to 0-30"}
   pad_width:          {range: [60, 176],  unit: mm,      nominal: 118,  placeholder: true}
   tab_width:          {range: [10, 32],   unit: mm,      nominal: 21,   placeholder: true}
   pad_shore:          {range: [30, 70],   unit: shoreA,  nominal: 40,   placeholder: true}

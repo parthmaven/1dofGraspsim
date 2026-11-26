@@ -37,15 +37,16 @@ gripper:
   # pivots), as in Parth's baseline; the sim couples the joints exactly.
   keep_out:
     # FT Dynamic bracket (top), MV-UMI01-3DP-001 A, seen in the assembly's top
-    # view. Its plate has bores on the two pivots (+-19, -30 in its own frame)
-    # and a lobe of 17.5 mm radius centred on its origin, i.e. on the jaw
-    # centreline 30 mm from the pivot line, toward the fingertips. Parth's
-    # finger has a circular cutout that clears exactly this arc (17.50 mm from
-    # the arc centre to the nearest finger material in the closed pose). In 2D
-    # the region is treated as full height, so objects stay out of it too.
+    # view. Its plate carries the two pivots (R5 bosses at +-19, -31 in its own
+    # frame) and a 35 mm diameter hub centred on its origin, i.e. on the jaw
+    # centreline 31 mm from the pivot line, toward the fingertips; the hub is
+    # coaxial with the 35 mm tube of the FT Dynamic bracket (bot). Parth's
+    # finger clears it with an R18.36 cutout concentric with the hub in the
+    # closed pose (0.86 mm radial gap). In 2D the region is treated as full
+    # height and swept over the whole stroke, so objects stay out of it too.
     circles:
-      - {name: ft_bracket_top_lobe, center_mm: [0.0, -30.0], radius_mm: 17.5}
-    clearance_mm: 0.0         # extra radius; the baseline has none
+      - {name: ft_bracket_top_hub, center_mm: [0.0, -31.0], radius_mm: 17.5}
+    clearance_mm: 0.86        # extra radius; the baseline's cutout gap
     min_ligament_mm: 5.0      # finger material that must remain beside the cutout
     blocks_objects: true
 
