@@ -561,6 +561,15 @@ def test_batch1_blown_up_runs_stop_instead_of_restarting(batch1, monkeypatch):
     assert r["unstable_s"] == pytest.approx(0.2, abs=1e-3) and r["unstable_phase"] == "close"
 
 
+def test_batch1_select_runs_part_of_a_block(batch1):
+    jobs = batch1.block_refs()
+    platform = batch1.select(jobs, ["platform-padded"])
+    assert platform and {j["design"] for j in platform} == {"platform-padded"}
+    assert len(platform) + len(batch1.select(jobs, ["r2-09"])) == len(jobs)
+    one = batch1.select(jobs, ["r2-09"], ["gm_016000163492"])
+    assert one and {(j["design"], j["object"]) for j in one} == {("r2-09", "gm_016000163492")}
+
+
 def test_batch1_rescore_uses_the_first_pass_objects(batch1):
     lib = batch1.fp_library()
     assert len(lib.objects) == 14 and lib.by_id("b_flute_3mm").material.bare_friction == pytest.approx(0.35)

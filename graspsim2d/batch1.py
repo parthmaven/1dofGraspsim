@@ -461,18 +461,29 @@ def write_rows(rows: list[dict[str, Any]], path: Path) -> None:
             w.writerow({k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in r.items()})
 
 
+def select(jobs: list[dict[str, Any]], designs: Iterable[str] = (), objects: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """Part of a block: its first-stage jobs for these designs and objects (all when empty). Follow-ups inherit both."""
+    d, o = set(designs), set(objects)
+    return [j for j in jobs if (not d or j["design"] in d) and (not o or j.get("object") in o)]
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("block", choices=sorted(BLOCKS))
     ap.add_argument("--out", default="runs/batch1")
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 4)
+    ap.add_argument("--designs", default="", help="comma-separated designs to run (default: the whole block)")
+    ap.add_argument("--objects", default="", help="comma-separated object ids to run (default: all)")
+    ap.add_argument("--name", default="", help="output file stem (default: the block name)")
     a = ap.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     sha = commit()
-    jobs = BLOCKS[a.block]()
+    designs, objects = [s for s in a.designs.split(",") if s], [s for s in a.objects.split(",") if s]
+    jobs = select(BLOCKS[a.block](), designs, objects)
+    stem = a.name or a.block
     t0 = time.time()
-    logf = (out / f"{a.block}.log").open("w")
+    logf = (out / f"{stem}.log").open("w")
 
     def log(r: dict[str, Any]) -> None:
         msg = (f"{time.time() - t0:7.1f}s {r.get('design', ''):16s} {r.get('test', ''):3s} {r.get('object', ''):24s} "
@@ -480,13 +491,15 @@ def main(argv: list[str] | None = None) -> None:
                f"score {r.get('score') if r.get('score') is not None else float('nan'):6.2f} {r.get('limiting') or r.get('reason') or ''}")
         print(msg, file=logf, flush=True)
 
-    print(f"block {a.block}: {len(jobs)} first-stage jobs, commit {sha}", file=logf, flush=True)
+    part = "".join(f", {k} {','.join(v)}" for k, v in (("designs", designs), ("objects", objects)) if v)
+    print(f"block {a.block}{part}: {len(jobs)} first-stage jobs, commit {sha}", file=logf, flush=True)
     rows = run(jobs, a.workers, log)
     for r in rows:
         r["commit"] = sha
-    (out / f"{a.block}.json").write_text(json.dumps({"commit": sha, "block": a.block, "seconds": round(time.time() - t0, 1),
-                                                     "rows": rows}, indent=0, default=str))
-    write_rows(rows, out / f"{a.block}.csv")
+    (out / f"{stem}.json").write_text(json.dumps({"commit": sha, "block": a.block, "designs": designs or None,
+                                                  "objects": objects or None, "seconds": round(time.time() - t0, 1),
+                                                  "rows": rows}, indent=0, default=str))
+    write_rows(rows, out / f"{stem}.csv")
     print(f"done: {len(rows)} rows in {time.time() - t0:.0f} s", file=logf, flush=True)
 
 
