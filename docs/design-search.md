@@ -170,15 +170,15 @@ same drive torque.
 `gripper.keep_out` lists circles in the jaw plane that fingers and objects
 must stay out of. The shipped one is the FT Dynamic bracket (top)
 (MV-UMI01-3DP-001 A): it carries both pivots, and its 35 mm hub is centred on
-the jaw centreline 31 mm from the pivot line. Parth's finger clears the hub with
-an R 18.36 cutout, a 0.86 mm gap, which `clearance_mm` keeps for every
+the jaw centreline 31 mm from the pivot line. The platform finger clears the
+hub with an R 18.5 notch, a 1.0 mm gap, which `clearance_mm` keeps for every
 candidate. Because the bracket sets the pivots, `pivot_spacing` is fixed at
 38 mm; a range there implies a new bracket and gear pair. The geometry sweeps
 each circle through the finger's frame over the whole stroke, from where the
 fingers meet to full opening, and cuts that region out of the finger beam. A design is infeasible if a pad or pad
 mount would have to be cut, or if less than `min_ligament_mm` (5 mm) of finger
 is left beside the cutout. With `blocks_objects: true` an object's top must
-also stay below the circle, which caps box insertion at 100.6 mm for a 150 mm
+also stay below the circle, which caps box insertion at 100.5 mm for a 150 mm
 finger. `clearance_mm` adds to every radius.
 
 ## How it works

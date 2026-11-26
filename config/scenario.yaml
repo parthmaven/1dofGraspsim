@@ -34,19 +34,22 @@ gripper:
   closing_speed_rad_s: 1.0    # free closing speed; sets drive damping
   closed_limit_deg: -25       # finger angle at full close (negative = converging)
   # The two fingers are geared 1:1 (equal and opposite rotation about their
-  # pivots), as in Parth's baseline; the sim couples the joints exactly.
+  # pivots), as on the platform gripper; the sim couples the joints exactly.
   keep_out:
     # FT Dynamic bracket (top), MV-UMI01-3DP-001 A, seen in the assembly's top
-    # view. Its plate carries the two pivots (R5 bosses at +-19, -31 in its own
-    # frame) and a 35 mm diameter hub centred on its origin, i.e. on the jaw
-    # centreline 31 mm from the pivot line, toward the fingertips; the hub is
-    # coaxial with the 35 mm tube of the FT Dynamic bracket (bot). Parth's
-    # finger clears it with an R18.36 cutout concentric with the hub in the
-    # closed pose (0.86 mm radial gap). In 2D the region is treated as full
-    # height and swept over the whole stroke, so objects stay out of it too.
+    # view, fixed to the gripper body. Its plate carries the two pivots (R5
+    # bosses at +-19, -31 in the assembly frame) and a 35 mm diameter hub at the
+    # origin, i.e. on the jaw centreline 31 mm from the pivot line, toward the
+    # fingertips. The hub continues down as the 35 mm tube of the FT Dynamic
+    # bracket (bot), to 67 mm below the top of the arm. The platform finger
+    # (Finger, Left, MV-UMI01-3DP-001 A) clears it with an R18.50 notch
+    # concentric with the hub in the modelled pose (1.00 mm radial gap) down to
+    # about 80 mm below the top; only below the tube does its face reach further
+    # back. In 2D the region is treated as full height and swept over the whole
+    # stroke, so objects stay out of it too.
     circles:
       - {name: ft_bracket_top_hub, center_mm: [0.0, -31.0], radius_mm: 17.5}
-    clearance_mm: 0.86        # extra radius; the baseline's cutout gap
+    clearance_mm: 1.0         # extra radius: the platform finger's notch gap
     min_ligament_mm: 5.0      # finger material that must remain beside the cutout
     blocks_objects: true
 
