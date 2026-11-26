@@ -194,8 +194,6 @@ def job_mj(job: dict[str, Any]) -> dict[str, Any]:
     for k, v in r.items():
         if k == "margins":
             out.update(_flat("m_", v))
-        elif k == "margins_sustained":
-            out.update(_flat("sm_", v))
         elif k == "demand":
             out.update(_flat("d_", v))
         elif k == "trace":
@@ -417,6 +415,53 @@ def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dic
              "brake": float(c["b1"].get("power_cut", {}).get("no_brake_Nm_per_gripper", 1.0)), "stops": []}]
 
 
+MAX_SUBSTEPS = 8
+
+
+def rerun_job(job: dict[str, Any], row: dict[str, Any]) -> dict[str, Any] | None:
+    """Test conditions 2.15: a MuJoCo run that blew up is rerun at half its timestep, down to dt / 8; its own
+    row stays flagged and unscored. A job's result is its row without `reset_flag`, if any."""
+    if row.get("kind") != "mujoco" or not row.get("reset_flag"):
+        return None
+    used = int(row.get("substeps") or (job.get("b1_over") or {}).get("substeps", 1))
+    if 2 * used > MAX_SUBSTEPS:
+        return None
+    return {**job, "b1_over": {**(job.get("b1_over") or {}), "substeps": 2 * used}, "rerun_of_reset": True}
+
+
+def _job_key(r: dict[str, Any], drop: tuple[str, ...] = ()) -> str:
+    keys = ("block", "design", "reading", "values", "reach_cap", "library", "test", "object", "fill", "case", "depth_mm",
+            "lateral_mm", "friction_scale", "shake_hz", "band_factor", "brake", "power_s")
+    return json.dumps({k: r.get(k) for k in keys if k not in drop}, sort_keys=True, default=str)
+
+
+def add_verdicts(rows: list[dict[str, Any]]) -> None:
+    """Test conditions 2.16: a nominal run's verdict is its own pass and, where a friction x0.8 run exists (T1 at
+    catalog fill, T2 at 30 mm), that run holding. A run that blew up counts through its rerun, or not at all."""
+    done = {}
+    for r in rows:
+        if r.get("kind") == "mujoco" and not r.get("reset_flag"):
+            done[_job_key(r)] = r
+    x08 = {}
+    for r in done.values():
+        if r.get("case") == "friction x0.8":
+            x08[_job_key({**r, "case": None, "friction_scale": None, "power_s": None}, ("lateral_mm",))] = r
+    for r in rows:
+        if r.get("kind") != "mujoco" or r.get("case") not in ("nominal", "pinch 30"):
+            continue
+        if r.get("reset_flag"):
+            r.update(verdict=None, verdict_basis="blew up: flagged, not scored; its rerun carries the verdict"
+                     if _job_key(r) in done else "blew up: flagged, not scored, and no rerun held together")
+            continue
+        f = x08.get(_job_key({**r, "case": None, "friction_scale": None, "power_s": None}, ("lateral_mm",)))
+        if f is None:
+            r.update(verdict=bool(r.get("passed")), verdict_basis="nominal only: no friction x0.8 run")
+        else:
+            r.update(verdict=bool(r.get("passed")) and bool(f.get("passed")),
+                     verdict_basis=f"nominal {'passes' if r.get('passed') else 'fails'}, x0.8 "
+                                   f"{'holds' if f.get('passed') else 'does not hold'}")
+
+
 def run(jobs: list[dict[str, Any]], workers: int, log) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with ProcessPoolExecutor(workers) as ex:
@@ -426,10 +471,13 @@ def run(jobs: list[dict[str, Any]], workers: int, log) -> list[dict[str, Any]]:
         done_designs: set[str] = set()
         while pending:
             for fut in as_completed(list(pending)):
-                pending.pop(fut)
+                job = pending.pop(fut)
                 r = fut.result()
                 rows.append(r)
                 log(r)
+                again = rerun_job(job, r)
+                if again is not None:
+                    pending[ex.submit(run_job, again)] = again
                 if r.get("job") == "scan":
                     sym = get_jaw(r["design"], r["reading"], r.get("values"), r.get("reach_cap")).symmetric
                     for f in t1_followups(r, sym):
@@ -444,8 +492,9 @@ def run(jobs: list[dict[str, Any]], workers: int, log) -> list[dict[str, Any]]:
 
 
 CSV_FIRST = ["commit", "block", "test", "design", "reading", "reach_cap", "values", "object", "fill", "case", "kind", "status",
-             "depth_mm", "lateral_mm", "friction_scale", "shake_hz", "brake", "passed", "score", "limiting", "reason",
-             "finger_torque_Nm", "mount_fatigue_flag"]
+             "depth_mm", "lateral_mm", "friction_scale", "shake_hz", "brake", "verdict", "verdict_basis", "passed",
+             "pass_rule", "score", "limiting", "reason", "reset_flag", "substeps", "rerun_of_reset", "finger_torque_Nm",
+             "mount_fatigue_flag"]
 
 
 def write_rows(rows: list[dict[str, Any]], path: Path) -> None:
@@ -496,6 +545,7 @@ def main(argv: list[str] | None = None) -> None:
     rows = run(jobs, a.workers, log)
     for r in rows:
         r["commit"] = sha
+    add_verdicts(rows)
     (out / f"{stem}.json").write_text(json.dumps({"commit": sha, "block": a.block, "designs": designs or None,
                                                   "objects": objects or None, "seconds": round(time.time() - t0, 1),
                                                   "rows": rows}, indent=0, default=str))

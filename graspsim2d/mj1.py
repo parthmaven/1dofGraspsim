@@ -118,6 +118,9 @@ class _Builder:
         self.jaw, self.obj, self.sc, self.b1 = jaw, obj, sc, b1
         sim = sc.sim
         self.dt = float(sim.get("timestep_s", 1e-4))
+        # Finer integration runs in substeps of dt; every time constant stays tied to dt.
+        self.fine_dt = float(sim.get("fine_timestep_s", self.dt / 2))
+        self.substeps = max(1, int(b1.get("substeps", 1)))
         self.pitch = float(sim.get("pad_element_pitch_mm", 4.0))
         self.fine = float(b1.get("fine_pitch_mm", 1.5))
         self.short = float(b1.get("short_face_mm", 20.0))
@@ -365,6 +368,9 @@ def simulate(jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, task: str, dept
             f'solreffriction="{_fmt(2 * b.dt)} 1" solimpfriction="0.999 0.9999 0.001 0.5 2"/>'
             f'<inertial pos="0 0 {_fmt(-L * 0.5e-3)}" mass="{_fmt(m_f)}" diaginertia="{_fmt((I_f, I_f, I_f))}"/>'
             f"{xml}</body>")
+    if not box or any(e.seg <= 2.0 + 1e-9 for e in b.elements):
+        # Test conditions 2.16: pressure peaks converge at the fine timestep for sheets and 1 - 2 mm elements.
+        b.substeps = max(b.substeps, int(round(b.dt / b.fine_dt)))
     k_servo = float(sc.sim.get("servo_kp", 2.0e6))
     m_total = 1.0 + 0.6 + obj.mass
     kv_servo = 2 * math.sqrt(k_servo * m_total)
@@ -435,7 +441,7 @@ def simulate(jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, task: str, dept
 
     xml = f"""<mujoco model="grasp2d_batch1">
   <compiler angle="radian" autolimits="true" inertiafromgeom="false"/>
-  <option timestep="{_fmt(b.dt)}" gravity="0 0 {-G}" integrator="implicitfast" cone="elliptic" impratio="10" iterations="60" ls_iterations="20">
+  <option timestep="{_fmt(b.dt / b.substeps)}" gravity="0 0 {-G}" integrator="implicitfast" cone="elliptic" impratio="10" iterations="60" ls_iterations="20">
     <flag warmstart="enable"/>
   </option>
   <default><geom condim="3" solref="{_fmt(tc)} 1" solimp="0.95 0.99 0.0005 0.5 2"/></default>
@@ -494,6 +500,8 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     el_w = np.array([e.w for e in els])
     el_qadr = np.array([qadr(e.joint) for e in els], dtype=int)
     el_lo = np.array([model.jnt_range[jid(e.joint), 0] for e in els])
+    el_k = np.array([model.jnt_stiffness[jid(e.joint)] for e in els])
+    el_q0 = np.array([model.qpos_spring[qadr(e.joint)] for e in els])
     el_pad = el_kind == "pad"
     body_side = np.zeros(model.ngeom, dtype=int)
     for gname, s in b.body_geoms.items():
@@ -527,22 +535,10 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     box_H = obj.height
     fill_rel = -obj.headspace if box else -math.inf
     band = lim.band_mm * 1e-3
-    every = 4
-    # Scored peaks are single samples. Beside them go "sustained" peaks of the contact-force readings, taken
-    # on a running median, because the contact solver chatters for one or two samples at a time (friction use
-    # pinned at 1, element pressure up to 3x); which one a test scores is the test conditions' call.
-    k_med = max(1, int(round(float(b1.get("peak_filter_ms", 2.0)) * 1e-3 / (every * dt)))) | 1
+    every = 4 * b.substeps
     n_mean = max(1, int(round(float(b1.get("friction_mean_ms", 10.0)) * 1e-3 / (every * dt))))
-    med_buf: dict[Any, deque] = {}
-    fric_win = {1: deque(maxlen=n_mean), -1: deque(maxlen=n_mean)}
+    fric_win: deque = deque(maxlen=n_mean)
     cone_run = {1: 0, -1: 0}
-
-    def med(key, x: float) -> float:
-        buf = med_buf.get(key)
-        if buf is None:
-            buf = med_buf[key] = deque(maxlen=k_med)
-        buf.append(x)
-        return sorted(buf)[len(buf) // 2] if len(buf) == k_med else min(buf)
 
     def contacts():
         n = data.ncon
@@ -556,19 +552,27 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         return con, n, g1, g2, adr, ok, fn
 
     def measure():
+        """Per element: load from its spring, or from the contact force at its stop (pads and marked faces;
+        test conditions 2.16) and always for unmarked bare faces, which count as body contact. Per finger: body
+        load, friction use, and the tangential force and friction capacity behind it."""
         c = contacts()
-        F = np.zeros(n_el)
+        Fc = np.zeros(n_el)
         body = {1: 0.0, -1: 0.0}
         fric = {1: 0.0, -1: 0.0}
+        tang = {1: 0.0, -1: 0.0}
+        caps = {1: 0.0, -1: 0.0}
+        q = data.qpos[el_qadr]
+        spring = np.where(el_grip & (q > el_lo + 2e-5), el_k * np.maximum(el_q0 - q, 0.0), np.nan)
         if c is None:
-            return F, body, fric
+            return np.where(np.isnan(spring), 0.0, spring), Fc, body, fric, tang, caps
         con, n, g1, g2, adr, ok, fn = c
         e1, e2 = el_of_geom[g1], el_of_geom[g2]
         o1, o2 = is_obj[g1], is_obj[g2]
         s1 = (e1 >= 0) & o2 & ok
         s2 = (e2 >= 0) & o1 & ok
-        np.add.at(F, e1[s1], fn[s1])
-        np.add.at(F, e2[s2], fn[s2])
+        np.add.at(Fc, e1[s1], fn[s1])
+        np.add.at(Fc, e2[s2], fn[s2])
+        F = np.where(np.isnan(spring), Fc, spring)
         for sd in (1, -1):
             bsel = (((body_side[g1] == sd) | (unmarked_side[g1] == sd)) & o2 & ok) | \
                    (((body_side[g2] == sd) | (unmarked_side[g2] == sd)) & o1 & ok)
@@ -585,9 +589,10 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
                 tw = sign * (data.efc_force[a + 1][:, None] * fr[:, 3:6] + data.efc_force[a + 2][:, None] * fr[:, 6:9])
                 mu = con.friction[:n][sel, 0]
                 cap = float(np.sum(mu * fn[sel]))
+                tang[sd], caps[sd] = float(np.linalg.norm(tw.sum(axis=0))), cap
                 if cap > 1e-6:
-                    fric[sd] = float(np.linalg.norm(tw.sum(axis=0))) / cap
-        return F, body, fric
+                    fric[sd] = tang[sd] / cap
+        return F, Fc, body, fric, tang, caps
 
     def zones(F: np.ndarray):
         """Per finger: band force, panel force, bed pressure (below the fill line only), all-grip pressure."""
@@ -621,8 +626,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     p_grip_local = None
     peaks = {k: 0.0 for k in ("band", "panel", "bed", "press", "body", "fric", "slip", "rot", "crease",
                               "i_band", "i_panel", "i_bed", "i_body")}
-    peaks_s = {k: 0.0 for k in ("band", "panel", "bed", "press", "body", "fric", "i_band", "i_panel", "i_bed", "i_body",
-                                "fric_mean", "cone_n")}
+    diag = {"fric_sample": 0.0, "cone_n": 0, "press_contact": 0.0}
     stop_rec: list[dict[str, float]] = []
     stop_ref = None
     stop_peak = None
@@ -692,20 +696,16 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
             continue
         t = data.time
         phase = tl.phase(t)
-        F, body, fric = measure()
-        if not math.isfinite(first_contact) and F.sum() + body[1] + body[-1] > 1e-3:
+        F, Fc, body, fric, tang, caps = measure()
+        if not math.isfinite(first_contact) and Fc.sum() + body[1] + body[-1] > 1e-3:
             first_contact = float(data.qpos[a_jR])
         zn = zones(F)
-        zn_s = {sd: tuple(med(("zone", sd, q), v) for q, v in enumerate(zn[sd])) for sd in (1, -1)}
-        body_s = {sd: med(("body", sd), body[sd]) for sd in (1, -1)}
-        fric_s = {sd: med(("fric", sd), fric[sd]) for sd in (1, -1)}
         if phase == "close":
             for sd in (1, -1):
-                for pk, z, b_ in ((peaks, zn[sd], body[sd]), (peaks_s, zn_s[sd], body_s[sd])):
-                    pk["i_band"] = max(pk["i_band"], z[0])
-                    pk["i_panel"] = max(pk["i_panel"], z[1])
-                    pk["i_bed"] = max(pk["i_bed"], z[2])
-                    pk["i_body"] = max(pk["i_body"], b_)
+                peaks["i_band"] = max(peaks["i_band"], zn[sd][0])
+                peaks["i_panel"] = max(peaks["i_panel"], zn[sd][1])
+                peaks["i_bed"] = max(peaks["i_bed"], zn[sd][2])
+                peaks["i_body"] = max(peaks["i_body"], body[sd])
             if t >= tl.t_settle - 0.02 - every * dt and ref is None:
                 pass
             continue
@@ -738,18 +738,21 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
             if t > tl.t_lift:
                 torque_hold.append(act)
             for sd in (1, -1):
-                for pk, z, b_, f_ in ((peaks, zn[sd], body[sd], fric[sd]), (peaks_s, zn_s[sd], body_s[sd], fric_s[sd])):
-                    pk["band"] = max(pk["band"], z[0])
-                    pk["panel"] = max(pk["panel"], z[1])
-                    pk["bed"] = max(pk["bed"], z[2])
-                    pk["press"] = max(pk["press"], z[3])
-                    pk["body"] = max(pk["body"], b_)
-                    pk["fric"] = max(pk["fric"], f_)
-                fric_win[sd].append(fric[sd])
-                if len(fric_win[sd]) == n_mean:
-                    peaks_s["fric_mean"] = max(peaks_s["fric_mean"], sum(fric_win[sd]) / n_mean)
+                peaks["band"] = max(peaks["band"], zn[sd][0])
+                peaks["panel"] = max(peaks["panel"], zn[sd][1])
+                peaks["bed"] = max(peaks["bed"], zn[sd][2])
+                peaks["press"] = max(peaks["press"], zn[sd][3])
+                peaks["body"] = max(peaks["body"], body[sd])
+                diag["fric_sample"] = max(diag["fric_sample"], fric[sd])
                 cone_run[sd] = cone_run[sd] + 1 if fric[sd] >= 0.99 else 0
-                peaks_s["cone_n"] = max(peaks_s["cone_n"], cone_run[sd])
+                diag["cone_n"] = max(diag["cone_n"], cone_run[sd])
+            cap_both = caps[1] + caps[-1]
+            fric_win.append((tang[1] + tang[-1]) / cap_both if cap_both > 1e-6 else 0.0)
+            if len(fric_win) == n_mean:
+                peaks["fric"] = max(peaks["fric"], sum(fric_win) / n_mean)
+            gc = el_grip & (Fc > 0.0)
+            if gc.any():
+                diag["press_contact"] = max(diag["press_contact"], float((Fc[gc] / el_area[gc]).max()))
             peaks["slip"] = max(peaks["slip"], slip)
             peaks["rot"] = max(peaks["rot"], rot)
             at_stop = el_pad & (F > 0.01) & (data.qpos[el_qadr] <= el_lo + 2e-5)
@@ -808,9 +811,13 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
                            "approach_opening_deg": math.degrees(phi0 - jaw.phi_meet),
                            "touch_plan_deg": math.degrees(phi_touch - jaw.phi_meet),
                            "contact_angle_deg": math.degrees(first_contact - jaw.phi_meet) if math.isfinite(first_contact) else math.nan,
-                           "close_s": tl.t_close}
+                           "close_s": tl.t_close, "finger_torque_Nm": tau,
+                           "mount_fatigue_flag": bool(tau >= float(b1.get("mount_fatigue_Nm_per_finger", 4.0)) - 1e-9),
+                           "substeps": b.substeps, "reset_flag": bool(unstable)}
     if unstable:
-        row.update(reason="simulation went unstable", unstable_s=unstable_s, unstable_phase=phase)
+        # Test conditions 2.15: a run that blows up is flagged and rerun, never scored as a fail.
+        row.update(reason=f"simulation went unstable at {unstable_s:.4f} s in {phase}; flagged, not scored",
+                   unstable_s=unstable_s, unstable_phase=phase, passed=None, score=None, limiting=None)
         return row
     if ref is None:
         row.update(reason="never reached the lift")
@@ -822,7 +829,6 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         margins = {
             "slip": (sc.max_slip / max(pk["slip"], 1e-9)) if held_main else 0.0,
             "rotation": sc.max_rotation / max(pk["rot"], 1e-9),
-            "friction": 1.0 / (float(b1.get("friction_margin_min", 1.25)) * max(pk["fric"], 1e-9)),
         }
         demand = {"slip": pk["slip"] * 1e3, "rotation": math.degrees(pk["rot"]), "friction": pk["fric"]}
         if task in ("T1", "T2", "T3") and pk["body"] > 0.1 * body_lim:
@@ -852,11 +858,11 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         return {k: float(min(v, 99.0)) for k, v in margins.items()}, demand
 
     margins, demand = score_peaks(peaks)
-    worst = min(margins, key=margins.get)
-    passed = margins[worst] >= 1.0 and held_main
-    margins_s, _ = score_peaks({**peaks, **{k: v for k, v in peaks_s.items() if k in peaks}})
-    worst_s = min(margins_s, key=margins_s.get)
-    passed_s = margins_s[worst_s] >= 1.0 and held_main
+    # Test conditions 2.16: the friction x0.8 run is the hold safety factor, so it passes on holding alone.
+    x08 = lim.friction_scale < 1.0 - 1e-9
+    rule = {k: margins[k] for k in ("slip", "rotation")} if x08 else margins
+    worst = min(rule, key=rule.get)
+    passed = rule[worst] >= 1.0 and held_main
     sample_ms = every * dt * 1e3
     held_levels = []
     for rec in stop_rec:
@@ -894,16 +900,9 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         "brake_use_Nm": float(np.median(brake_net[len(brake_net) // 2:])) if brake_net else 0.0,
         "brake_peak_Nm": brake_use,
         "brake_on_s": brake_on if brake_on is not None else math.nan, "power_cut_s": tl.t_power,
-        "passed_sustained": bool(passed_s), "score_sustained": margins_s[worst_s] if held_main else 0.0,
-        "limiting_sustained": worst_s if held_main else "slip", "margins_sustained": margins_s,
-        "friction_use_sustained": peaks_s["fric"], "friction_use_mean": peaks_s["fric_mean"],
-        "friction_cone_ms": peaks_s["cone_n"] * sample_ms,
-        "band_N_sustained": peaks_s["band"], "panel_N_sustained": peaks_s["panel"], "bed_kPa_sustained": peaks_s["bed"] / 1e3,
-        "pressure_kPa_sustained": peaks_s["press"] / 1e3, "body_N_sustained": peaks_s["body"],
-        "impact_band_N_sustained": peaks_s["i_band"], "impact_panel_N_sustained": peaks_s["i_panel"],
-        "impact_bed_kPa_sustained": peaks_s["i_bed"] / 1e3, "impact_body_N_sustained": peaks_s["i_body"],
-        "finger_torque_Nm": tau,
-        "mount_fatigue_flag": bool(tau >= float(b1.get("mount_fatigue_Nm_per_finger", 4.0)) - 1e-9),
+        "pass_rule": "holds: slip and rotation" if x08 else "all margins",
+        "friction_use_sample_peak": diag["fric_sample"], "friction_cone_ms": diag["cone_n"] * sample_ms,
+        "pressure_kPa_contact_sample": diag["press_contact"] / 1e3,
         "pad_elements_at_stop": bottomed,
         "load_by_surface_N": surf_load,
         "mu_pad": obj.material.friction * lim.friction_scale,

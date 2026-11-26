@@ -535,11 +535,16 @@ def test_batch1_brake_holds_the_power_cut(batch1):
     assert held["drive_hold_Nm"] == pytest.approx(2 * j.torque, rel=0.02)
     assert held["brake_use_Nm"] == pytest.approx(held["drive_hold_Nm"], rel=0.05)
     assert held["mount_fatigue_flag"] and held["finger_torque_Nm"] == j.torque
-    assert held["friction_use_sustained"] <= held["friction_use"] + 1e-12
-    assert held["pressure_kPa_sustained"] <= held["pressure_kPa"] + 1e-9
-    assert held["passed_sustained"] in (True, False) and "friction" in held["margins_sustained"]
-    loose = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5, brake=1.0)
-    assert not loose["power_cut_held"]
+    # Test conditions 2.16: friction use is both fingers' 10 ms mean, reported but outside every pass rule,
+    # and element pressure comes from the element springs.
+    assert "friction" not in held["margins"] and held["pass_rule"] == "all margins"
+    assert held["substeps"] == 2  # r2-09's short faces split at the 1.5 mm fine pitch
+    assert 0.0 < held["friction_use"] <= held["friction_use_sample_peak"] + 1e-9
+    assert held["pressure_kPa"] > 0.0 and held["pressure_kPa_contact_sample"] > 0.0
+    loose = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5, brake=1.0, friction_scale=0.8)
+    assert not loose["power_cut_held"] and loose["pass_rule"] == "holds: slip and rotation"
+    hold = loose["dropped_in"] != "main" and loose["margins"]["slip"] >= 1.0 and loose["margins"]["rotation"] >= 1.0
+    assert loose["passed"] == hold and loose["limiting"] in ("slip", "rotation")
 
 
 def test_batch1_blown_up_runs_stop_instead_of_restarting(batch1, monkeypatch):
@@ -556,9 +561,36 @@ def test_batch1_blown_up_runs_stop_instead_of_restarting(batch1, monkeypatch):
         step(m, d)
 
     monkeypatch.setattr(mj1.mujoco, "mj_step", reset_once)
-    r = mj1.simulate(batch1.get_jaw("r2-09", 45.0), batch1.get_obj("c_flute_4mm"), c["sc"], c["b1"], "T2", 30.0)
-    assert seen["autoreset_off"] and r["reason"] == "simulation went unstable"
+    j = batch1.get_jaw("r2-09", 45.0)
+    r = mj1.simulate(j, batch1.get_obj("c_flute_4mm"), c["sc"], c["b1"], "T2", 30.0)
+    assert seen["autoreset_off"] and r["reason"].startswith("simulation went unstable") and r["reset_flag"]
     assert r["unstable_s"] == pytest.approx(0.2, abs=1e-3) and r["unstable_phase"] == "close"
+    assert r["passed"] is None and r["score"] is None and r["finger_torque_Nm"] == j.torque
+    assert r["substeps"] == 2  # sheets run at the fine timestep (test conditions 2.16)
+    job = {"block": "t", "design": "r2-09", "reading": 45.0, "job": "mj", "test": "T2", "object": "c_flute_4mm",
+           "depth_mm": 30.0, "case": "pinch 30"}
+    row = {**job, "kind": "mujoco", **r}
+    again = batch1.rerun_job(job, row)
+    assert again["b1_over"] == {"substeps": 4} and again["rerun_of_reset"] and again["case"] == job["case"]
+    assert batch1.rerun_job(again, {**row, "substeps": 4})["b1_over"] == {"substeps": 8}
+    assert batch1.rerun_job(again, {**row, "substeps": 8}) is None
+    assert batch1.rerun_job(job, {**row, "reset_flag": False}) is None
+
+
+def test_batch1_verdict_needs_the_friction_x08_hold(batch1):
+    base = {"block": "t", "design": "S2", "reading": 45.0, "kind": "mujoco", "test": "T1", "object": "box", "depth_mm": 30.0,
+            "lateral_mm": 0.0}
+    rows = [{**base, "fill": "catalog", "case": "nominal", "passed": True},
+            {**base, "fill": "catalog", "case": "friction x0.8", "friction_scale": 0.8, "power_s": 1.0, "passed": False},
+            {**base, "fill": "loose", "case": "nominal", "passed": True},
+            {**base, "test": "T2", "object": "sheet", "case": "pinch 30", "reset_flag": True, "passed": None, "substeps": 2},
+            {**base, "test": "T2", "object": "sheet", "case": "pinch 30", "rerun_of_reset": True, "passed": True, "substeps": 4},
+            {**base, "test": "T2", "object": "sheet", "case": "friction x0.8", "friction_scale": 0.8, "power_s": 1.0,
+             "passed": True}]
+    batch1.add_verdicts(rows)
+    assert [r.get("verdict") for r in rows] == [False, None, True, None, True, None]
+    assert rows[0]["verdict_basis"] == "nominal passes, x0.8 does not hold"
+    assert rows[2]["verdict_basis"].startswith("nominal only") and "rerun carries" in rows[3]["verdict_basis"]
 
 
 def test_batch1_select_runs_part_of_a_block(batch1):
@@ -585,9 +617,12 @@ def test_batch1_rescore_uses_the_first_pass_objects(batch1):
 
 
 def test_batch1_mount_flag_includes_the_limit(batch1):
+    assert batch1.ctx()["b1"]["mount_fatigue_Nm_per_finger"] == pytest.approx(3.9)  # test conditions 2.16
     j = batch1.get_jaw("S3", 45.0)
     assert j.torque == pytest.approx(4.0)
     assert batch1._torque_flag(j) == {"finger_torque_Nm": j.torque, "mount_fatigue_flag": True}
     assert not batch1._torque_flag(batch1.get_jaw("S1", 45.0))["mount_fatigue_flag"]
+    assert batch1._torque_flag(batch1.get_jaw("platform-padded", 45.0, {"finger_torque": 3.9}))["mount_fatigue_flag"]
+    assert not batch1._torque_flag(batch1.get_jaw("platform-padded", 45.0, {"finger_torque": 3.85}))["mount_fatigue_flag"]
     failed = batch1.run_job({"block": "t", "design": "S3", "reading": 45.0, "job": "mj", "test": "T1", "object": "nope"})
     assert failed["kind"] == "error" and failed["finger_torque_Nm"] == pytest.approx(4.0) and failed["mount_fatigue_flag"]

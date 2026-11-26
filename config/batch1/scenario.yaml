@@ -154,6 +154,7 @@ analytic:
 
 sim:
   timestep_s: 0.0001
+  fine_timestep_s: 0.00005    # rev 2.16: sheets, and any run with elements of 2 mm or less; time constants stay on timestep_s
   contact_timeconst_s: 0.0002 # contacts several times stiffer than the pad element springs
   pad_element_pitch_mm: 4.0   # pad faces are split into spring elements this long
   element_frequency_hz: 250   # pad element springs are given armature to sit at this frequency
@@ -178,7 +179,10 @@ batch1:
     panel_force_N: 10.0           # empty panel, per finger, interpolated across the fill line
     bed_pressure_kPa: 25.0        # only below the fill line, where cereal backs the wall
   humid_factor: 0.6               # 85 % RH: panel limit, band (9 N), C-flute thumb, shipper board
-  friction_margin_min: 1.25       # MuJoCo holds
+  # rev 2.16: MuJoCo's 1.25 friction margin is the friction x0.8 run holding (slip and rotation within limits),
+  # with no friction-use term in any pass rule. Friction use is reported, unscored, as both fingers' mean over
+  # friction_mean_ms.
+  robust_friction: 0.8
   body_contact_limit_N: 1.0       # T1 - T3 only
   closing: {fast_rad_s: 1.0, slow_rad_s: 0.3, slow_deg: 5.0, armature_kgm2: 0.015}
   stop: {decel_g: [0.5, 1.0], speed_m_s: 2.0, accel_g: 0.25}
@@ -187,13 +191,10 @@ batch1:
   shake_s: 3.0                    # lateral 2 Hz, vertical 3 Hz
   sheet_shake_hz: [1.5, 2.0, 3.0] # the carton blank's lateral shake, every design (its second mode is 1.84 - 2.11 Hz)
   drive_Nm_per_gripper: {continuous: [7.0, 10.0], peak: 25.0}   # both finger motors together; flag over 7
-  mount_fatigue_Nm_per_finger: 4.0  # rev 2.12, inclusive since 3:14 AM PST: flag any pinch at or above this finger torque, the as-built mount's fatigue limit
-  # MuJoCo scores single-sample peaks. Each row also carries "sustained" peaks of the contact-force readings
-  # (friction use, element pressure, band, panel, bed and body loads, and their closing-impact peaks), taken
-  # on a running median this long, with margins and a verdict from them (sm_*, passed_sustained): the contact
-  # solver chatters for one or two 0.4 ms samples at a time. Slip, rotation and crease come from positions.
-  peak_filter_ms: 2.0
-  friction_mean_ms: 10.0  # friction_use_mean: the largest running mean of friction use over this window
+  mount_fatigue_Nm_per_finger: 3.9  # rev 2.16: flag any pinch at or above this finger torque (the arm reaches 10 MPa at 3.9 - 4.0)
+  # rev 2.16: pad and marked-face elements read their load from their springs, and from the contact force only at
+  # the 85 % stop (bare faces travel bare_travel_mm to theirs); the contact force spikes for single samples.
+  friction_mean_ms: 10.0
   short_face_mm: 20.0             # pads and bare faces shorter than this run at fine_pitch_mm
   fine_pitch_mm: 1.5
   bare_travel_mm: 1.5             # bare-face elements travel this far before the body behind them
