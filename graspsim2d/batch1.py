@@ -262,14 +262,17 @@ def job_t5(job: dict[str, Any]) -> dict[str, Any]:
     """One T5 two-arm lift. A job's `object` is a case key of the scenario's t5 block. With `dump_dir`, the run's
     close record goes to a gzipped JSON file there, and the row's `close_dump` names it. `close_only` stops the run
     at the end of the squeeze and keeps only its close. `approach_m_s` and `close_rad_s` name a design's own lower
-    contact speeds (SIM round 18 b): the arms' approach and the jaw's close, which the drive brakes the fingers to."""
+    contact speeds (SIM round 18 b): the arms' approach and the jaw's close. `close_torque_Nm` names its close torque
+    per finger, and `close_gear_friction` puts the gear's friction on the close (SIM round 20)."""
     from .t5 import case_object, simulate_t5
     c = ctx()
     j = get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))
     b1 = {**c["b1"], **job.get("b1_over", {})}
-    speeds = {k: float(job[k]) for k in ("approach_m_s", "close_rad_s") if job.get(k) is not None}
-    if speeds:
-        b1 = {**b1, "t5": {**b1["t5"], **speeds, **({"close_brakes": True} if "close_rad_s" in speeds else {})}}
+    close = {k: float(job[k]) for k in ("approach_m_s", "close_rad_s", "close_torque_Nm") if job.get(k) is not None}
+    if job.get("close_gear_friction"):
+        close["close_gear_friction"] = True
+    if close:
+        b1 = {**b1, "t5": {**b1["t5"], **close}}
     case = case_object(b1["t5"], job["object"], c["lib"].materials, job.get("mass_kg"))
     t0 = time.time()
     r = simulate_t5(j, case, c["sc"], b1, com_offset=job.get("com_offset", 0.0), squeeze=job.get("squeeze_N"),

@@ -488,10 +488,13 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     tau = jaw.torque
     w_close = float(cfg.get("close_rad_s", 0.3))
     kv_drive = tau / 0.2
-    # The rated close only pushes. On the hub path the arm's stop on the hub's impact already swings the fingers shut,
-    # and with no joint damping they coast in at about the rated speed. A design's own lower closing speed (SIM round
-    # 18 b) needs the drive to hold them back as well: `close_brakes` lets the servo brake, within the drive's torque.
-    brake_floor = -tau if cfg.get("close_brakes") else 0.0
+    # SIM round 19: the close is a speed servo that drives and brakes within its torque, as a geared drive's is. On the
+    # hub path the arm's stop on the hub's impact swings the fingers shut, and with no joint damping a push-only
+    # governor lets them coast in; `close_brakes: false` keeps that governor, as the rows before round 19 ran.
+    # SIM round 20: `close_torque_Nm` (per finger) caps the drive in the close alone. The hold after it is the stiff
+    # servo's, so it doesn't change.
+    tau_close = float(cfg.get("close_torque_Nm") or tau)
+    brake_floor = -tau_close if cfg.get("close_brakes", True) else 0.0
     v_app = float(cfg.get("approach_m_s", 0.1))
     app = float(cfg.get("approach_mm", 30.0)) * 1e-3
     sq_s = float(cfg.get("squeeze_s", 0.4))
@@ -510,6 +513,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     eq_gear = {g: name(mujoco.mjtObj.mjOBJ_EQUALITY, f"gear{g}") for g in G_}
     stop_phi = jaw.phi_max if stop_phi is None else stop_phi
     gear_friction = float(cfg.get("gear_friction_Nm", 1.0))  # per gripper, with the drive off
+    # SIM round 20: `close_gear_friction` puts the gear's friction on each finger through the close, until its jaw holds.
+    close_friction = gear_friction / 2.0 if cfg.get("close_gear_friction") else 0.0
     ccfg = (cfg.get("cases") or {}).get(case.id[3:] if case.id.startswith("t5_") else case.id, {}) or {}
     perf_z = (1.0 - float(ccfg["perforation_from_top"])) * H if ccfg.get("perforation_from_top") is not None else None
 
@@ -825,6 +830,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 "complete": d_state["done"], "sample_s": dump_every * dt, "margin_s": d_margin, "t_first_contact_s": t_first,
                 "t_approach_s": t_app_end, "t_close_s": t_close_end, "t_squeeze_end_s": t_sq_end, "approach": approach,
                 "preset_deg": math.degrees(preset), "close_rad_s": w_close, "close_brakes": brake_floor < 0.0,
+                "close_torque_Nm": tau_close, "close_gear_friction_Nm": close_friction, "hold_s": dict(t_hold),
                 "approach_m_s": v_app, "seat_m_s": v_seat,
                 "contact_N": CONTACT_N, "fingers": fingers,
                 "first_contact": {nm: {k: sig(v) for k, v in d.items()} for nm, d in d_first.items()},
@@ -849,6 +855,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     phase = "approach"
     arm_done = {g: False for g in G_}
     jaw_hold = {g: None for g in G_}
+    t_hold = {g: math.nan for g in G_}
     jaw_note = {g: "" for g in G_}
     stall = {g: 0.0 for g in G_}
     first_touch = {g: math.nan for g in G_}
@@ -937,7 +944,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 elif jaw_hold[g] is not None:
                     u = kp_j * (jaw_hold[g] - phi) - kv_j * om
                 elif phase == "close":
-                    u = -min(max(kv_drive * (w_close + om), brake_floor), tau)
+                    u = -min(max(kv_drive * (w_close + om), brake_floor), tau_close)
                 else:
                     u = kp_j * (preset - phi) - kv_j * om
                 data.ctrl[a_drive[f]] = u
@@ -1008,11 +1015,14 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                     data.ctrl[a_pos[g]] = float(data.qpos[q_arm[g]])
             if all(arm_done.values()):
                 phase, t_app_end = "close", t
+                if close_friction > 0.0 and approach != "seated":
+                    for f in body_of:
+                        model.dof_frictionloss[v_f[f]] = close_friction
                 if approach == "seated":
                     # Revision 2.13: the jaw stays on its stops, and the arms rise to lift the case onto the cradle
                     # before they squeeze.
                     for g in G_:
-                        jaw_hold[g] = preset
+                        jaw_hold[g], t_hold[g] = preset, t
                         jaw_note[g] = "seated on its stops"
                     phase = "seat"
             elif t > t_limit:
@@ -1047,7 +1057,10 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 om = abs(float(data.qvel[v_f[f_o]]))
                 stall[g] = stall[g] + dt if (om < 0.02 and (touch_o or touch_t)) else 0.0
                 if (touch_o and touch_t) or stall[g] > 0.03:
-                    jaw_hold[g] = float(data.qpos[q_f[f_o]])
+                    jaw_hold[g], t_hold[g] = float(data.qpos[q_f[f_o]]), t
+                    if close_friction > 0.0:
+                        for f in fingers[g].values():
+                            model.dof_frictionloss[v_f[f]] = 0.0
                     jaw_note[g] = "both fingers touch" if touch_o and touch_t else (
                         "only the outside finger touches" if touch_o else "only the thumb touches")
             if all(v is not None for v in jaw_hold.values()):
@@ -1213,7 +1226,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                            "deck_off_s": deck_off["s"], "deck_off_phase": deck_off["phase"],
                            "deck_off_longest_s": deck_off["longest_s"], "deck_off_total_s": deck_off["total_s"],
                            "deck_min_before_squeeze_N": deck_off["min_N"] if math.isfinite(deck_off["min_N"]) else math.nan,
-                           "drive_cap_Nm": drive_cap, "drive_over_cap": any(drive_over.values())}
+                           "drive_cap_Nm": drive_cap, "drive_over_cap": any(drive_over.values()),
+                           "close_rad_s": w_close, "close_brakes": brake_floor < 0.0, "close_torque_Nm": tau_close,
+                           "close_gear_friction_Nm": close_friction}
 
     def close_fields(g: str) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -1232,7 +1247,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         for g in G_:
             res.update({f"{g}_touch_deg": math.degrees(jaw_hold[g]) if jaw_hold[g] is not None else math.nan,
                         f"{g}_first_touch_deg": math.degrees(first_touch[g]) if math.isfinite(first_touch[g]) else math.nan,
-                        f"{g}_close": jaw_note[g]})
+                        f"{g}_close": jaw_note[g], f"{g}_hold_s": t_hold[g]})
             res.update(close_fields(g))
         res.update(close_only=True, thumb_limit_kPa=case.material.allow_pressure / 1e3, supported=None, passed=None,
                    score=None, limiting="", margins={})
@@ -1245,7 +1260,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         res.update({
             f"{g}_touch_deg": math.degrees(jaw_hold[g]) if jaw_hold[g] is not None else math.nan,
             f"{g}_first_touch_deg": math.degrees(first_touch[g]) if math.isfinite(first_touch[g]) else math.nan,
-            f"{g}_close": jaw_note[g],
+            f"{g}_close": jaw_note[g], f"{g}_hold_s": t_hold[g],
             f"{g}_hold_Nm": mean(stats["hold"]["tau"][g]),
             f"{g}_peak_Nm": stats["peak_tau"][g], f"{g}_peak_phase": stats["peak_tau_phase"][g],
             f"{g}_out_M_hold_Nm": mean(stats["hold"]["M"][f_o]), f"{g}_thumb_M_hold_Nm": mean(stats["hold"]["M"][f_t]),

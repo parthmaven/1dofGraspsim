@@ -1079,8 +1079,12 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
         on, off = (simulate_t5(j, case, c["sc"], {**c["b1"], **fine}, stop_g=0.0, power_s=0.1, close_dump=d)
                    for d in (True, False))
         only = simulate_t5(j, case, c["sc"], c["b1"], close_dump=True, close_only=True)
-        slow = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_rad_s": 0.15, "close_brakes": True}},
+        slow = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_rad_s": 0.15}},
                            close_dump=True, close_only=True)
+        push = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_brakes": False}}, close_only=True)
+        low = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_torque_Nm": 1.5,
+                                                                  "close_gear_friction": True}},
+                          close_dump=True, close_only=True)
     d = on.pop("close_dump")
     # The close alone stops at the end of the squeeze, rates nothing, and reads the same close as the whole run, which
     # had a different timeline.
@@ -1127,13 +1131,30 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
     for f in ("AL", "AR", "BL", "BR"):
         assert fc[f]["phase"] == "close" and fc[f]["closing_before_m_s"] > 0.0
         assert abs(fc[f]["w_rad_s"]) == pytest.approx(d["close_rad_s"], rel=0.15)
-    # A design's own lower closing speed (SIM round 18 b): the drive brakes the fingers to it. The rated close only
-    # pushes, and the hub's impact swings the fingers in at about the rated speed.
+    # A design's own lower closing speed (SIM round 18 b): the drive brakes the fingers to it.
     sd = slow.pop("close_dump")
-    assert sd["close_brakes"] and not d["close_brakes"] and sd["close_rad_s"] == 0.15
+    assert sd["close_brakes"] and d["close_brakes"] and sd["close_rad_s"] == 0.15
     for f in ("AL", "AR", "BL", "BR"):
         assert sd["first_contact"][f]["phase"] == "close"
         assert abs(sd["first_contact"][f]["w_rad_s"]) == pytest.approx(0.15, rel=0.15)
+    # At the rated speed the brake changes nothing (SIM round 19): the push-only governor's close is the same.
+    assert not push["close_brakes"] and only["close_brakes"]
+    for g in "AB":
+        assert push[f"{g}_touch_deg"] == pytest.approx(only[f"{g}_touch_deg"], abs=0.05)
+        for part in ("out", "thumb", "hub"):
+            assert push[f"{g}_{part}_close_5ms_N"] == pytest.approx(only[f"{g}_{part}_close_5ms_N"], rel=0.05, abs=0.5)
+    # SIM round 20's two-stage close: the drive closes at the named torque, against the gear's friction, until both
+    # fingers touch or the jaw stalls; then the stiff servo holds the angle, as it does after the rated close.
+    ld = low.pop("close_dump")
+    assert low["ok"] and low["close_torque_Nm"] == 1.5 and low["close_gear_friction_Nm"] == pytest.approx(0.5)
+    assert only["close_torque_Nm"] == j.torque and only["close_gear_friction_Nm"] == 0.0
+    s = ld["samples"]
+    for g, fs in ld["fingers"].items():
+        assert ld["t_approach_s"] < ld["hold_s"][g] <= ld["t_close_s"] and low[f"{g}_hold_s"] == ld["hold_s"][g]
+        assert math.isfinite(low[f"{g}_touch_deg"]) and low[f"{g}_close"]
+        for f in fs.values():
+            tq = [abs(v) for v, t, ph in zip(s[f"{f}_tau_Nm"], s["t"], s["phase"]) if ph == "close" and t < ld["hold_s"][g]]
+            assert tq and max(tq) <= 1.5 + 1e-9
 
     # Through the batch runner on the stop-seated cradle, at a design's own 50 mm/s approach (SIM round 18 b): the
     # dump goes to its own file, named in the row.
