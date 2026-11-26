@@ -1,0 +1,196 @@
+# S2 Deep reach (tooth-grip claw): batch 1, author SR (subagent bc-19ae4ad9-21c1-5f6c-8119-69c7810d0cde).
+# Written from concept-spec-template.yaml revision 2, against test-conditions.md revision 2.
+# Frame: graspsim2d finger-local, mm. u along the finger, v inward; the face plane is v = 17.75.
+# Geometry check: internal/gripper-review/scripts/sr-spec-check.py.
+# The lane is reworked (see notes): the box pads go on the tooth beyond the undercut, and the arm is set back.
+
+id: S2
+name: Deep reach claw
+author: SR
+batch: 1
+status: proposed
+moving_parts: none
+idea: >
+  Use the full 160 mm to grip boxes on the cereal-backed panel, low on the box, with Parth's
+  undercut and chisel kept. Pads behind the undercut can't do that: with the pocket and the
+  tooth in the last ~48 mm, a pad on the main face meets the box at its top edge, which is
+  below the fill line on none of the catalog. So the box pad moves onto the tooth
+  beyond the undercut, the only part that reaches deep. Behind the tooth the arm steps out
+  16 to 30 mm on a steep root ramp, so the box's top edge passes it, and the tooth alone
+  meets the box side. The finger becomes a claw: a straight, set-back arm, 16 to 24 mm deep
+  and 100 mm wide, ending in a tooth that stands back up to the face plane. The tooth carries
+  a short PU pad behind a dam, with the chisel stepped back 5 mm beyond it. The space between
+  the arm and the tooth is the crate undercut, and the tooth's level-cut back face hooks the
+  lip. Compared with the platform, the paddle and its face are gone and the grip moves 80 mm
+  toward the tip. Compared with S5's crank, the distal contact is short and sits on the tooth,
+  not a long parallel face, and the step is at the root, where T5's moment is carried by the
+  widest section.
+
+strategy:
+  T1: "Deep side grip. The box's top edge rides past the set-back arm, and the tooth pad meets the box side 83 to 93 mm below its top at 160 mm, below the fill line on 7 of the 8 library boxes. CFS is the exception at 75 to 86 mm against 91 mm of headspace."
+  T2: "The tooth pads meet at the 2.5 mm closed gap, so the sheet is pinched pad to pad over 9 to 12 mm, inside the 30 mm band. The chisels are 5 mm back and stay off it."
+  T3: "The chisel is at most 2.5 mm thick at the 15 mm entry (2.3 mm at nominal), with a flat inner face, so it enters a full case's 1.3 mm gap. The tooth's distal face sits 1.5 mm above the box tops at 15 mm of entry, so the 20 mm sensitivity isn't reached."
+  T4: "The tooth (26 to 29 mm, far wall to tip) fits the 30 mm of free wall. The far wall, level-cut or back-cut by up to 2 mm, carries the lip on printed PA12 at the dam, not on the pad's edge. The pocket is 16 to 30 mm deep."
+  T5: "The case bears on the tooth pad's distal end at about 30 deg per finger, 145 mm from the pivot, on the pad and not the chisel. The actuator holds the opening, backed by a power-off brake."
+  durability: "A 16 to 24 mm arm 100 to 110 mm wide, 30 mm at the ramp, a 6 mm root fillet at the ramp's foot and 3 mm at the far wall. The pad sits behind a printed dam and is the only wear part."
+
+fingers:
+  symmetric: true
+  asymmetric_for: []
+  outside:
+    root: platform
+    outline:
+      - [46.0, 17.75]                                                          # root junction (the platform's face)
+      - ["46 + ramp_len", "17.75 - arm_offset"]                                # steep root ramp: the arm steps out (6 mm root fillet at its foot)
+      - ["finger_reach - tooth_len + far_backcut", "17.75 - arm_offset"]       # arm inner face to the far wall's foot (3 mm root radius)
+      - ["finger_reach - tooth_len", "16.25 - tooth_wedge"]                    # far wall mouth: the dam's top, 1.5 mm below the pad's proximal edge
+      - ["finger_reach - tooth_len + 2.5", "16.25 - tooth_wedge"]              # printed dam, 2.5 mm long
+      - ["finger_reach - tooth_len + 2.5", "17.75 - tooth_wedge - pad_thickness"]  # pad seat, proximal end
+      - ["finger_reach - chisel_len", "17.75 - pad_thickness"]                 # pad seat, distal end
+      - ["finger_reach - chisel_len + 1.5", "17.75 - chisel_setback"]          # step to the chisel
+      - ["finger_reach", "17.75 - chisel_setback"]                             # chisel inner face, flat to the point
+      - ["finger_reach", "17.75 - chisel_setback - tip_land"]                  # the land
+      - ["finger_reach - chisel_len", "17.75 - chisel_setback - chisel_t"]     # chisel back at its root
+      - ["finger_reach - chisel_len", "17.75 - arm_offset - arm_depth"]        # tooth's distal face, down to the arm's back
+      - ["46 + ramp_len", "17.75 - arm_offset - arm_depth"]                    # arm back
+      - [46.0, -21.25]                                                         # root junction (the platform's back)
+    body_width_mm:              # the arm is widened to 100 mm so the tooth pad keeps the 25 kPa bed limit at 20 to 27 N
+      - [46, 155]
+      - [70, 110]
+      - [90, 100]
+      - ["finger_reach - chisel_len", 100]
+      - ["finger_reach", 80]
+    pads:
+      - name: tooth
+        role: all               # T1 boxes, T2 sheets, and the T5 bearing and wall contacts
+        side: inner
+        face: [["finger_reach - tooth_len + 2.5", "17.75 - tooth_wedge"], ["finger_reach - chisel_len", 17.75]]
+        crown_radius_mm: null
+        thickness_mm: "pad_thickness"
+        shore_a: "pad_shore"
+        width_mm: 100
+        material: "cast PU in its seat, held mechanically by the printed dam, the chisel step and two dovetail grooves along the seat, and bonded; blue, metal-detectable grade"
+    features:
+      tip:
+        thickness_profile_mm:
+          - ["finger_reach", "tip_land"]
+          - ["finger_reach - chisel_len + 1.5", "chisel_t"]
+          - ["finger_reach - chisel_len", "arm_offset + arm_depth"]
+      undercut:
+        u_from: "46 + ramp_len"
+        u_to: "finger_reach - tooth_len"
+        depth_mm: "arm_offset - 1.5"
+        root_radius_mm: 3
+        side: inner
+        purpose: "seats the crate's rim lip (test-conditions.md, T4) against the tooth's far wall, and keeps the arm clear of the box's top edge in T1. Place the T4 lip at the far wall, u_to."
+      hard_stop:
+        type: end_of_stroke
+        opening_deg: 90
+        where: "a printed shoulder on each finger's root against the bracket, faced with a steel wear plate. It sits at the end of the stroke: 90 deg, or 45 deg under the included-angle reading."
+  inside: same
+
+search:
+  base_concept: new
+  existing_variables:           # for a new concept: the existing variables the expressions and pads use, with narrowed ranges
+    active: [finger_reach, finger_torque, pad_thickness, pad_shore]
+    fixed: {}
+    narrow:
+      finger_reach: [150, 160]
+      finger_torque: [1.0, 8.0]
+      pad_thickness: [3, 6]
+      pad_shore: [40, 60]
+    nominal:
+      finger_reach: 160
+      finger_torque: 3.0
+      pad_thickness: 4
+      pad_shore: 50
+  new_variables:
+    arm_offset: {range: [16, 30], unit: mm, nominal: 26, meaning: "how far the arm's inner face sits outward of the face plane; the tooth stands this proud of the arm. Deeper boxes need more: CFS gains 8 mm of contact depth from 24 to 30"}
+    tooth_wedge: {range: [0, 3], unit: mm, nominal: 2, meaning: "pad face's proximal end sits this far below the face plane (up to about 18 deg over 9 mm), so a leaning box meets the whole pad, not its proximal edge"}
+    arm_depth: {range: [16, 24], unit: mm, nominal: 20, meaning: "in-plane depth of the set-back arm (batch rule: beam at least 15 to 20 mm)"}
+    ramp_len: {range: [8, 16], unit: mm, nominal: 12, meaning: "u length of the root ramp from the platform face down to the arm (steeper lets boxes in deeper)"}
+    tooth_len: {range: [26, 29], unit: mm, nominal: 28, meaning: "far wall to tip; must fit the 30 mm of free wall under the T4 lip"}
+    far_backcut: {range: [0, 2], unit: mm, nominal: 1, meaning: "far wall's foot runs this far distal of its mouth (0 = level-cut)"}
+    chisel_len: {range: [16.5, 18], unit: mm, nominal: 16.5, meaning: "chisel length from the step to the point; at 16.5 with the thickest chisel_t and tip_land the tip is 2.47 mm thick at the 15 mm T3 entry"}
+    chisel_t: {range: [2.0, 2.6], unit: mm, nominal: 2.4, meaning: "chisel thickness at its root; at most 2.6 so the tip stays under about 2.6 mm at the 15 mm T3 entry (a full case's gap is 1.3 mm)"}
+    tip_land: {range: [0.8, 1.2], unit: mm, nominal: 1.0, meaning: "land at the point"}
+    chisel_setback: {range: [4.5, 6], unit: mm, nominal: 5, meaning: "chisel's inner face set back from the face plane, so the T5 case and the sheets bear on the pad, not the point"}
+  fixed_by_spec:
+    - "root and hinge (u <= 46), the platform's: a hardware rule"
+    - "face plane v = 17.75 at the tooth pad: keeps the platform's 2.5 mm closed gap for T2"
+    - "dam 2.5 mm long and 1.5 mm below the face plane: the lip bears on printed PA12, not on the pad's edge"
+    - "pad and body width 100 mm: the bed-pressure limit (25 kPa) at 20 to 27 N needs about 1,000 mm2 of pad"
+    - "chisel step 1.5 mm long, as S1"
+
+stroke:
+  readings: [45, 90]
+
+materials:
+  finger: common
+  print_orientation: flat
+
+notes: >
+  Lane rework: I've kept the lane's aim, which is to use length to grip below the fill line,
+  and its rules (chisel, undercut, T5 section). I've changed where the box pad goes, because
+  the lane's own geometry defeats it. A pad behind the undercut sits at least 46 mm from the
+  tip, and a straight face meets a box only at its top edge: 0 to 3 mm down on every box in
+  the 185-row catalog, which is below the fill line on none of them at any length or fill.
+  Only the tooth beyond the undercut reaches deep. It can meet the box side only if
+  everything proximal stands back by about (u_tooth - u_top) tan(phi), 17 to 30 mm, hence
+  the set-back arm. I'm telling the project manager. S5 stays distinct: S5 is a crank with a
+  long parallel distal face for the T5 cradle, and S2 is a short tooth contact with the step
+  at the root.
+  Length: the main search runs 150 to 160 mm, nominal 160. The flagged 170 mm run is worth
+  it for S2, more than for any lane I've worked. The cap rises from 110.5 to 120.5 mm, and
+  the tooth contact moves about 10 mm deeper. I checked first contact on rigid outlines at the
+  deepest insertion whose first touch is the tooth (scripts/sr-spec-check.py --coverage). On
+  the 185-row catalog at the catalog's fill, the tooth lands below the fill line on 35 to 41 %
+  of boxes at 160 mm and 56 to 72 % at 170 mm, the upper figures at arm_offset 30 and
+  tooth_wedge 3. Loose from the plant (x1.09) that is 85 to 90 % and 94 to 95 %; settled after
+  a truck ride (x1.09/1.18), 10 % and 24 to 25 %; at 150 mm, 14 to 18 % at the catalog's fill.
+  Cheerios Family Size, 91 mm of headspace, gets 75 to 86 mm at 160 and 98 mm at 170. So the 170 mm run is
+  what brings it, and the catalog's 80 to 95 mm headspace class, below the fill line. The
+  cost is 6 % more T4 and T5 moment, and a 170 mm finger is flagged, not dropped. Run it at
+  arm_offset 28 to 30.
+  T5's opening is held by the actuator, as every concept runs, plus a power-off brake (EE),
+  with metal gears. No L-angle stop: the case bears at about 30 deg per finger, so a 45 deg
+  stop is never loaded (FP F5).
+  T4a needs the teeth, at u about 132, to clear the 212 mm lip span. That takes about
+  50 deg per finger, so at the 45 deg reading S2 can't span T4a's crate and only T4b runs.
+  The 90 deg reading is fine.
+  General Mills' gates. G1, T5 safety: rated T5 mass 23 kg for the finger. At 23 kg x1.5 with
+  the 60/40 share the arm peaks at 4.1 MPa with K_t 2 (u 70, 20 by 110 mm), and the root is
+  1.9 MPa on its real section, against 16 MPa; the 12 kg 2 ft case gives 2.1 MPa. The gripper
+  is rated 23 kg only with the next-phase hinge hardware (SR memo, hinge check). On the
+  platform's printed hinge as built it rates about 11 kg: S2's tall tooth puts its T5 load
+  23 mm below the lower bearing, and the bearing next to the gear reaches s0 0.94 at 12 kg.
+  With the motor off, the L is held by the drive's spring-applied power-off brake, at least
+  70 N m at the output (45 N m per gripper at 23 kg); there is no stop. Out-of-plane envelope:
+  the arm and tooth are 100 to 110 mm tall and sit top-aligned with the platform root
+  (z -1.6 to -112 in the platform frame), inside the 161 mm finger and the gripper's 170 mm
+  stack (z -171 to -1), so T5's slot is 210 by 120 mm. G2, foreign material: nothing on S2
+  comes off. The tooth pad is cast in its seat and held mechanically by the dam, the chisel
+  step and two dovetail grooves, as well as by the bond; there are no pins, springs, clips or
+  inserts. A worn pad means a finger swap at the pivot, on the 2 captive M5 A4 stainless
+  screws, which needs a tool. That conflicts with GM-A13's tool-free pad change; G2 governs.
+  Template gaps, as in S1: thickness_mm and shore_a are expressions; body_width_mm stations
+  use finger_reach; existing_variables is filled for a new concept; the undercut's depth
+  is an expression; and there is no field for where the widths sit out of plane.
+
+expected:
+  T1: "The strongest of my lanes: 6 to 7 of 8 boxes at 160 mm, if the sim's tooth contact matches the geometry, and CFS joins at 170 mm. A contact below the fill line lets the force rise to the 25 kPa bed limit (about 22 N on the 9 x 100 mm pad), against 9 to 20 N needed at mu 0.5 with the safety factor. The one torque must also suit the sheets, so the heaviest boxes are the ones at risk."
+  T2: "Good: 5 to 6 of 6 sheets. Pad to pad over 9 to 12 mm, 100 mm wide, so pressure stays near 20 kPa at 20 N, under the 90 kPa flute limit."
+  T3: "Enters: at most 2.5 mm thick at the 15 mm entry (2.3 mm at nominal). Holding CFS on bare chisels at mu 0.3 within 10 N is marginal."
+  T4: "T4b passes, with the lip on the far wall and the tooth under it. T4a can't be reached at the 45 deg reading; at 90 deg it passes."
+  T5: "Supports only with the brake. 40 to 45 N m per gripper at 23 kg, at 143 mm. Arm stress is 4.1 MPa with K_t 2 at 23 kg and 2.1 MPa at the 12 kg duty (110 by 20 mm section at u 70); the tooth root (10 mm along u by 100 mm) is about 5 MPa with K_t 2."
+
+tradeoffs:
+  - "Best T1 reach of the three, but the claw is wider. The arm's back sits 10 to 18 mm outside the platform's, so neighbours in a tight row see a wider finger above the box tops, and the closed gripper is about 20 to 36 mm wider overall."
+  - "The pad is short, 9 to 12 mm, which caps the grip force at the bed limit, so the heaviest boxes need the 170 mm run's deeper contact."
+  - "The steep root ramp lets boxes in deeper but puts a 117 deg re-entrant corner at the root, so it needs a 6 mm fillet."
+
+risks:
+  - "If the sim's contact model lets the arm's ramp touch a box top before the tooth meets the side, the T1 gain disappears. That is a geometry check for the design-search worker."
+  - "The short pad on a narrow tooth is the wear item and peels at its edges. The dam protects the proximal edge from the crate lip, and the distal edge meets the chisel step."
+  - "T5 relies on a brake and the next-phase hinge, as S1. S2's tall tooth loads the hinge hardest of the three: 1.7 kN on the bearing next to the gear and 0.57 kN on the lower one at 23 kg (SR memo, hinge check)."
+  - "The 100 mm wide arm and pad add mass and inertia, about 2 to 3 times the platform's distal arm."

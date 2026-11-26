@@ -121,6 +121,11 @@ class Pad:
     pivot_depth: float | None = None  # mm behind the face; None = rigid mount
     pivot_stiffness: float = 0.0  # N*m/rad
     pivot_range: float = 0.0  # rad
+    # A bare printed face marked as a contact face: rigid, at the bare friction for the object.
+    rigid: bool = False
+    # An even layer over a curved face: face points (u, v), proximal to distal. The chord
+    # sets face_u, face_v and angle; `length` is the arc length.
+    profile: tuple[tuple[float, float], ...] | None = None
 
     @property
     def tangent(self) -> np.ndarray:
@@ -136,7 +141,7 @@ class Pad:
 
     @property
     def crowned(self) -> bool:
-        return math.isfinite(self.crown_radius)
+        return math.isfinite(self.crown_radius) and self.profile is None
 
     @property
     def pivot(self) -> np.ndarray | None:
@@ -154,6 +159,18 @@ class Pad:
         """Points on the face (proximal to distal), inward normals, arc length per
         point (mm) and local elastomer thickness (mm)."""
         t, nn, c = self.tangent, self.normal, self.centre
+        if self.profile is not None:
+            P = np.asarray(self.profile, dtype=float)
+            seg = np.hypot(*np.diff(P, axis=0).T)
+            s_knots = np.concatenate([[0.0], np.cumsum(seg)])
+            s = np.linspace(0.0, s_knots[-1], n)
+            pts = np.stack([np.interp(s, s_knots, P[:, 0]), np.interp(s, s_knots, P[:, 1])], axis=1)
+            d = np.gradient(pts, axis=0)
+            d /= np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-12)[:, None]
+            normals = np.stack([-d[:, 1], d[:, 0]], axis=1)
+            ds = np.full(n, s_knots[-1] / (n - 1))
+            ds[[0, -1]] *= 0.5
+            return pts, normals, ds, np.full(n, self.thickness)
         if not self.crowned:
             s = np.linspace(-self.length / 2, self.length / 2, n)
             pts = c + s[:, None] * t
@@ -175,6 +192,9 @@ class Pad:
 
     def outline(self, n: int = 24) -> np.ndarray:
         """Closed outline of the pad block (face plus a flat back), CCW."""
+        if self.profile is not None:
+            pts, nrm, _, _ = self.face_samples(max(n, 2 * len(self.profile)))
+            return np.vstack([pts, (pts - self.thickness * nrm)[::-1]])
         pts, _, _, _ = self.face_samples(n)
         back_c = self.centre - self.thickness * self.normal
         t = self.tangent

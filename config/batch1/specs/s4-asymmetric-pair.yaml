@@ -1,0 +1,217 @@
+# S4 Asymmetric pair: batch 1, author FP (subagent bc-ccb7b6dd-a8f0-5a1b-9e45-6a2c8199f732).
+# Written from concept-spec-template.yaml revision 2, against test-conditions.md revision 2.
+# Frame: graspsim2d finger-local, mm. u along the finger, v inward; the face plane is v = 17.75.
+# Geometry and loads: internal/gripper-review/scripts/fp-concept-geometry.py, fp-t4a-lip-spans.py
+# (T4a; supersedes fp-t4a-descent.py on hooking) and fp-t3-chisel-lean.py (T3).
+# Nominal numbers in comments are at finger_reach 160 and the new_variables' nominals.
+# MuJoCo only (asymmetric).
+
+id: S4
+name: Asymmetric pair
+author: FP
+batch: 1
+status: proposed
+moving_parts: none
+idea: >
+  The two fingers do different jobs. The outside finger is a flat floor and a hook: a
+  bare face, flat from the root to the shoulder, on which the T5 case bottom lies at the
+  45 deg L. It carries Parth's undercut with a back-cut seat, and a toed-in chisel set back
+  1 mm, so the chisel never carries T5. The inside finger, the thumb, has a 38 mm step
+  right after the root, so at 45 deg its face reaches the case wall: the hub would
+  otherwise hold the wall 35 mm off. Below the step it carries the pad for box faces and
+  for the T4b crate's inner wall, then the same undercut and chisel. The step is
+  interleaved out of plane: it fills one half of the paddle's width, and the outside
+  finger is relieved in that half, so the closed jaw doesn't collide. Against S5's two
+  steps, S4 keeps the outside finger plain and lets the case lie on it, which moves the
+  T5 resultant to about 90 mm from the pivot.
+
+strategy:
+  T1: "The box sits between the outside finger's bare face and the thumb's pad, 85 - 103 mm along the fingers; the thumb's step is the depth stop"
+  T2: "The flush shoulders below the undercuts meet at -0.46 deg and pinch the sheet bare"
+  T3: "Both chisels are toed in 15.5 deg, square at the CFS grasp angle, and <= 3 mm thick over their 18 mm"
+  T4: "T4b: the outside finger's undercut seats the lip and the thumb's pad bears on the wall's inner face; in T4a the 8.1 mm pocket takes the lip only up to about 8.5 deg of jaw angle"
+  T5: "On the 45 deg stop the case bottom lies flat along the outside finger, and the thumb's step bears on the wall 55 - 80 mm from the corner, clear of the hub"
+  durability: "One pad, on the thumb, out of the T3 and T5 contacts; the stop takes T5 off the 1:1 mesh"
+
+fingers:
+  symmetric: false
+  asymmetric_for: [T4, T5]
+  outside:
+    root: platform
+    outline:
+      - [46.0, 17.75]                                                                  # bare floor face, flat to the shoulder
+      - ["finger_reach - chisel_length - tooth_length - undercut_length", 17.75]        # undercut near wall, u 112
+      - ["finger_reach - chisel_length - tooth_length - undercut_length", "17.75 - undercut_depth"]
+      - ["finger_reach - chisel_length - tooth_length + seat_backcut", "17.75 - undercut_depth"]   # floor's far end, u 134
+      - ["finger_reach - chisel_length - tooth_length", 17.75]                          # back-cut far wall, u 132
+      - ["finger_reach - chisel_length", 17.75]                                         # flush shoulder, u 132 - 142
+      - ["finger_reach - chisel_length", "17.75 - chisel_setback - chisel_rise"]        # stop face
+      - ["finger_reach", "17.75 - chisel_setback"]                                      # toed-in chisel face
+      - ["finger_reach", "17.75 - chisel_setback - tip_land"]
+      - ["finger_reach - chisel_length", "17.75 - chisel_setback - chisel_rise - 3.0"]  # chisel back, 3.0 mm at its root
+      - ["finger_reach - chisel_length - 6.0", "17.75 - undercut_depth - ligament"]
+      - ["finger_reach - chisel_length - tooth_length - undercut_length", "17.75 - undercut_depth - ligament"]
+      - [46.0, -21.25]
+    body_width_mm:
+      - [46, 80]            # the paddle's thumb-step layer is relieved at u 46 - 78; this is the remaining layer
+      - [78, 80]
+      - [78, 97]
+      - [90, 97]
+      - [90, 60]
+      - [170, 60]
+    pads: []
+    features:
+      tip:
+        thickness_profile_mm:
+          - ["finger_reach", "tip_land"]
+          - ["finger_reach - 15", "tip_land + (3.0 - tip_land) * 15 / chisel_length"]
+          - ["finger_reach - chisel_length", 3.0]
+      undercut:
+        u_from: "finger_reach - chisel_length - tooth_length - undercut_length"   # 112 at nominal
+        u_to: "finger_reach - chisel_length - tooth_length"                       # 132 at nominal
+        depth_mm: "undercut_depth"
+        root_radius_mm: 3
+        side: inner
+        purpose: "seats the crate's rim lip (T4b: the outside finger is the hook) on a far wall back-cut by atan(seat_backcut / undercut_depth), 0 - 20 deg"
+      hard_stop:
+        type: l_angle
+        opening_deg: 45
+        where: "a printed block on the back of the paddle, about 60 - 80 mm from the pivot, against the bracket; on the finger's own shaft, so the mesh carries no T5 load"
+  inside:
+    root: platform
+    outline:
+      - [46.0, 17.75]
+      - [48.0, 17.75]
+      - [48.0, "17.75 + step_height"]                                                   # the step: 38 mm proud, in one half of the paddle width
+      - ["48 + step_length", "17.75 + step_height"]                                     # wall-bearing face, u 48 - 74
+      - ["48 + step_length", 17.75]                                                     # square distal face, 3 mm fillets
+      - ["52 + step_length", 17.75]
+      - ["52 + step_length", "17.75 - pad_thickness"]                                   # pad seat, u 78 - 109
+      - ["finger_reach - chisel_length - tooth_length - undercut_length - 3", "17.75 - pad_thickness"]
+      - ["finger_reach - chisel_length - tooth_length - undercut_length - 3", 17.75]
+      - ["finger_reach - chisel_length - tooth_length - undercut_length", 17.75]
+      - ["finger_reach - chisel_length - tooth_length - undercut_length", "17.75 - undercut_depth"]
+      - ["finger_reach - chisel_length - tooth_length + seat_backcut", "17.75 - undercut_depth"]
+      - ["finger_reach - chisel_length - tooth_length", 17.75]
+      - ["finger_reach - chisel_length", 17.75]
+      - ["finger_reach - chisel_length", "17.75 - chisel_setback - chisel_rise"]
+      - ["finger_reach", "17.75 - chisel_setback"]
+      - ["finger_reach", "17.75 - chisel_setback - tip_land"]
+      - ["finger_reach - chisel_length", "17.75 - chisel_setback - chisel_rise - 3.0"]
+      - ["finger_reach - chisel_length - 6.0", "17.75 - undercut_depth - ligament"]
+      - ["finger_reach - chisel_length - tooth_length - undercut_length", "17.75 - undercut_depth - ligament"]
+      - [46.0, -21.25]
+    body_width_mm:
+      - [46, 155]           # the step itself is about 70 mm wide, in the layer the outside finger leaves free
+      - [85, 97]
+      - [90, 97]
+      - [90, 60]
+      - [170, 60]
+    pads:
+      - name: thumb_face
+        role: all             # T1 box face and the T4b crate's inner wall; it doesn't reach the T5 wall
+        side: inner
+        face: [["52 + step_length", 17.75], ["finger_reach - chisel_length - tooth_length - undercut_length - 3", 17.75]]
+        crown_radius_mm: null
+        thickness_mm: "pad_thickness"
+        shore_a: "pad_shore"
+        width_mm: 60
+        material: "PU 50A, smooth"
+    features:
+      tip:
+        thickness_profile_mm:
+          - ["finger_reach", "tip_land"]
+          - ["finger_reach - 15", "tip_land + (3.0 - tip_land) * 15 / chisel_length"]
+          - ["finger_reach - chisel_length", 3.0]
+      undercut:
+        u_from: "finger_reach - chisel_length - tooth_length - undercut_length"
+        u_to: "finger_reach - chisel_length - tooth_length"
+        depth_mm: "undercut_depth"
+        root_radius_mm: 3
+        side: inner
+        purpose: "T4a's second hook, for lips up to about 54 mm across; in T4b the thumb bears on the inner wall instead"
+      hard_stop:
+        type: l_angle
+        opening_deg: 45
+        where: "the same printed block as the outside finger, on the thumb's paddle back"
+
+search:
+  base_concept: new
+  existing_variables:
+    active: [finger_reach, finger_torque, pad_thickness, pad_shore]
+    fixed: {}
+    narrow:
+      finger_reach: [150, 160]
+      finger_torque: [2.0, 8.0]
+      pad_thickness: [3, 6]
+      pad_shore: [40, 60]
+    nominal:
+      finger_reach: 160
+      finger_torque: 4.0
+      pad_thickness: 4
+      pad_shore: 50
+  new_variables:
+    step_height: {range: [36.5, 42], unit: mm, nominal: 38, meaning: "thumb step above the face plane; at 45 deg the corner sits 1.41 (17.75 + step_height) - 19 mm ahead of the pivot line, so >= 36.1 clears the hub's 57 mm"}
+    step_length: {range: [20, 30], unit: mm, nominal: 26, meaning: "step length along u, the wall-bearing patch; 26 x 70 mm keeps 23 kg under the 105 kPa thumb limit"}
+    chisel_length: {range: [15, 19], unit: mm, nominal: 18, meaning: "chisel length; with tooth_length the hook under the lip stays <= 30 mm (T4 free wall)"}
+    chisel_rise: {range: [2, 7], unit: mm, nominal: 5.0, meaning: "chisel toe-in over its length; atan(chisel_rise / chisel_length) = 15.5 deg at nominal, square at the CFS grasp angle in T3"}
+    chisel_setback: {range: [0.5, 2.0], unit: mm, nominal: 1.0, meaning: "chisel tip set back from the face plane, so the T5 floor bears on the shoulder, not the chisel"}
+    tip_land: {range: [1.0, 1.5], unit: mm, nominal: 1.5, meaning: "in-plane thickness at the point (batch rule)"}
+    tooth_length: {range: [10, 11], unit: mm, nominal: 10, meaning: "flush shoulder between the undercut and the chisel"}
+    undercut_length: {range: [18, 22], unit: mm, nominal: 20, meaning: "lip pocket length at the mouth (STEP: u 105 - 125)"}
+    undercut_depth: {range: [7, 11], unit: mm, nominal: 8.1, meaning: "pocket depth below the face plane (STEP: 8.1); the lip sticks out 6 mm"}
+    seat_backcut: {range: [0, 3], unit: mm, nominal: 2, meaning: "far wall's foot runs this far toward the tip past its mouth; 0 is level-cut"}
+    ligament: {range: [11, 16], unit: mm, nominal: 13, meaning: "in-plane depth under the pocket floor (batch rule 10 - 15)"}
+  fixed_by_spec:
+    - "root and hinge (u <= 46), the platform's: a hardware rule"
+    - "step starts at u 48, so the outside finger's relief stays outside the kept root"
+    - "chisel 3.0 mm at its root, bare: the batch rule"
+    - "back at (46, -21.25): the platform's 39 mm root depth"
+    - "outside finger bare: it is the T5 floor and the hook, and a pad would sit in the T3 and T4 contacts"
+    - "hard stop at 45 deg on both fingers: holds T5 (22 - 25 N·m per gripper at 23 kg) off the drive"
+
+stroke:
+  readings: [45]
+
+materials:
+  finger: common
+  print_orientation: flat
+
+notes: >
+  Length. finger_reach is 150 - 160 mm, nominal 160. The flagged 170 mm run is worth it for S4.
+  It lengthens the T5 floor and raises the thumb step's T1 insertion cap from 57 - 75 to
+  66 - 85 mm, at about 5 % more T5 moment. It gains T4a almost nothing: the 8.1 mm pocket
+  limits the hookable span to 54 mm (57 mm at 170), whatever the stroke (fp-t4a-lip-spans.py).
+  Interleave. The thumb's step fills one half of the paddle's width, about 70 mm. The
+  outside finger's paddle is relieved in that half at u 46 - 78, with 4 mm between the layers.
+  Without the relief the step collides with the outside finger below 17.9 deg per finger
+  (fp-concept-geometry.py section 1), which rules out T1 and T2. The 2D outline can't
+  draw it. MuJoCo's finger geoms don't collide with each other (contype GRIP, conaffinity
+  OBJ|TABLE), which matches the relief, but CAD must check the real clearance.
+  T5 geometry at 45 deg: the case bottom lies along the outside finger's face line, and the wall is the
+  thumb step's face line. The corner sits at 26.9 mm from the hub centre, clear of the
+  Ø35 hub with 9 mm to spare. MuJoCo has no hub body, so add one before scoring T5.
+  Otherwise a short step_height would show a cradle the hub would block.
+  How T5's opening is held: the l_angle stop at 45 deg on each finger's own shaft.
+  The analytic screen can't run this concept (asymmetric), so it gets MuJoCo evaluations only.
+
+expected:
+  T1: "MuJoCo only. Passes the light boxes and is panel-limited on heavy ones. The thumb's step caps insertion at 57 - 75 mm, so the grip lands above most fill lines, bare at mu 0.3 on one side and padded at 0.5 on the other (F2)."
+  T2: "Like the platform: the flush shoulders meet at -0.46 deg and pinch bare at mu 0.30 - 0.35. Holds light sheets (F1)."
+  T3: "Enters the 3 mm gap. The chisels are toed in 15.5 deg against a 16.0 deg CFS grasp angle, so they lean 0.5 deg and need a 2.55 mm gap; at 1.3 mm they push a neighbour 1.25 mm (F3, fp-t3-chisel-lean.py)."
+  T4: "Passes T4b and fails T4a. T4b: the outside seat takes 110 N, the thumb's pad holds the inner wall at mu 0.4, and the drive holds a 1.5 N·m opening moment (F4). T4a: the lip fits the 8.1 mm pocket only up to about 8.5 deg of jaw angle, so S4 hooks spans up to 54 mm (57 at 170). The 212 mm bin needs a pocket about 20 mm deep (fp-t4a-lip-spans.py)."
+  T5: "Holds on the stop. The case lies on the outside finger with its resultant about 90 mm out, and the thumb's step bears on the wall, so Q is 22 - 25 N·m per gripper at 23 kg, against 40 - 44 for tip bearing (F5 rework)."
+
+tradeoffs:
+  - "Halves T5's moment against tip bearing, but needs the stop, so it runs at 45 deg only"
+  - "The thumb's step caps T1 insertion at 57 - 75 mm (66 - 85 at 170)"
+  - "One bare finger: T1 friction is 0.3 on that side"
+  - "MuJoCo only, so fewer search evaluations"
+  - "The relief halves the outside finger's paddle width at u 46 - 78"
+
+risks:
+  - "Interleave clearance under out-of-plane load: the step could clash with the outside finger's relieved layer"
+  - "The step bears in one half of the width, a torsion on the thumb's root (about 4 N·m at 23 kg) that 2D can't see"
+  - "Which finger is outside depends on the arm: a gripper mounted the other way round has the step on the wrong finger"
+  - "MuJoCo's missing hub body and finger-finger contact hide the two failure modes this concept is built around"
+  - "A box top edge can catch on the step's square distal face if the descent overshoots"

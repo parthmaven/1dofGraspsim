@@ -1,0 +1,180 @@
+# S5 L-cradle crank: batch 1, author FP (subagent bc-ccb7b6dd-a8f0-5a1b-9e45-6a2c8199f732).
+# Written from concept-spec-template.yaml revision 2, against test-conditions.md revision 2.
+# Frame: graspsim2d finger-local, mm. u along the finger, v inward; the face plane is v = 17.75.
+# Geometry and loads: internal/gripper-review/scripts/fp-concept-geometry.py, fp-t4a-lip-spans.py
+# (T4a; supersedes fp-t4a-descent.py on hooking) and fp-t3-chisel-lean.py (T3).
+# Nominal numbers in comments are at finger_reach 160 and the new_variables' nominals.
+# The lane is reworked (see notes): the steps interleave out of plane, and the 14 deg face is dropped.
+
+id: S5
+name: L-cradle crank
+author: FP
+batch: 1
+status: proposed
+moving_parts: none
+idea: >
+  Each finger carries a 38 mm inward step right after the root. At the 45 deg L the
+  two step faces lie on the case's bottom and wall lines, 57 - 60 mm from the pivots, so
+  the case seats in a true L, clear of the hub, instead of on the tips at about 145 mm.
+  That cuts the T5 moment from about 40 to 16 - 18 N·m per gripper at 23 kg, low enough
+  for the actuator to hold. The steps interleave out of plane like a comb. Each fills
+  one half of the paddle's width, and the other finger is relieved in that half, so the
+  jaw still closes for boxes and sheets. In-plane steps would collide below 35 deg. Below
+  the step, a pad toed in 16 deg (the crank, r1-25's idea) sits square to mid-size boxes at
+  their grasp angle. Then come Parth's undercut, a flush shoulder and a toed-in chisel.
+  Against S4, both fingers are the same, so the analytic screen can run it.
+
+strategy:
+  T1: "The crank pads grip 17 - 29 mm of box face, 80 - 109 mm along the fingers; the steps are the depth stop"
+  T2: "The flush shoulders below the undercuts meet at -0.46 deg and pinch the sheet bare"
+  T3: "Chisels toed in 15.5 deg, square at the CFS grasp angle, <= 3 mm thick over 18 mm"
+  T4: "The lip seats in the undercut on a back-cut far wall: T4b at both readings; T4a only for lips up to about 54 mm across"
+  T5: "Both step faces seat the L, 57 - 60 mm from the pivots and clear of the hub; the actuator holds it at the 90 deg reading, the end stop at 45 deg"
+  durability: "The pads sit out of the T3 and T5 contacts; T5 bears on 26 x 75 mm printed step faces, not on the tips"
+
+fingers:
+  symmetric: true
+  asymmetric_for: []
+  outside:
+    root: platform
+    outline:
+      - [46.0, 17.75]
+      - [48.0, 17.75]
+      - [48.0, "17.75 + step_height"]                                                   # the step, 38 mm proud, in this finger's half of the width
+      - ["48 + step_length", "17.75 + step_height"]                                     # T5 bearing face, u 48 - 74
+      - ["48 + step_length", "17.75 - pad_rise - pad_thickness"]                        # square distal face down to the crank pad's seat
+      - ["finger_reach - chisel_length - tooth_length - undercut_length - 3", "17.75 - pad_thickness"]   # crank seat, toed in 16 deg, u 74 - 109
+      - ["finger_reach - chisel_length - tooth_length - undercut_length - 3", 17.75]
+      - ["finger_reach - chisel_length - tooth_length - undercut_length", 17.75]        # undercut near wall, u 112
+      - ["finger_reach - chisel_length - tooth_length - undercut_length", "17.75 - undercut_depth"]
+      - ["finger_reach - chisel_length - tooth_length + seat_backcut", "17.75 - undercut_depth"]
+      - ["finger_reach - chisel_length - tooth_length", 17.75]                          # back-cut far wall, u 132
+      - ["finger_reach - chisel_length", 17.75]                                         # flush shoulder, u 132 - 142
+      - ["finger_reach - chisel_length", "17.75 - chisel_setback - chisel_rise"]
+      - ["finger_reach", "17.75 - chisel_setback"]                                      # toed-in chisel face
+      - ["finger_reach", "17.75 - chisel_setback - tip_land"]
+      - ["finger_reach - chisel_length", "17.75 - chisel_setback - chisel_rise - 3.0"]
+      - ["finger_reach - chisel_length - 6.0", "17.75 - undercut_depth - ligament"]
+      - ["finger_reach - chisel_length - tooth_length - undercut_length", "17.75 - undercut_depth - ligament"]
+      - [46.0, -21.25]
+    body_width_mm:
+      - [46, 75]            # one half of the paddle at u 46 - 78: the step's half; the other half is relieved
+      - [78, 75]
+      - [78, 97]
+      - [90, 97]
+      - [90, 60]
+      - [170, 60]
+    pads:
+      - name: crank_face
+        role: box
+        side: inner
+        face: [["48 + step_length", "17.75 - pad_rise"], ["finger_reach - chisel_length - tooth_length - undercut_length - 3", 17.75]]
+        crown_radius_mm: null
+        thickness_mm: "pad_thickness"
+        shore_a: "pad_shore"
+        width_mm: 60
+        material: "PU 50A, smooth"
+    features:
+      tip:
+        thickness_profile_mm:
+          - ["finger_reach", "tip_land"]
+          - ["finger_reach - 15", "tip_land + (3.0 - tip_land) * 15 / chisel_length"]
+          - ["finger_reach - chisel_length", 3.0]
+      undercut:
+        u_from: "finger_reach - chisel_length - tooth_length - undercut_length"   # 112 at nominal
+        u_to: "finger_reach - chisel_length - tooth_length"                       # 132 at nominal
+        depth_mm: "undercut_depth"
+        root_radius_mm: 3
+        side: inner
+        purpose: "seats the crate's rim lip (test-conditions.md, T4) on a far wall back-cut by atan(seat_backcut / undercut_depth), 0 - 20 deg"
+      hard_stop:
+        type: end_of_stroke
+        opening_deg: 90
+        where: "a printed shoulder on each finger's paddle back against the bracket, at the end of the stroke: 90 deg, or 45 deg under the 45 deg reading, where it also holds the L"
+  inside: same
+
+search:
+  base_concept: new
+  existing_variables:
+    active: [finger_reach, finger_torque, pad_thickness, pad_shore]
+    fixed: {}
+    narrow:
+      finger_reach: [150, 160]
+      finger_torque: [2.0, 8.0]
+      pad_thickness: [3, 6]
+      pad_shore: [40, 60]
+    nominal:
+      finger_reach: 160
+      finger_torque: 4.0
+      pad_thickness: 4
+      pad_shore: 50
+  new_variables:
+    step_height: {range: [36.5, 42], unit: mm, nominal: 38, meaning: "step above the face plane; at 45 deg the corner sits 1.41 (17.75 + step_height) - 19 mm ahead of the pivot line: 59.8 at 38, so >= 36.1 clears the hub's 57 mm"}
+    step_length: {range: [20, 30], unit: mm, nominal: 26, meaning: "step length along u, the bearing patch; 26 x 75 mm keeps 23 kg under the 105 kPa thumb limit"}
+    pad_rise: {range: [4, 14], unit: mm, nominal: 10, meaning: "crank toe-in: the pad face's root end sits this far outboard of its tip end; atan(pad_rise / pad length) = 16 deg at nominal, square to a 61 mm box at its grasp angle"}
+    chisel_length: {range: [15, 19], unit: mm, nominal: 18, meaning: "chisel length; with tooth_length the hook under the lip stays <= 30 mm (T4 free wall)"}
+    chisel_rise: {range: [2, 7], unit: mm, nominal: 5.0, meaning: "chisel toe-in; atan(chisel_rise / chisel_length) = 15.5 deg at nominal, square at the CFS grasp angle in T3"}
+    chisel_setback: {range: [0.5, 2.0], unit: mm, nominal: 1.0, meaning: "chisel tip set back from the face plane, so no T4 or T5 contact lands on it"}
+    tip_land: {range: [1.0, 1.5], unit: mm, nominal: 1.5, meaning: "in-plane thickness at the point (batch rule)"}
+    tooth_length: {range: [10, 11], unit: mm, nominal: 10, meaning: "flush shoulder between the undercut and the chisel"}
+    undercut_length: {range: [18, 22], unit: mm, nominal: 20, meaning: "lip pocket length at the mouth (STEP: u 105 - 125)"}
+    undercut_depth: {range: [7, 11], unit: mm, nominal: 8.1, meaning: "pocket depth below the face plane (STEP: 8.1)"}
+    seat_backcut: {range: [0, 3], unit: mm, nominal: 2, meaning: "far wall's foot runs this far toward the tip past its mouth; 0 is level-cut"}
+    ligament: {range: [11, 16], unit: mm, nominal: 13, meaning: "in-plane depth under the pocket floor (batch rule 10 - 15)"}
+  fixed_by_spec:
+    - "root and hinge (u <= 46), the platform's: a hardware rule"
+    - "steps start at u 48, so each finger's relief stays outside the kept root"
+    - "chisel 3.0 mm at its root, bare: the batch rule"
+    - "back at (46, -21.25): the platform's 39 mm root depth; the section under the crank seat stays >= 17 mm at nominal"
+    - "step_height >= 36.5: below 36.1 the hub, not the steps, holds the corner, and the cradle is lost"
+
+stroke:
+  readings: [45, 90]
+
+materials:
+  finger: common
+  print_orientation: flat
+
+notes: >
+  Lane rework. batch-1-plan.md's S5, "a 36 mm inward step or a 14 deg distal face", can't
+  be built as drawn. Two in-plane 36 - 38 mm steps make the fingers overlap below 35.3 deg
+  per finger (fp-concept-geometry.py section 1), so the jaw can't close on any T1 box or a T2 sheet.
+  A 14 deg distal face doesn't move the bearing, because the hub still holds the corner
+  57 mm ahead and only the tips touch. So the steps interleave out of plane, a comb: each
+  finger's step fills its half of the paddle width, about 75 mm, with 4 mm between the
+  layers, and the other half is relieved at u 46 - 78. MuJoCo's finger geoms don't collide
+  with each other, which matches the comb. The 2D outline can't show the relief, and CAD must check it.
+  Crank. The toed-in pad is r1-25's cranked-flat idea, moved below the steps. Because the
+  steps cap insertion at 57 - 75 mm, the box's top lands at u 80 - 92, and the pad takes
+  17 - 29 mm of face. One 16 deg angle sits within ±11 deg of square for 45 - 99 mm boxes.
+  Length. finger_reach is 150 - 160 mm, nominal 160. The flagged 170 mm run is worth it for S5.
+  It lowers the box 10 mm further under the steps, giving the crank pads 27 - 39 mm of face.
+  T5 costs nothing, because the steps, not the tips, carry it. T4a gains almost nothing
+  (54 to 57 mm, fp-t4a-lip-spans.py).
+  How T5's opening is held. At the 90 deg reading the actuator holds the L mid-stroke:
+  16 - 18 N·m per gripper at 23 kg (dynamic factor 1.5, equal or 60/40 share). That is
+  within EE's 10 - 25 N·m estimate if the drive gives 18 N·m continuous. At the 45 deg reading the end
+  stop sits at 45 deg and holds it. No l_angle stop, so S5 keeps the 90 deg reading.
+  MuJoCo has no hub body. Add one before scoring T5, so a corner that misses the steps
+  lands on the hub as it would in the real jaw.
+
+expected:
+  T1: "Passes the light and mid boxes and is panel-limited on the heaviest. The 16 deg crank sits within 11 deg of square, so squeeze-out needs mu >= 0.19 against the pad's 0.5. The pads grip 17 - 29 mm above most fill lines (F1, F2)."
+  T2: "Like the platform: the flush shoulders meet at -0.46 deg and pinch bare at mu 0.30 - 0.35. Holds light sheets (F1)."
+  T3: "Enters the 3 mm gap. The chisels are toed in 15.5 deg against a 16.0 deg CFS grasp angle, so they lean 0.5 deg and need a 2.55 mm gap; at 1.3 mm they push a neighbour 1.25 mm (F3, fp-t3-chisel-lean.py)."
+  T4: "Passes T4b at both readings and fails T4a at both. T4b: the seat takes 110 N, and the drive holds a 1.5 N·m opening moment. T4a: the 8.1 mm pocket takes the lip only up to about 8.5 deg of jaw angle, a 54 mm span (57 at 170). The 212 mm bin needs a pocket about 20 mm deep (fp-t4a-lip-spans.py)."
+  T5: "Holds: both step faces seat the L 57 - 60 mm from the pivots, so Q is 16 - 18 N·m per gripper at 23 kg, against 40 - 44 for tip bearing. The actuator can hold that, and the flaps take the load 19 - 45 mm from the wall, not 114 mm in (F5 rework)."
+
+tradeoffs:
+  - "Cuts T5's moment about 2.4 times against tip bearing, but the steps cap T1 insertion at 57 - 75 mm"
+  - "The comb relief halves each paddle's width at u 46 - 78"
+  - "One crank angle covers 45 - 99 mm boxes to ±11 deg"
+  - "Actuator-held T5 keeps the 90 deg reading, but needs 18 N·m continuous at 23 kg"
+  - "Symmetric, so the screen runs it, but the two step faces bear in different halves of the width"
+
+risks:
+  - "The comb's 4 mm layer gap closes under out-of-plane load and the steps clash"
+  - "Each step bears in its own half of the width, so each finger's root sees about 8 N·m of torsion at 23 kg [estimate], which 2D can't check"
+  - "A box top edge can catch on a step's square distal face if the descent overshoots"
+  - "MuJoCo lets the steps pass through each other and has no hub, so both failure modes this concept is built around go unseen"
+  - "Heavier, more complex prints: the steps and reliefs add support material and print time"

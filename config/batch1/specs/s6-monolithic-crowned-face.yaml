@@ -1,0 +1,219 @@
+# S6 Monolithic crowned face: batch 1, author SR (subagent bc-19ae4ad9-21c1-5f6c-8119-69c7810d0cde).
+# Written from concept-spec-template.yaml revision 2, against test-conditions.md revision 2.
+# Frame: graspsim2d finger-local, mm. u along the finger, v inward; the face plane is v = 17.75.
+# Geometry check: internal/gripper-review/scripts/sr-spec-check.py.
+# The crown is printed in the body as a parabola, apex radius crown_R: v = 17.75 - (u - u_apex)^2 / (2 crown_R) at the skin.
+# It is drawn as 7 outline points and skinned with 6 flat segment pads (see notes: the template's crowned pad thins at its ends).
+
+id: S6
+name: Monolithic crowned face
+author: SR
+batch: 1
+status: proposed
+moving_parts: none
+idea: >
+  The platform's zoning on one printed part with no separate pad parts. The main face is
+  printed as a convex crown, a parabola of apex radius 100 to 300 mm from u = 50 to the
+  pocket, under a 1.5 to 3 mm cast PU skin keyed into the core. As the jaw angle changes, the
+  contact rolls along the crown, so the face is always square to the box side where it
+  touches. That removes squeeze-out (mu >= tan(phi)), the failure FP F1 finds for flat faces
+  at 25 to 49 deg of lean, without r2-09's dog-leg. Behind the skin, the crown's fall-away
+  lets the box's top edge pass. Beyond the crown come the crate pocket and a skinned tooth,
+  with the chisel stepped back as in S1 and S2. The difference from S1 is a printed crown in
+  place of a flat pad cartridge, and a skin that can't come off in pieces larger than a
+  sliver, which is the foreign-material case for a food plant. The difference from S2 is that
+  S6 grips on the main face, near the box's top, square on, while S2 grips low on the tooth.
+
+strategy:
+  T1: "Square near-top grip. At the deepest insertion, the crown's start meets the box's top edge within about 5 deg of square, because the crown's slope there takes up most of the 20 to 30 deg lean. At shallower insertions the tangent point moves 10 to 40 mm down the panel. Every contact is above the fill line, so the 10 N panel limit sets the torque."
+  T2: "The skinned tooth faces pinch the sheet over about 8 mm, at the 2.5 mm closed gap; the chisels are 5 mm back."
+  T3: "As S1: at most 2.5 mm thick at the 15 mm entry (2.3 mm at nominal), with a flat inner face, so it enters a full case's 1.3 mm gap; the step stops the entry short of the 20 mm sensitivity."
+  T4: "As S1: an 18 to 22 by 8 to 11 mm pocket, a level-cut or back-cut far wall, a 26 to 28 mm tooth, the lip on the printed dam, and at least 10 mm of ligament behind the pocket."
+  T5: "No cradle. The case bears on the tooth's skin, just behind the chisel, at about 30 deg per finger. The actuator holds the opening, backed by a power-off brake."
+  durability: "One printed part plus a cast skin. No pad joints, clips or carriers. A 70 mm wide distal arm, at least 15 mm deep at the crown's start, 20 mm at the pocket and 18 mm at the tooth. The skin is re-cast in place when it wears."
+
+fingers:
+  symmetric: true
+  asymmetric_for: []
+  outside:
+    root: platform
+    outline:
+      - [46.0, 17.75]                                                    # root junction (the platform's face)
+      # printed crown (the seat under the skin), 7 stations from u = 50 to the pocket
+      - [50.0, "17.75 - pad_thickness - (apex_offset - 6*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 6*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]
+      - ["50 + 1*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - pad_thickness - (apex_offset - 5*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 5*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]
+      - ["50 + 2*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - pad_thickness - (apex_offset - 4*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 4*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]
+      - ["50 + 3*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - pad_thickness - (apex_offset - 3*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 3*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]
+      - ["50 + 4*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - pad_thickness - (apex_offset - 2*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 2*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]
+      - ["50 + 5*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - pad_thickness - (apex_offset - 1*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 1*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]
+      - ["finger_reach - tooth_len - hook_len - 2", "17.75 - pad_thickness - apex_offset*apex_offset/(2*crown_R)"]
+      - ["finger_reach - tooth_len - hook_len", "17.75 - pad_thickness - apex_offset*apex_offset/(2*crown_R)"]  # 2 mm printed land at the skin's end
+      - ["finger_reach - tooth_len - hook_len", "17.75 - hook_depth"]    # pocket floor, proximal end (3 mm root radius)
+      - ["finger_reach - tooth_len + hook_backcut", "17.75 - hook_depth"]  # pocket floor, distal end: the back-cut foot
+      - ["finger_reach - tooth_len", 16.25]                              # far wall mouth: the dam's top, 1.5 mm below the face plane
+      - ["finger_reach - tooth_len + 2.5", 16.25]                        # printed dam
+      - ["finger_reach - tooth_len + 2.5", "17.75 - pad_thickness"]      # tooth skin seat
+      - ["finger_reach - chisel_len", "17.75 - pad_thickness"]
+      - ["finger_reach - chisel_len + 1.5", "17.75 - chisel_setback"]    # step to the chisel
+      - ["finger_reach", "17.75 - chisel_setback"]                       # chisel inner face, flat to the point
+      - ["finger_reach", "17.75 - chisel_setback - tip_land"]            # the land
+      - ["finger_reach - chisel_len", "17.75 - chisel_setback - chisel_t"]  # chisel back at its root
+      - ["finger_reach - tooth_len", "17.75 - hook_depth - hook_lig"]    # tooth back, under the far wall
+      - [90.0, -18.25]                                                   # the platform's back taper
+      - [46.0, -21.25]
+    body_width_mm:
+      - [46, 155]
+      - [85, 97]
+      - [90, 97]
+      - [95, 70]
+      - ["finger_reach - chisel_len", 70]
+      - ["finger_reach", 50]
+    pads:                       # the skin: one cast layer, listed as the facets the builders can place
+      - {name: crown_1, role: box, side: inner, crown_radius_mm: null, thickness_mm: "pad_thickness", shore_a: "pad_shore", width_mm: 70,
+         material: "cast PU skin over the printed crown, keyed into dovetail grooves; blue, metal-detectable grade",
+         face: [[50.0, "17.75 - (apex_offset - 6*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 6*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"],
+                ["50 + 1*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 5*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 5*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]]}
+      - {name: crown_2, role: box, side: inner, crown_radius_mm: null, thickness_mm: "pad_thickness", shore_a: "pad_shore", width_mm: 70,
+         material: "the same skin",
+         face: [["50 + 1*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 5*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 5*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"],
+                ["50 + 2*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 4*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 4*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]]}
+      - {name: crown_3, role: box, side: inner, crown_radius_mm: null, thickness_mm: "pad_thickness", shore_a: "pad_shore", width_mm: 70,
+         material: "the same skin",
+         face: [["50 + 2*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 4*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 4*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"],
+                ["50 + 3*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 3*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 3*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]]}
+      - {name: crown_4, role: box, side: inner, crown_radius_mm: null, thickness_mm: "pad_thickness", shore_a: "pad_shore", width_mm: 70,
+         material: "the same skin",
+         face: [["50 + 3*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 3*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 3*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"],
+                ["50 + 4*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 2*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 2*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]]}
+      - {name: crown_5, role: box, side: inner, crown_radius_mm: null, thickness_mm: "pad_thickness", shore_a: "pad_shore", width_mm: 70,
+         material: "the same skin",
+         face: [["50 + 4*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 2*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 2*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"],
+                ["50 + 5*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 1*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 1*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"]]}
+      - {name: crown_6, role: box, side: inner, crown_radius_mm: null, thickness_mm: "pad_thickness", shore_a: "pad_shore", width_mm: 70,
+         material: "the same skin",
+         face: [["50 + 5*(finger_reach - tooth_len - hook_len - 52)/6", "17.75 - (apex_offset - 1*(finger_reach - tooth_len - hook_len - 52)/6)*(apex_offset - 1*(finger_reach - tooth_len - hook_len - 52)/6)/(2*crown_R)"],
+                ["finger_reach - tooth_len - hook_len - 2", "17.75 - apex_offset*apex_offset/(2*crown_R)"]]}
+      - {name: tooth, role: all, side: inner, crown_radius_mm: null, thickness_mm: "pad_thickness", shore_a: "pad_shore", width_mm: 70,
+         material: "the same skin, cast in the same pour",
+         face: [["finger_reach - tooth_len + 2.5", 17.75], ["finger_reach - chisel_len", 17.75]]}
+    features:
+      tip:
+        thickness_profile_mm:
+          - ["finger_reach", "tip_land"]
+          - ["finger_reach - chisel_len + 1.5", "chisel_t"]
+          - ["finger_reach - chisel_len", "chisel_setback + chisel_t"]
+          - ["finger_reach - tooth_len", "hook_depth + hook_lig"]
+      undercut:
+        u_from: "finger_reach - tooth_len - hook_len"
+        u_to: "finger_reach - tooth_len"
+        depth_mm: "hook_depth"
+        root_radius_mm: 3
+        side: inner
+        purpose: "seats the crate's rim lip (test-conditions.md, T4). The lip bears on the far wall at the printed dam."
+      hard_stop:
+        type: end_of_stroke
+        opening_deg: 90
+        where: "a printed shoulder on each finger's root against the bracket, faced with a steel wear plate. It sits at the end of the stroke: 90 deg, or 45 deg under the included-angle reading."
+  inside: same
+
+search:
+  base_concept: new
+  existing_variables:           # for a new concept: the existing variables the expressions and pads use, with narrowed ranges
+    active: [finger_reach, finger_torque, pad_thickness, pad_shore]
+    fixed: {}
+    narrow:
+      finger_reach: [150, 160]
+      finger_torque: [0.8, 6.0]
+      pad_thickness: [1.5, 3.0]
+      pad_shore: [50, 70]
+    nominal:
+      finger_reach: 155
+      finger_torque: 2.0
+      pad_thickness: 2.0
+      pad_shore: 60
+  new_variables:
+    crown_R: {range: [100, 300], unit: mm, nominal: 150, meaning: "apex radius of the printed parabolic crown (the skin follows it)"}
+    apex_offset: {range: [0, 20], unit: mm, nominal: 8, meaning: "the apex sits this far proximal of the crown's distal end, which is 2 mm before the pocket"}
+    hook_len: {range: [18, 22], unit: mm, nominal: 20, meaning: "crate pocket length at the mouth"}
+    hook_depth: {range: [8, 11], unit: mm, nominal: 9, meaning: "crate pocket depth"}
+    hook_backcut: {range: [0, 2], unit: mm, nominal: 1, meaning: "far wall's foot runs this far distal of its mouth (0 = level-cut)"}
+    hook_lig: {range: [10, 14], unit: mm, nominal: 12, meaning: "in-plane ligament behind the pocket's far end"}
+    tooth_len: {range: [26, 28], unit: mm, nominal: 27, meaning: "far wall to tip; must fit the 30 mm of free wall under the T4 lip"}
+    chisel_len: {range: [16.5, 18], unit: mm, nominal: 16.5, meaning: "chisel length from the step to the point; at 16.5 with the thickest chisel_t and tip_land the tip is 2.47 mm thick at the 15 mm T3 entry"}
+    chisel_t: {range: [2.0, 2.6], unit: mm, nominal: 2.4, meaning: "chisel thickness at its root; at most 2.6 so the tip stays under about 2.6 mm at the 15 mm T3 entry (a full case's gap is 1.3 mm)"}
+    tip_land: {range: [0.8, 1.2], unit: mm, nominal: 1.0, meaning: "land at the point"}
+    chisel_setback: {range: [4.5, 6], unit: mm, nominal: 5, meaning: "chisel's inner face set back from the face plane, so the T5 case bears on the tooth's skin"}
+  fixed_by_spec:
+    - "root and hinge (u <= 46), the platform's: a hardware rule"
+    - "crown from u = 50 to 2 mm before the pocket: the hub cap keeps box tops at u >= 49.5"
+    - "parabolic profile, not a circular arc: keeps the expressions arithmetic; within 12 % of a circle's fall at the crown's far end, exact at the apex"
+    - "back taper (46, -21.25) to (90, -18.25), the platform's; arm width 70 mm from u 95"
+    - "dam 2.5 mm long, 1.5 mm below the face plane, as S2; chisel step 1.5 mm, as S1"
+
+stroke:
+  readings: [45, 90]
+
+materials:
+  finger: common
+  print_orientation: flat
+
+notes: >
+  Length: searched 150 to 160 mm, nominal 155. The flagged 170 mm run isn't worth it for S6.
+  The crown sits behind the pocket and the tooth. At the deepest insertion it meets every box
+  at its top edge, 0 to 2.3 mm down on all 185 catalog boxes at 155 and 160 mm
+  (scripts/sr-spec-check.py --coverage), so it is below the fill line on none of them at any
+  fill. Shallower insertions move the tangent point at most about 40 mm down, still in the
+  headspace. A longer finger doesn't change that, and the 13 % more T4 and T5 moment buys
+  nothing S6 uses.
+  Parth's features: all three kept, as S1 (chisel per FP F3, pocket per FP F4), with the
+  chisel step that moves the T5 bearing onto the tooth. T5 section: the root is the
+  platform's 39 mm; the crown's printed core is at least 15 mm deep where it falls furthest
+  (u = 50, R = 100); there is at least 10 mm behind the pocket; the fillets are 3 mm. T5's
+  opening is held by the actuator plus a power-off brake (EE), with metal gears, for the
+  same reason as S1: a 45 deg stop is never loaded.
+  What this lane tests: whether a square, rolling contact without the dog-leg recovers T1
+  within 160 mm. My expectation is no for heavy boxes. The lever is contact depth, not
+  contact angle: the pocket confines every main-face contact to the empty headspace, so the
+  10 N panel limit binds. S6 should beat S1 on squeeze-out, sheets and foreign material, and
+  lose to S2 on boxes. I've kept the lane, rather than swapping it, because it isolates the
+  crowning question and is the batch's durability reference.
+  General Mills' gates. G1, T5 safety: rated T5 mass 23 kg for the finger. At 23 kg x1.5 with
+  the 60/40 share the arm peaks at 2.8 MPa with K_t 2 at the pocket ligament (u 118, 16 by
+  70 mm), and the root is 1.8 MPa on its real section, against 16 MPa; the 12 kg 2 ft case
+  gives 1.5 MPa. The gripper is rated 23 kg only with the next-phase hinge hardware (SR memo,
+  hinge check); on the platform's printed hinge as built it rates about 12 kg. With the motor
+  off, the L is held by the drive's spring-applied power-off brake, at least 70 N m at the
+  output (44 N m per gripper at 23 kg); there is no stop. Out-of-plane envelope: the 70 mm
+  distal arm sits top-aligned with the platform root (z -1.6 to -72 in the platform frame),
+  inside the 161 mm finger and the gripper's 170 mm stack (z -171 to -1), so T5's slot is
+  210 by 120 mm. G2, foreign material: nothing on S6 comes off, and there is no carrier, clip,
+  pin, spring or insert. The skin is held mechanically by dovetail grooves in the printed core
+  as well as by the primer bond. Per General Mills it counts only after a peel test, so the
+  durability run peels it at the pocket edge and at u = 50 after the year's 3 M grasps. A worn
+  skin means re-casting, or a finger swap on the 2 captive M5 A4 stainless screws.
+  Template gaps: (1) A uniform skin over a printed crown can't be written as the template's
+  crowned pad, whose ends thin by the sagitta (change 3). Here the crown is in the outline and
+  the skin is 6 flat facet pads plus the tooth pad, all one cast layer. A builder option for
+  "uniform layer over the outline's face" would model it better. (2) The crown is a parabola
+  in arithmetic expressions, because the template's expressions have no sqrt. (3) As S1:
+  thickness_mm and shore_a are expressions, body_width_mm stations use finger_reach,
+  existing_variables is filled for a new concept, and there is no field for where the widths
+  sit out of plane.
+
+expected:
+  T1: "Weak to fair: 2 to 4 of 8 boxes (the mini, Cheerios 8.9 oz, perhaps Grape-Nuts). No squeeze-out at any lean, but every contact is on the empty panel, so a 0.5 to 0.9 kg box needs 11 to 20 N against the 10 N limit, as S1."
+  T2: "Good: 5 to 6 of 6 sheets. A skin on the tooth pinches pad to pad, as S2 but over about 8 mm, 70 mm wide."
+  T3: "Enters: at most 2.5 mm thick at the 15 mm entry (2.3 mm at nominal). Holding CFS on bare chisels at mu 0.3 within 10 N is marginal."
+  T4: "Passes both cases at the 45 deg reading, as S1. The tooth sits at u 128 to 134 (L 155), so T4a's 44 deg is just enough."
+  T5: "Supports only with the brake. 39 to 44 N m per gripper at 23 kg, at 139 mm. Arm stress is 2.8 MPa with K_t 2 at the pocket ligament (70 by 16 mm) at 23 kg and 1.5 MPa at the 12 kg duty."
+
+tradeoffs:
+  - "Most durable and cleanest of the three: one printed part and one cast skin, with no carrier, clip or pin. But the skin can't be swapped at the line. The finger goes back for re-casting, or a spare finger goes on at the pivot."
+  - "Square contact everywhere removes squeeze-out, but it does nothing for the panel limit, which is what limits T1 here."
+  - "A 2 mm skin gives little compliance. The crown radius has to spread the load, so contact pressure on boxes is higher than with S1's 6 mm pad."
+
+risks:
+  - "Skin adhesion to MJF PA12: peel at the skin's ends (the pocket edge and u = 50). Dovetail keys and a primer are the mitigation; a peel test belongs in the durability run."
+  - "The skin wears through at the apex first, exposing PA12 at mu 0.3. A contrasting core colour makes wear visible at a glance."
+  - "The parabola's far end falls up to about 20 mm at R = 100, so the core is thinnest there (15 mm). The thinnest section anywhere is 10.3 mm at nominal (9.8 mm at the worst corner), at the pocket's back-cut foot, so the root-stress check should cover that corner."
+  - "As S1, T5 depends on a brake and the next-phase hinge (SR memo, hinge check)."

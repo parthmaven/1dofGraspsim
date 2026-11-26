@@ -585,10 +585,15 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
             grip_settle = float(force[el_right].sum())
         if ref is not None:
             p_el = force / el_area
-            p_peak = max(p_peak, float(p_el.max()))
-            if obj.kind == "box" and math.isfinite(obj.unsupported_force):
+            if obj.kind == "box":
+                # The bed limit holds only below the fill line; the empty panel takes its force limit alone.
                 above = data.xpos[el_body, 2] > z_fill + data.qpos[a_oz]
-                panel_peak = max(panel_peak, float(force[above & el_right].sum()), float(force[above & ~el_right].sum()))
+                if (~above).any():
+                    p_peak = max(p_peak, float(p_el[~above].max()))
+                if math.isfinite(obj.unsupported_force):
+                    panel_peak = max(panel_peak, float(force[above & el_right].sum()), float(force[above & ~el_right].sum()))
+            else:
+                p_peak = max(p_peak, float(p_el.max()))
             rel = grip_point_rel()
             slip_peak = max(slip_peak, float(np.hypot(*(rel - ref))))
             rot_peak = max(rot_peak, abs(float(data.qpos[a_oth] - ref_th)))
@@ -628,8 +633,9 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     margins = {
         "slip": sc.max_slip / max(slip_peak, 1e-9),
         "rotation": sc.max_rotation / max(rot_peak, 1e-9),
-        "pressure": obj.material.allow_pressure / (sc.pressure_sf * max(p_peak, 1e-9)),
     }
+    if obj.kind != "box" or p_peak > 0:
+        margins["pressure"] = obj.material.allow_pressure / (sc.pressure_sf * max(p_peak, 1e-9))
     if obj.kind == "box" and math.isfinite(obj.unsupported_force) and panel_peak > 0:
         margins["panel"] = obj.unsupported_force / panel_peak
     if body_peak > 0.1 * BODY_CONTACT_LIMIT:

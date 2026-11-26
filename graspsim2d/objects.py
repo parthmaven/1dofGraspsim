@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import csv
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -41,6 +41,7 @@ class Material:
     bending_strength: float = 0.0  # N*m/m: bending moment per width that creases the board
     shear_friction_note: str = ""
     sources: tuple[str, ...] = ()
+    bare_friction: float = 0.3  # bare printed finger on this surface
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,7 @@ def _material(name: str, e: Mapping[str, Any]) -> Material:
         bending_stiffness=float(e.get("bending_stiffness_Nm", 0.0)),
         bending_strength=float(e.get("bending_strength_Nm_per_m", 0.0)),
         sources=tuple(e.get("sources", []) or []),
+        bare_friction=float(e.get("bare_friction", 0.3)),
     )
 
 
@@ -207,6 +209,26 @@ def _box(e: Mapping[str, Any], mat: Material) -> GraspObject:
         notes=str(e.get("notes", "")),
         sources=tuple(e.get("sources", []) or []),
     )
+
+
+def with_fill(o: GraspObject, factor: float, tag: str) -> GraspObject:
+    """The box with its fill height scaled by `factor` (contents still settled at the bottom):
+    headspace, centre of mass and inertia follow. A measured centre of mass moves with the
+    contents' own centroid."""
+    if o.kind != "box" or factor == 1.0:
+        return replace(o, id=f"{o.id}@{tag}", label=f"{o.label} ({tag} fill)") if o.kind == "box" else o
+    H, B, Wo = o.height, o.thickness, o.width
+    hf0 = o.fill_height
+    hf = min(max(hf0 * factor, 1e-3), H)
+    net, pack, m = o.net_mass, o.packaging_mass, o.mass
+    z_com = o.com_height + net * (hf - hf0) / 2 / m
+    a_fb, a_s, a_tb = 2 * Wo * H, 2 * B * H, 2 * Wo * B
+    a = a_fb + a_s + a_tb
+    m_fb, m_s, m_tb = pack * a_fb / a, pack * a_s / a, pack * a_tb / a
+    i_shell = m_fb * (B**2 / 4 + H**2 / 12) + m_s * (B**2 + H**2) / 12 + m_tb * (H**2 / 4 + B**2 / 12)
+    inertia = i_shell + pack * (H / 2 - z_com) ** 2 + net * (B**2 + hf**2) / 12 + net * (hf / 2 - z_com) ** 2
+    return replace(o, id=f"{o.id}@{tag}", label=f"{o.label} ({tag} fill)", fill_height=hf, headspace=H - hf,
+                   com_below_top=H - z_com, inertia=inertia)
 
 
 def _sheet(e: Mapping[str, Any], mat: Material, caliper_mm: float) -> GraspObject:

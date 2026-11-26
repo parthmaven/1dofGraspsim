@@ -1,5 +1,7 @@
 import dataclasses
 import math
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +15,22 @@ from graspsim2d.pads import compression_modulus, shore_a_to_E
 from graspsim2d.scenario import load_scenario
 from graspsim2d.schema import SCHEMA, load_concepts, load_design_space
 
-CFG = Path(__file__).resolve().parents[1] / "config"
+CFG_SRC = Path(__file__).resolve().parents[1] / "config"
+
+
+def _first_pass_config() -> Path:
+    """The config directory without batch 1's `enabled:` filter, so the first pass's library boxes load."""
+    d = Path(tempfile.mkdtemp(prefix="graspsim_cfg_"))
+    for p in CFG_SRC.iterdir():
+        if p.is_file():
+            shutil.copy(p, d / p.name)
+    raw = yaml.safe_load((d / "objects.yaml").read_text())
+    raw.pop("enabled", None)
+    (d / "objects.yaml").write_text(yaml.safe_dump(raw, sort_keys=False))
+    return d
+
+
+CFG = _first_pass_config()
 
 
 @pytest.fixture(scope="module")
@@ -482,3 +499,58 @@ def test_run_directory_keeps_its_box_tables(tmp_path):
     save_inputs(tmp_path / "run", paths)
     assert yaml.safe_load((tmp_path / "run" / "objects.yaml").read_text())["box_tables"][0]["file"] == "general_mills_cereal_boxes.csv"
     assert "gm_cheerios_family_18oz" in load_objects(tmp_path / "run" / "objects.yaml").ids()
+
+
+def test_bed_limit_applies_only_below_the_fill_line(setup):
+    """Test conditions rev 2.11: a grip wholly on the empty panel takes the panel force limit alone."""
+    space, concepts, lib, sc = setup
+    fs = lib.by_id("gm_cheerios_family_18oz")
+    d = concepts["baseline_paddle"].make(space)
+    shallow = solve_grip(d, fs, sc, depth=0.06)
+    assert shallow.ok and "pressure" not in shallow.margins and "panel" in shallow.margins
+    assert shallow.info["bed_pressure_kPa"] == 0.0 < shallow.info["peak_pressure_kPa"]
+
+
+B1 = CFG_SRC / "batch1"
+
+
+@pytest.fixture(scope="module")
+def batch1():
+    from graspsim2d import batch1 as b
+
+    return b
+
+
+def test_batch1_specs_build_feasible_jaws(batch1):
+    for key in batch1.SPEC_FILES:
+        j = batch1.get_jaw(key, 45.0)
+        assert j.feasible, (key, j.issues)
+        assert j.right.faces and all(f.width > 0 for f in j.right.faces)
+
+
+def test_batch1_screen_bed_and_depth_stop(batch1):
+    from graspsim2d.screen1 import Limits, scan_box, solve
+
+    c = batch1.ctx()
+    lim = Limits.from_config(c["b1"], "T1")
+    fs = batch1.get_obj("gm_cheerios_family_18oz")
+    j = batch1.get_jaw("r2-09", 45.0)
+    g = solve(j, fs, c["sc"], lim, 30.0)
+    assert g.ok and "pressure" not in g.margins and g.info["bed_pressure_kPa"] == 0.0
+    r = scan_box(j, fs, c["sc"], lim)
+    assert r.ended.startswith("depth stop") and math.isfinite(r.stop_mm)
+    assert r.depth <= r.stop_mm - lim.placement + 1e-6
+
+
+def test_batch1_brake_holds_the_power_cut(batch1):
+    from graspsim2d import mj1
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("r2-09", 45.0)
+    o = batch1.get_obj("gm_016000275492")
+    b1 = {**c["b1"], "shake_s": 1.0}
+    held = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5)
+    assert held["power_cut_held"] and held["brake_use_Nm"] < 30.0
+    assert held["drive_hold_Nm"] == pytest.approx(2 * j.torque, rel=0.02)
+    loose = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5, brake=1.0)
+    assert not loose["power_cut_held"]

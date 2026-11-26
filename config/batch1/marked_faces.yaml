@@ -1,0 +1,23 @@
+# Bare contact faces each spec states (test conditions rev 2.8, "Bare contact faces": the
+# worker marks each spec's stated bare contacts, since all six specs predate the rule).
+# A bare face is marked when the middle of its arc lies in one of the u ranges below; its
+# force and pressure then count as grip, against the box limits. Every other bare face is
+# body: in T1 - T3 its load counts toward the 1 N body limit. All bare faces, marked or not,
+# take the friction table's bare value for the object. Expressions use the spec's variables.
+P0:
+  # The platform as built grips on its bare printed face (the baseline row).
+  outside: [{u: [46, "finger_reach"], why: "the bare printed face, notch and tip"}]
+S1:
+  outside: [{u: ["finger_reach - tooth_len", "finger_reach"], why: "T2: the bare tooth faces; T3: the chisel"}]
+S2:
+  outside: [{u: ["finger_reach - chisel_len", "finger_reach"], why: "T3: the chisel"}]
+S3:
+  outside: [{u: ["finger_reach - clamp_length - tooth_length", "finger_reach"],
+             why: "T1: the clamp faces and the shoulders' stop faces; T2: the proud shoulders; T3: the chisels"}]
+S4:
+  outside: [{u: [46, "finger_reach"], why: "T1: the outside finger's bare face; T2: the flush shoulder; T3: the chisel"}]
+  inside: [{u: ["finger_reach - chisel_length - tooth_length", "finger_reach"], why: "T2: the flush shoulder; T3: the chisel"}]
+S5:
+  outside: [{u: ["finger_reach - chisel_length - tooth_length", "finger_reach"], why: "T2: the flush shoulders; T3: the chisels"}]
+S6:
+  outside: [{u: ["finger_reach - chisel_len", "finger_reach"], why: "T3: the chisel"}]

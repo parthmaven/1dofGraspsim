@@ -1,0 +1,192 @@
+# Batch 1 (simple-shape concepts): the shared scenario with test-conditions.md revision 2.11
+# (10:23 UTC). The block `batch1:` holds the values the first pass didn't have. Everything else is the first pass's
+# config/scenario.yaml, unchanged where the test conditions agree with it.
+# How each object is presented, the motion sequence, and what counts as a
+# successful grasp. Defaults until Parth says otherwise; every value is
+# configurable.
+
+presentation:
+  box:
+    # Cereal box standing upright on a table. The gripper comes straight down,
+    # centred, and the jaw closes across the box depth (front to back panel).
+    # How far the box goes into the jaw is the robot's choice per known object:
+    #   best:           try insertion_scan depths from the pad-registered depth
+    #                   down to max_insertion_mm and keep the best grasp
+    #   pad_registered: box top sits clearance_mm above the proximal end of the
+    #                   box-gripping pad, so the whole pad meets the box
+    #   fixed:          insertion_depth_mm for every design
+    fixture: table
+    insertion: best
+    insertion_scan: 5
+    clearance_mm: 5
+    insertion_depth_mm: 70    # fixed mode: box top this far above the fingertip line
+    max_insertion_mm: 110     # never deeper than this
+    lateral_offset_mm: 0
+  sheet:
+    # Sheet held edge-up in a holder; the jaw pinches near the free top edge,
+    # the way the old box flaps were pinched (lit review 8.1: 20-40 mm, 30 ref).
+    # The holder lets go once the jaw has closed, and the sheet then hangs.
+    fixture: holder
+    insertion: fixed
+    insertion_depth_mm: 30
+    lateral_offset_mm: 0
+
+gripper:
+  count: 1                    # one gripper grasps each object (not a mirrored pair)
+  torque_mode: fixed          # one drive torque (design variable) for every object
+  closing_speed_rad_s: 1.0    # free closing speed; sets drive damping
+  closed_limit_deg: -25       # finger angle at full close (negative = converging)
+  # The two fingers are geared 1:1 (equal and opposite rotation about their
+  # pivots), as on the platform gripper; the sim couples the joints exactly.
+  keep_out:
+    # FT Dynamic bracket (top), MV-UMI01-3DP-001 A, seen in the assembly's top
+    # view, fixed to the gripper body. Its plate carries the two pivots (R5
+    # bosses at +-19, -31 in the assembly frame) and a 35 mm diameter hub at the
+    # origin, i.e. on the jaw centreline 31 mm from the pivot line, toward the
+    # fingertips. The hub continues down as the 35 mm tube of the FT Dynamic
+    # bracket (bot), to 67 mm below the top of the arm. The platform finger
+    # (Finger, Left, MV-UMI01-3DP-001 A) clears it with an R18.50 notch
+    # concentric with the hub in the modelled pose (1.00 mm radial gap) down to
+    # about 80 mm below the top; only below the tube does its face reach further
+    # back. In 2D the region is treated as full height and swept over the whole
+    # stroke, so objects stay out of it too.
+    circles:
+      - {name: ft_bracket_top_hub, center_mm: [0.0, -31.0], radius_mm: 17.5}
+    clearance_mm: 1.0         # extra radius: the platform finger's notch gap
+    min_ligament_mm: 5.0      # finger material that must remain beside the cutout
+    blocks_objects: true
+    # Both FT Dynamic brackets in plan, from the CAD (union of sections every
+    # 0.2 mm, simplified to 0.1 mm), in gripper coordinates. heights_mm is the
+    # depth below the assembly's top datum; the finger spans 1 - 162 mm. Top
+    # bracket: 1 - 14.5 mm. Bottom bracket: 14.5 - 67.3 mm, the hub tube and a
+    # plate that rings both pivots and runs 38 mm back behind them. They are not
+    # cut from the fingers: each candidate must clear them over its whole stroke
+    # or it is infeasible. The hub circle above is checked on its own, and so is
+    # the hinge: within hinge_radius of a pivot the bracket's pivot lobe (R18)
+    # and the finger's hinge share the axis at different heights. Every
+    # candidate keeps the platform finger's root, the first root_length mm ahead
+    # of the pivot line: at the brackets' heights it has material only on its
+    # outer side. In 3D the platform jaw (finger, paddle and hinge interfaces)
+    # clears both brackets at jaw angles of -1.5 to 130.5 deg from the finger as
+    # drawn; at -2 and at 130.75 deg the finger meets them. Each stroke must lie
+    # in root_clear_deg. The 2D check covers the rest of the finger and every
+    # pad and pad mount.
+    brackets:
+      hinge_radius_mm: 18.5
+      hinge_centres_mm: [[-19.0, 0.0], [19.0, 0.0]]
+      root_length_mm: 46.0
+      root_clear_deg: [-1.5, 130.5]
+      footprints:
+        - name: FT Dynamic bracket (top)
+          heights_mm: [1.0, 14.5]
+          outline_mm: [[13.98, -41.52], [15.59, -38.96], [16.73, -36.13], [17.35, -33.25], [17.58, -29.24], [17.88,
+            -27.31], [18.75, -24.56], [19.85, -22.41], [21.25, -20.47], [23.29, -18.44], [25.23, -17.06],
+            [29.01, -14.96], [31.79, -12.66], [33.1, -11.19], [34.22, -9.61], [35.18, -7.89], [35.94, -6.09],
+            [36.58, -3.88], [36.92, -1.68], [36.99, 0.58], [36.76, 2.91], [36.25, 5.13], [35.45, 7.31], [34.38,
+            9.35], [33.1, 11.19], [31.77, 12.68], [30.33, 13.99], [27.26, 15.99], [25.5, 16.78], [23.6, 17.4],
+            [21.72, 17.79], [19.74, 17.98], [17.61, 17.95], [15.33, 17.62], [9.81, 15.97], [6.04, 15.16], [3.11,
+            14.81], [0.23, 14.68], [-3.17, 14.81], [-6.12, 15.18], [-9.86, 15.98], [-15.62, 17.68], [-17.81,
+            17.96], [-20.26, 17.96], [-23.05, 17.54], [-25.53, 16.77], [-27.87, 15.66], [-30.23, 14.07],
+            [-32.17, 12.27], [-33.92, 10.07], [-35.17, 7.91], [-36.14, 5.49], [-36.78, 2.81], [-37, 0.11],
+            [-36.83, -2.45], [-36.25, -5.14], [-35.57, -7.04], [-34.61, -8.97], [-33.37, -10.84], [-32.08,
+            -12.37], [-29.25, -14.8], [-25.24, -17.06], [-23.27, -18.46], [-21.56, -20.11], [-19.85, -22.41],
+            [-18.75, -24.57], [-17.89, -27.26], [-17.58, -29.23], [-17.35, -33.32], [-16.71, -36.2], [-15.41,
+            -39.29], [-13.76, -41.82], [-12.45, -43.3], [-10.98, -44.63], [-9.39, -45.77], [-7.58, -46.77],
+            [-5.84, -47.5], [-3.83, -48.07], [-1.98, -48.39], [0.31, -48.5], [2.43, -48.33], [4.36, -47.95],
+            [6.24, -47.35], [8.04, -46.54], [9.74, -45.54], [11.31, -44.36], [12.7, -43.03]]
+        - name: FT Dynamic bracket (bot)
+          heights_mm: [14.5, 67.3]
+          outline_mm: [[-4.78, -47.84], [-2.47, -48.32], [-0.12, -48.5], [2.23, -48.36], [4.54, -47.9], [6.76, -47.14],
+            [8.86, -46.09], [10.79, -44.78], [12.57, -43.18], [13.83, -41.72], [14.88, -40.21], [15.79, -38.55],
+            [16.5, -36.83], [17.31, -33.55], [17.58, -29.17], [17.95, -26.99], [18.7, -24.69], [19.98, -22.2],
+            [21.74, -19.91], [23.57, -18.21], [25.13, -17.12], [29.2, -14.83], [31.88, -12.57], [33.38, -10.82],
+            [34.46, -9.21], [35.37, -7.49], [36.08, -5.69], [36.77, -2.87], [36.99, -0.43], [36.84, 2.43],
+            [36.25, 5.13], [26.33, 34.6], [25.7, 35.84], [25.09, 36.57], [24.14, 37.3], [23.1, 37.77], [21.59,
+            38], [-21.59, 38], [-23.01, 37.8], [-23.87, 37.45], [-24.86, 36.79], [-25.48, 36.15], [-26.33,
+            34.6], [-36.06, 5.75], [-36.58, 3.88], [-36.89, 1.97], [-37, 0.03], [-36.9, -1.9], [-36.59, -3.82],
+            [-36.08, -5.69], [-35.37, -7.49], [-34.49, -9.17], [-32.78, -11.58], [-30.73, -13.65], [-28.58,
+            -15.24], [-24.03, -17.87], [-22.43, -19.21], [-20.78, -21.06], [-19.24, -23.5], [-18.23, -25.98],
+            [-17.64, -28.68], [-17.43, -32.59], [-17.06, -34.89], [-16.25, -37.5], [-15.04, -39.95], [-13.07,
+            -42.64], [-10.67, -44.87], [-7.9, -46.62]]
+
+sequence:
+  # The close lasts close_s, or longer when the jaw starts wide: the free travel from the start
+  # opening to where the fingers meet, at closing_speed_rad_s, plus squeeze_s. Sheets are
+  # released from the holder at the end of closing.
+  close_s: 0.9
+  squeeze_s: 0.3
+  settle_s: 0.25
+  lift_height_mm: 80
+  lift_s: 0.5                 # minimum-jerk lift
+  hold_s: 0.3
+  shake:
+    # Sinusoids with raised-cosine ramps at each end. A ramp shorter than one
+    # lateral period overshoots the peak acceleration (0.25 s gives 0.68 g for
+    # a 0.5 g spec) and kicks the sheets' bending modes.
+    duration_s: 3.0
+    ramp_s: 0.5
+    lateral:  {peak_accel_g: 0.5, freq_hz: 2.0}
+    vertical: {peak_accel_g: 0.5, freq_hz: 3.0}
+  final_hold_s: 0.5
+
+pass_criteria:
+  # A grasp passes if the object is lifted and held through the shake without
+  # slipping, crushing, or creasing the board.
+  max_slip_mm: 2.0            # pad-to-object tangential slip after the grip settles
+  max_rotation_deg: 10.0      # object rotation relative to the gripper
+  # Crushing: peak pad pressure must stay below each object's allowable
+  # (objects.yaml), and a box must not be squeezed in its unsupported headspace
+  # harder than its panel force limit.
+  # Creasing (sheets): bending moment where the sheet leaves the pinch must
+  # stay below bending strength x width / safety factor.
+  pressure_safety_factor: 1.0
+  crease_safety_factor: 1.0
+  crease_width: pad           # pad: only the pinched strip carries the moment (conservative)
+
+# Multiplies every pad-on-object friction coefficient in objects.yaml
+# (e.g. 0.8 for a low-friction sensitivity run).
+friction_scale: 1.0
+
+analytic:
+  # Level 0 screen only; the dynamic check applies the criteria above directly.
+  friction_safety_factor: 1.5
+  pitch_safety_factor: 1.5
+
+sim:
+  timestep_s: 0.0001
+  contact_timeconst_s: 0.0002 # contacts several times stiffer than the pad element springs
+  pad_element_pitch_mm: 4.0   # pad faces are split into spring elements this long
+  element_frequency_hz: 250   # pad element springs are given armature to sit at this frequency
+  element_damping_ratio: 0.3
+  sheet_segment_mm: 50        # sheets are hinged chains; hinge stiffness = D * width / length
+  servo_kp: 2.0e6             # gripper base position servo, N/m
+  record_hz: 200
+
+batch1:
+  approach_clearance_mm: {box: 7.0, sheet: 4.0}   # 1 mm + 3 mm placement + half the bulge
+  insertion_step_mm: 3.0          # T1 scan step; the +-3 mm corners are the neighbouring steps
+  placement_mm: 3.0               # +-3 mm corners: T1 depth and lateral, T3 lateral, T4 height
+  fills: {catalog: 1.0, loose: 1.09, settled: 0.9237288}   # fill heights x1.09 and x1.09/1.18
+  sheet_pinch_mm: {nominal: 30, sensitivities: [20, 50]}
+  bottomed_pinch_mm: 20           # at this pinch "pads bottom out" is reported, not a verdict
+  box_limits:
+    band_mm: 15.0                 # flap-braced top band: its own force limit, no bed pressure
+    band_force_N: 15.0            # per finger; 5 - 40 N sensitivity
+    band_force_range_N: [5.0, 40.0]
+    band_stiff_mm: 4.0            # the band is x50 the panel's stiffness over the top 4 mm
+    band_stiff_factor: 50.0
+    panel_force_N: 10.0           # empty panel, per finger, interpolated across the fill line
+    bed_pressure_kPa: 25.0        # only below the fill line, where cereal backs the wall
+  humid_factor: 0.6               # 85 % RH: panel limit, band (9 N), C-flute thumb, shipper board
+  friction_margin_min: 1.25       # MuJoCo holds
+  body_contact_limit_N: 1.0       # T1 - T3 only
+  closing: {fast_rad_s: 1.0, slow_rad_s: 0.3, slow_deg: 5.0, armature_kgm2: 0.015}
+  stop: {decel_g: [0.5, 1.0], speed_m_s: 2.0, accel_g: 0.25}
+  power_cut: {brake_Nm_per_gripper: 30.0, no_brake_Nm_per_gripper: 1.0, hold_s: 5.0}
+  shake_g: {T1: 0.5, T2: 0.5, T3: 0.0, T4: 0.25, T5: 0.25}
+  shake_s: 3.0                    # lateral 2 Hz, vertical 3 Hz
+  sheet_shake_hz: [1.5, 2.0, 3.0] # the carton blank's lateral shake, every design (its second mode is 1.84 - 2.11 Hz)
+  drive_Nm_per_gripper: {continuous: [7.0, 10.0], peak: 25.0}   # both finger motors together; flag over 7
+  short_face_mm: 20.0             # pads and bare faces shorter than this run at fine_pitch_mm
+  fine_pitch_mm: 1.5
+  bare_travel_mm: 1.5             # bare-face elements travel this far before the body behind them

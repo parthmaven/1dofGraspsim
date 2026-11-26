@@ -1,0 +1,166 @@
+# S3 Top-edge clamp: batch 1, author FP (subagent bc-ccb7b6dd-a8f0-5a1b-9e45-6a2c8199f732).
+# Written from concept-spec-template.yaml revision 2, against test-conditions.md revision 2.
+# Frame: graspsim2d finger-local, mm. u along the finger, v inward; the face plane is v = 17.75.
+# Geometry and loads: internal/gripper-review/scripts/fp-concept-geometry.py, fp-t4a-lip-spans.py
+# (T4a; supersedes fp-t4a-descent.py on hooking), fp-t3-chisel-lean.py (T3) and fp-s3-t5-stop.py
+# (T5's stop and brake, VAL-Q7).
+# Nominal numbers in comments are at finger_reach 155 and the new_variables' nominals.
+
+id: S3
+name: Top-edge clamp
+author: FP
+batch: 1
+status: proposed
+moving_parts: none
+idea: >
+  A bare clamp face on the last 18 mm, toed in about 12.5 deg so that it hangs within
+  5 deg of square to every Cheerios and Chex box at its grasp angle, pinches the box's
+  top 15 - 20 mm: the flap-braced band, the stiffest part of a carton. The same face is
+  a chisel no more than 3 mm thick, so it enters a 1.3 - 3 mm gap in a full case (T3).
+  Above it, a shoulder stands 4.5 mm proud of the face plane. Its square underside is a
+  depth stop that seats on the box's top edge, its face pinches sheets where the
+  shoulders meet (about 1.4 deg per finger), and it carries the T5 load so the chisel never
+  does. Behind the shoulder, Parth's undercut takes a crate lip on a slightly back-cut
+  seat. The platform finger and S1, S2 and S6 grip the panel below the top edge with pads.
+  S3 grips the edge itself, bare, and so tests the top band's limit.
+
+strategy:
+  T1: "Top-edge pinch: the clamp faces close square on the top 18 mm, with the shoulders' stop faces on the top edge; grips the flap-braced band, above the fill line"
+  T2: "The proud shoulders meet at about 1.4 deg per finger and pinch the sheet bare, 18 - 28 mm from the tips"
+  T3: "The bare chisels go 15 - 18 mm down the gaps, square to the boxes within 5 deg, and pinch the target's top band; the stop faces end the entry at clamp_length"
+  T4: "The lip seats in the undercut on a far wall back-cut up to 12 deg; the shoulder bears on the wall under the lip"
+  T5: "The jaw closes onto the L until the shoulders' outer corners meet the case, at about 34 deg per finger with its corner on the hub, 11 deg short of the 45 deg stop. The drive and its power-off brake hold the opening; the shoulders carry the load, never the chisel (VAL-Q7)"
+  durability: "No elastomer to wear; the chisel's 1.5 mm land is the wear and chip site. The closed T5 grip sits short of the stop, so its moment crosses the 1:1 mesh to the brake"
+
+fingers:
+  symmetric: true
+  asymmetric_for: []
+  outside:
+    root: platform
+    outline:
+      - [46.0, 17.75]                                                               # main face (bare)
+      - ["finger_reach - clamp_length - tooth_length - undercut_length", 17.75]      # undercut near wall, u 105
+      - ["finger_reach - clamp_length - tooth_length - undercut_length", "17.75 - undercut_depth"]
+      - ["finger_reach - clamp_length - tooth_length + seat_backcut", "17.75 - undercut_depth"]   # floor's far end, u 129
+      - ["finger_reach - clamp_length - tooth_length", "17.75 + tooth_proud"]        # back-cut far wall up to the shoulder, u 127
+      - ["finger_reach - clamp_length", "17.75 + tooth_proud"]                       # shoulder face, v 22.25, u 127 - 137
+      - ["finger_reach - clamp_length", "17.75 - clamp_rise"]                        # square stop face down to the clamp root
+      - ["finger_reach", 17.75]                                                      # clamp face, toed in, to the tip
+      - ["finger_reach", "17.75 - tip_land"]                                         # 1.5 mm land
+      - ["finger_reach - clamp_length", "17.75 - clamp_rise - 3.0"]                  # chisel back: 3.0 mm thick at the clamp root
+      - ["finger_reach - clamp_length - 6.0", "17.75 - undercut_depth - ligament"]   # back drops behind the shoulder
+      - ["finger_reach - clamp_length - tooth_length - undercut_length", "17.75 - undercut_depth - ligament"]   # ligament under the pocket
+      - [46.0, -21.25]                                                               # platform root depth (39 mm)
+    body_width_mm:
+      - [46, 155]
+      - [85, 97]
+      - [90, 97]
+      - [90, 60]            # a 60 mm blade, not the platform's 28 mm tab: spreads the top-edge and T5 loads
+      - [160, 60]
+    pads: []
+    features:
+      tip:
+        thickness_profile_mm:   # bare, so no pad included
+          - ["finger_reach", "tip_land"]
+          - ["finger_reach - 15", "tip_land + (3.0 - tip_land) * 15 / clamp_length"]
+          - ["finger_reach - clamp_length", 3.0]
+      undercut:
+        u_from: "finger_reach - clamp_length - tooth_length - undercut_length"   # 105 at nominal
+        u_to: "finger_reach - clamp_length - tooth_length"                       # 127 at nominal
+        depth_mm: "undercut_depth"
+        root_radius_mm: 3
+        side: inner
+        purpose: "seats the crate's rim lip (test-conditions.md, T4) on a far wall back-cut by atan(seat_backcut / (undercut_depth + tooth_proud)), 0 - 12 deg"
+      hard_stop:
+        type: l_angle
+        opening_deg: 45
+        where: "a printed block on the back of each finger's paddle, about 60 - 80 mm from its pivot, against the bracket, on each finger's own shaft. It caps the stroke. In T5 it carries load only if the jaw stays on it: then the case lies on the outside shoulder alone with its wall on the hub, and that finger's block takes 22 - 27 N·m at 23 kg, about 0.3 - 0.45 kN (VAL-Q7)"
+  inside: same
+
+search:
+  base_concept: new
+  existing_variables:           # for a new concept: the existing variables the expressions use, with narrowed ranges
+    active: [finger_reach, finger_torque]
+    fixed: {}
+    narrow:
+      finger_reach: [150, 160]  # below 150 the single clamp angle's spread passes ±5.2 deg
+      finger_torque: [2.0, 8.0]
+    nominal:
+      finger_reach: 155
+      finger_torque: 4.0
+  new_variables:
+    clamp_length: {range: [15, 20], unit: mm, nominal: 18, meaning: "length of the bare clamp face, which is also the chisel; the stop face caps insertion here (T3 entry 15 mm, sensitivity 20)"}
+    clamp_rise: {range: [1.5, 7.0], unit: mm, nominal: 4.0, meaning: "how far the clamp face's root sits outboard of its tip; atan(clamp_rise / clamp_length) is the clamp angle, 12.5 deg at nominal, square at the grasp angle of a 66 mm box"}
+    tip_land: {range: [1.0, 1.5], unit: mm, nominal: 1.5, meaning: "in-plane thickness at the point (batch rule: land <= 1.5 mm)"}
+    tooth_length: {range: [8, 10], unit: mm, nominal: 10, meaning: "shoulder length along u; with clamp_length it is the hook under the lip, <= 30 mm of free wall (T4)"}
+    tooth_proud: {range: [0, 6], unit: mm, nominal: 4.5, meaning: "how far the shoulder stands inboard of the face plane; carries T5 off the chisel, and the shoulders meet at about 1.4 deg per finger to pinch T2 sheets"}
+    undercut_length: {range: [18, 25], unit: mm, nominal: 22, meaning: "lip pocket length at the mouth; the lip is 15 mm tall (sensitivity 5 - 25)"}
+    undercut_depth: {range: [6, 12], unit: mm, nominal: 9, meaning: "pocket floor below the face plane; the lip sticks out 6 mm beyond the shoulder's face, which sits tooth_proud inboard"}
+    seat_backcut: {range: [0, 3], unit: mm, nominal: 2, meaning: "how far the far wall's foot runs toward the tip past its mouth; 0 is level-cut (square to the finger), 3 is a 12 deg back-cut"}
+    ligament: {range: [11, 16], unit: mm, nominal: 13, meaning: "in-plane depth under the pocket floor (batch rule: 10 - 15 mm); 5.8 MPa at 15 mm on a 28 mm tab under T5 with Kt 2, so 3 MPa on this 60 mm blade"}
+  fixed_by_spec:
+    - "root and hinge (u <= 46), the platform's: a hardware rule"
+    - "chisel 3.0 mm thick at the clamp root and bare to the tip: the batch rule (<= 3 mm over the last 15 - 20 mm, no elastomer at the tip), and the clamp face is the chisel's inner face"
+    - "back at (46, -21.25): the platform's 39 mm root depth, about 1 MPa at 23 kg"
+    - "back drop 6 mm long behind the stop face: keeps >= 10 mm under the pocket floor's far end at every seat_backcut"
+    - "no pads: S3 tests the bare top-edge pinch; S1, S2 and S6 cover padded panel grips"
+    - "hard stop at 45 deg: caps the stroke; the closed T5 grip sits at about 34 deg, short of it (VAL-Q7)"
+    - "T5 holder: the drive's power-off brake, the reference 30 N·m per gripper unless EE names a larger one; 23 kg needs about 41 N·m (expected T5)"
+
+stroke:
+  readings: [45]                # the l_angle stop caps the stroke at 45 deg
+
+materials:
+  finger: common
+  print_orientation: flat
+
+notes: >
+  Length. finger_reach is 150 - 160 mm, nominal 155. The flagged 170 mm run is not worth
+  it for S3. The clamp grips only the top 18 mm, so the hub's insertion cap (length - 49.5)
+  doesn't bind. 170 mm narrows the single clamp angle's spread only from ±5.0 to ±4.6 deg
+  (fp-concept-geometry.py section 4). It adds about 10 % to T5's tip moment and gains T4a
+  nothing (fp-t4a-lip-spans.py).
+  Clamp angle. One angle serves the T1 depth class: for 45 - 99 mm boxes the square angle runs
+  7.8 - 17.8 deg at 155 mm. The best single angle is 12.8 deg (the nominal clamp_rise of 4.0
+  gives 12.5). It leaves ±5 deg, so squeeze-out needs mu >= 0.09.
+  A second depth class (a 15 deg face for 80 - 99 mm boxes) is a tip variant, not a search
+  variable.
+  Top edge. The sim's 10 N empty-panel limit doesn't describe this grip.
+  test-conditions.md's top-band limit (15 N per finger, sensitivity 5 - 40) does. Report S3's
+  T1 and T3 holds against the whole 5 - 40 N band, not only against 15 N.
+  T4a. The 9 mm pocket behind the 4.5 mm shoulder is 13.5 mm deep from the shoulder's face. It
+  takes the 15 x 6 mm lip at jaw angles up to 29 deg, so S3 hooks lips up to 134 mm across at
+  the 45 deg stop (fp-t4a-lip-spans.py, which replaces fp-t4a-descent.py). At the 45 - 56 deg
+  that a 212 mm bin needs, a vertical wall's lip needs a pocket about 20 - 24 mm deep.
+  Shoulders. They cross the centreline below 1.4 deg per finger. MuJoCo has no finger-finger
+  contact, so the jaw must be stopped by the object or by the closing limit, not by the
+  shoulders.
+  T5 hub. The case's corner rests on the Ø35 hub, 48.5 mm ahead of the pivot line (VAL, from
+  the STEP). MuJoCo has no hub body, so the case slides into the L's apex and shows a
+  full-face cradle that can't happen. Model the hub as a collision body before scoring T5.
+  How T5's opening is held: by the drive and its brake, at about 34 deg (VAL-Q7). The 45 deg
+  stop only catches the case if the brake lets go: the case drops 25.5 mm onto the outside
+  shoulder, with its wall on the hub. A 90 deg version is the same outline without the stop,
+  held the same way, with the same T5 numbers.
+
+expected:
+  T1: "Passes boxes up to about 400 g and is marginal above. The clamp sits within 5 deg of square, so squeeze-out needs mu >= 0.09 (F1, F3). Bare at mu 0.3 the hold needs 15 N per finger on a 626 g box (23 N with the hold SF), over the 15 N top-band limit and within the 40 N sensitivity (F2)."
+  T2: "Holds light sheets and is marginal on heavy corrugated. The flat shoulders meet at 1.4 deg, a parallel pinch, but bare at mu 0.30 - 0.35 (F1: no tip-only line contact)."
+  T3: "Enters the 3 mm gap. The chisel is <= 3 mm over its 18 mm and leans <= 5 deg, so it sits <= 1.3 mm off the face over 15 mm. At the 1.3 mm gap it must push a neighbour 1 - 2 mm, within the 3 mm limit (F3)."
+  T4: "Passes T4b and fails T4a. T4b: the seat carries 110 N, and the load opens the jaw with a 1.5 N·m moment the drive must hold. T4a: S3 hooks lips up to 134 mm across, but the 212 mm bin's lip doesn't fit the 13.5 mm pocket at the 45 - 49 deg it needs (fp-t4a-lip-spans.py)."
+  T5: "Brake-held, not stop-held. The shoulders' outer corners bear about 130 mm from each pivot at 34 deg. At 23 kg that needs 26 - 30 N·m per gripper in the hold test and 37 - 41 N·m in the strength check (equal to 60/40 share). The reference 30 N·m brake holds the hold test, about 1 % short at 60/40, and rates S3 at about 17 kg in the strength check; 23 kg needs about 41 N·m. The 45 deg stop carries load only in the one-face seat: 22 - 27 N·m on the outside finger. The shoulder's 480 - 600 mm² is under the 820 mm² the board needs, so the bearing check fails at 23 kg either way (fp-s3-t5-stop.py, VAL-Q7)."
+
+tradeoffs:
+  - "The top-edge pinch avoids the empty panel but relies on the top band's unmeasured limit (15 N, sensitivity 5 - 40)"
+  - "Bare clamp face (the T3 rule): mu 0.3 needs 1.7 times the squeeze of a mu 0.5 pad"
+  - "One clamp angle covers the 45 - 99 mm boxes to ±5 deg; tighter needs a second tip"
+  - "The 45 deg stop removes the 90 deg reading but doesn't hold T5: the closed grip sits at 34 deg on the brake, so a 90 deg version without the stop scores the same"
+  - "A proud shoulder protects the chisel in T5, pinches sheets and deepens the lip pocket to 13.5 mm (hooks 134 mm spans, against about 54 for a flush 8 mm pocket), but it collides below 1.4 deg"
+
+risks:
+  - "A 60 x 18 mm patch at 15 - 35 N dents or buckles the top band on a box whose flaps aren't glued (FP estimate 3 - 5 N unglued)"
+  - "Varnished board at the low end of bare friction lets the box slip"
+  - "The 1.5 mm land chips in a crash or on a misplaced descent onto a box top"
+  - "MuJoCo without a hub body shows a false full-face T5 cradle"
+  - "The shoulders collide below 1.4 deg in the real part; the sim lets them pass through"
+  - "If the brake slips in T5, the case drops 25.5 mm onto the outside shoulder and the stop, an impact nobody has sized"
