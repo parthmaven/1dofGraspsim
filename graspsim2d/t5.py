@@ -14,6 +14,7 @@ C-flute; their load is read from their springs (test conditions 2.16).
 
 from __future__ import annotations
 
+import collections
 import math
 from dataclasses import replace
 from typing import Any
@@ -566,8 +567,89 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         q = data.qpos[el_qadr]
         spring = np.where(el_grip & (q > el_lo + 2e-5), el_k * np.maximum(el_q0 - q, 0.0), np.nan)
         Fe = np.where(np.isnan(spring), Fc, spring)
-        out["Fe"] = Fe
+        out["Fe"], out["Fc"] = Fe, Fc
         return out
+
+    # Revision 2.31's window: each finger's force on the case from the end of the close (or the seat) to the power cut,
+    # through every phase, scored as its largest 5 ms average; with the face that carries it, where on that face its
+    # resultant sits and the face's tilt to the case, for the footprint rule. The drive torque is read over the same span.
+    n5 = max(1, int(round(float(cfg.get("contact_average_s", 0.005)) / (every * dt))))
+    faces_of: dict[str, tuple[list[str], list[np.ndarray]]] = {}
+    el_s = np.zeros(n_el)
+    face_ext: dict[tuple[str, str], tuple[float, float, float]] = {}
+
+    def axis(P: np.ndarray) -> np.ndarray | None:
+        """The principal direction of a face's element centres, or None for a one-element face."""
+        if len(P) < 2:
+            return None
+        return np.linalg.svd(P - P.mean(axis=0), full_matrices=False)[2][0]
+
+    for g in G_:
+        for part, f in ((0, fingers[g]["out"]), (1, fingers[g]["thumb"])):
+            idx = np.nonzero(el_gp == G_.index(g) * 2 + part)[0]
+            names = sorted({els[i][2].face for i in idx})
+            groups = [idx[[els[i][2].face == nm for i in idx]] for nm in names]
+            faces_of[f] = (names, groups)
+            R = data.xmat[body_of[f]].reshape(3, 3)
+            for nm, ix in zip(names, groups):
+                P = np.array([(R.T @ (data.geom_xpos[els[i][3]] - data.xpos[body_of[f]]))[[0, 2]] for i in ix]) * 1e3
+                d = axis(P)
+                s = (P - P.mean(axis=0)) @ d if d is not None else np.zeros(len(ix))
+                el_s[ix] = s
+                seg = np.array([els[i][2].seg for i in ix])
+                face_ext[(f, nm)] = (float((s - seg / 2).min()), float((s + seg / 2).max()), float(els[ix[0]][2].w * 1e3))
+    w_buf = {f: collections.deque(maxlen=n5) for f in body_of}
+    w_best: dict[str, dict[str, Any]] = {f: {"N": 0.0} for f in body_of}
+    w_one = {f: (0.0, "") for f in body_of}
+    w_tau = {g: (0.0, "") for g in G_}
+    w_tau_buf = {g: collections.deque(maxlen=n5) for g in G_}
+    w_tau5 = {g: (0.0, "") for g in G_}
+
+    def face_tilt(f: str, nm: str) -> float:
+        """The face's angle (deg) to the nearer of the case's axes at this instant, or nan for a one-element face."""
+        ix = faces_of[f][1][faces_of[f][0].index(nm)]
+        d = axis(np.array([data.geom_xpos[els[i][3]][[0, 2]] for i in ix]))
+        if d is None:
+            return math.nan
+        a = math.degrees(math.atan2(d[1], d[0])) - math.degrees(float(data.qpos[q_cth]))
+        a = abs((a + 90.0) % 180.0 - 90.0)
+        return min(a, abs(90.0 - a))
+
+    def window(t: float, ph: str, ms: dict[str, Any]) -> None:
+        for g in G_:
+            tq = abs(float(data.actuator_force[a_drive[fingers[g]["out"]]]) + float(data.actuator_force[a_drive[fingers[g]["thumb"]]]))
+            if tq > w_tau[g][0]:
+                w_tau[g] = (tq, ph)
+            w_tau_buf[g].append(tq)
+            if len(w_tau_buf[g]) == n5 and sum(w_tau_buf[g]) / n5 > w_tau5[g][0]:
+                w_tau5[g] = (sum(w_tau_buf[g]) / n5, ph)
+        Fc = ms["Fc"]
+        for f in body_of:
+            names, groups = faces_of[f]
+            fF = np.array([Fc[ix].sum() for ix in groups])
+            fM = np.array([(Fc[ix] * el_s[ix]).sum() for ix in groups])
+            N, r = ms["N"][f], ms["r"][f]
+            if N > w_one[f][0]:
+                w_one[f] = (N, ph)
+            buf = w_buf[f]
+            buf.append((t, ph, N, N * r if math.isfinite(r) else 0.0, fF, fM))
+            if len(buf) < n5:
+                continue
+            avg = sum(b[2] for b in buf) / n5
+            if avg <= w_best[f]["N"]:
+                continue
+            fFa, fMa = sum(b[4] for b in buf) / n5, sum(b[5] for b in buf) / n5
+            k = int(np.argmax(fFa)) if len(fFa) else -1
+            best = {"N": avg, "t": buf[n5 // 2][0], "phase": buf[n5 // 2][1],
+                    "r_mm": sum(b[3] for b in buf) / max(sum(b[2] for b in buf), 1e-9) * 1e3,
+                    "face": names[k] if k >= 0 else "", "face_N": float(fFa[k]) if k >= 0 else 0.0,
+                    "faces": {names[i]: round(float(fFa[i]), 2) for i in range(len(names)) if fFa[i] > 0.5}}
+            if k >= 0 and fFa[k] > 1e-9:
+                lo, hi, w_mm = face_ext[(f, names[k])]
+                s = float(fMa[k] / fFa[k])
+                best.update(face_len_mm=hi - lo, face_w_mm=w_mm, face_res_frac=(s - lo) / max(hi - lo, 1e-9),
+                            face_res_end_mm=min(s - lo, hi - s), face_tilt_deg=face_tilt(f, names[k]))
+            w_best[f] = best
 
     # State machine: approach, close, squeeze, then the timeline.
     phase = "approach"
@@ -682,6 +764,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         t = data.time
         ms = measure()
         load = {g: ms["N"][fingers[g]["out"]] + ms["N"][fingers[g]["thumb"]] + float(np.linalg.norm(ms["hub"][g])) for g in G_}
+        if phase in ("squeeze", "timeline") and (brake_on is None or cut_before_stop):
+            # Through the cut on revision 2.18's mid-move cut, as its damage limits are.
+            window(t, "squeeze" if tl is None else tl.phase(t), ms)
         if phase == "approach":
             for g in G_:
                 if not arm_done[g] and load[g] > APPROACH_N:
@@ -886,7 +971,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                            "mass_kg": case.mass, "com_offset_W": com_offset, "squeeze_N": squeeze, "stop_g": stop_g,
                            "cut_before_stop": cut_before_stop, "brake_Nm": brake, "power_s": power_s,
                            "mu_bare": builders["A"].mu_bare, "mu_pad": builders["A"].mu_pad,
-                           "dropped_in": dropped_in, "t_approach_s": t_app_end, "t_close_s": t_close_end}
+                           "dropped_in": dropped_in, "t_approach_s": t_app_end, "t_close_s": t_close_end,
+                           "contact_average_s": n5 * every * dt}
     for g in G_:
         f_o, f_t = fingers[g]["out"], fingers[g]["thumb"]
         hub = np.array(stats["hold"]["hub"][g]) if stats["hold"]["hub"][g] else np.zeros((1, 3))
@@ -920,7 +1006,18 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         res[f"{g}_hub_share"] = n_hub / n_all if n_all > 1e-9 else math.nan
         res[f"{g}_hub_pen_mm"] = stats["pen_hub"][g] * 1e3
         res[f"{g}_finger_pen_mm"] = stats["pen_finger"][g] * 1e3
+        res[f"{g}_window_peak_Nm"], res[f"{g}_window_peak_Nm_phase"] = w_tau[g]
+        res[f"{g}_window_5ms_Nm"], res[f"{g}_window_5ms_Nm_phase"] = w_tau5[g]
         for part, f in (("out", f_o), ("thumb", f_t)):
+            wb = w_best[f]
+            res[f"{g}_{part}_5ms_N"] = wb["N"]
+            res[f"{g}_{part}_5ms_phase"] = wb.get("phase", "")
+            res[f"{g}_{part}_5ms_s"] = wb.get("t", math.nan)
+            res[f"{g}_{part}_5ms_r_mm"] = wb.get("r_mm", math.nan)
+            res[f"{g}_{part}_5ms_faces"] = wb.get("faces", {})
+            for k in ("face", "face_N", "face_len_mm", "face_w_mm", "face_res_frac", "face_res_end_mm", "face_tilt_deg"):
+                res[f"{g}_{part}_5ms_{k}"] = wb.get(k, "" if k == "face" else math.nan)
+            res[f"{g}_{part}_window_peak_N"], res[f"{g}_{part}_window_peak_phase"] = w_one[f]
             res[f"{g}_{part}_contact_mm"] = mean(stats["hold"]["span"][f]) * 1e3
             res[f"{g}_{part}_off_stop_deg"] = stats["off_stop"][f]
             res[f"{g}_{part}_stop_load_Nm"] = stats["stop_load"][f]
