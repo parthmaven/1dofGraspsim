@@ -759,6 +759,9 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
         assert 125.0 < r[f"{g}_out_bearing_mm"] < 160.0
     assert r["A_hold_Nm"] == pytest.approx(r["B_hold_Nm"], rel=0.1, abs=0.05)
     assert r["mu_bare"] == pytest.approx(0.35)
+    # The brake's reading is its friction loss alone, not the gear coupling's or the stroke limits' forces.
+    assert all(0.0 <= r[f"{g}_brake_use_Nm"] <= r["brake_Nm"] + 1e-6 for g in "AB")
+    assert r["A_thumb_peak_N"] >= r["A_thumb_N_hold"] > 0.0 and r["A_thumb_peak_at"]
 
 
 def test_batch1_t5_cut_block_runs_revision_2_18(batch1):

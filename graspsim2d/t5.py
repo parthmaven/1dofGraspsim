@@ -457,6 +457,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                  "N": {f: [] for g in G_ for f in fingers[g].values()}},
         "peak_tau": {g: 0.0 for g in G_}, "peak_M": {f: 0.0 for g in G_ for f in fingers[g].values()},
         "peak_hub": {g: 0.0 for g in G_}, "peak_p": {f: 0.0 for g in G_ for f in fingers[g].values()},
+        "peak_at": {f: None for g in G_ for f in fingers[g].values()},
+        "peak_N": {f: 0.0 for g in G_ for f in fingers[g].values()},
+        "brake_stop": {g: 0.0 for g in G_}, "brake_sat": {g: False for g in G_},
         "tilt": 0.0, "slip": 0.0, "power_slip": 0.0, "stop_slip": 0.0, "stop_tilt": 0.0,
         "peak_tau_phase": {g: "" for g in G_}, "brake_use": {g: 0.0 for g in G_},
         "stop_M": {f: 0.0 for g in G_ for f in fingers[g].values()}, "stop_tau": {g: 0.0 for g in G_},
@@ -575,7 +578,13 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             for f in fingers[g].values():
                 m_ = (el_gp == G_.index(g) * 2 + (0 if f == fingers[g]["out"] else 1)) & (ms["Fe"] > 1e-6)
                 if m_.any():
-                    stats["peak_p"][f] = max(stats["peak_p"][f], float((ms["Fe"][m_] / el_area[m_]).max()))
+                    p = ms["Fe"][m_] / el_area[m_]
+                    k = int(np.argmax(p))
+                    if p[k] > stats["peak_p"][f]:
+                        ei = int(np.nonzero(m_)[0][k])
+                        r_ = data.geom_xpos[els[ei][3]][[0, 2]] - data.xpos[body_of[f]][[0, 2]]
+                        stats["peak_p"][f] = float(p[k])
+                        stats["peak_at"][f] = (ei, float(ms["Fe"][ei]), float(np.linalg.norm(r_)) * 1e3, ph)
                 stats["peak_M"][f] = max(stats["peak_M"][f], ms["M"][f])
             if brake_on is None and abs(tau_g[g]) > stats["peak_tau"][g]:
                 stats["peak_tau"][g], stats["peak_tau_phase"][g] = abs(tau_g[g]), ph
@@ -598,19 +607,38 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 stats["stop_tau"][g] = max(stats["stop_tau"][g], abs(tau_g[g]))
                 for f in fingers[g].values():
                     stats["stop_M"][f] = max(stats["stop_M"][f], ms["M"][f])
+        for g in G_:
+            for f in fingers[g].values():
+                stats["peak_N"][f] = max(stats["peak_N"][f], ms["N"][f])
         if brake_on is not None:
             if ref_power is None:
                 ref_power = rel.copy()
             stats["power_slip"] = max(stats["power_slip"], float(np.linalg.norm(rel - ref_power)))
+            # The brake's own rows: the joints' friction loss, apart from the gear coupling and the stroke limits.
+            ne = data.nefc
+            fric = data.efc_type[:ne] == int(mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF)
+            ids, frc = data.efc_id[:ne], data.efc_force[:ne]
             for g in G_:
-                use = sum(abs(float(data.qfrc_constraint[v_f[f]])) for f in fingers[g].values())
-                stats["brake_use"][g] = max(stats["brake_use"][g], use)
+                per = [float(np.abs(frc[fric & (ids == v_f[f])]).sum()) for f in fingers[g].values()]
+                stats["brake_use"][g] = max(stats["brake_use"][g], sum(per))
+                if ph == "stop":
+                    stats["brake_stop"][g] = max(stats["brake_stop"][g], sum(per))
+                if max(per) >= 0.98 * brake / 2.0:
+                    stats["brake_sat"][g] = True
         if slip > DROP:
             dropped_in = ph
             break
 
     def mean(v):
         return float(np.mean(v)) if len(v) else math.nan
+
+    def peak_at(f):
+        """Where a finger's peak element pressure was: the element, its load, its distance from the pivot, the phase."""
+        if stats["peak_at"][f] is None:
+            return ""
+        ei, F, r, ph = stats["peak_at"][f]
+        e = els[ei][2]
+        return f"{e.kind} {e.face}, {e.seg:.1f} x {e.w * 1e3:.0f} mm, {F:.1f} N, {r:.0f} mm from the pivot, in the {ph}"
 
     res: dict[str, Any] = {"ok": not unstable, "reason": UNSTABLE if unstable else "", "unstable_s": unstable_s,
                            "reset_flag": unstable, "substeps": builders["A"].substeps, "case_id": case.id, "case_label": case.label,
@@ -635,8 +663,11 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             f"{g}_hub_hold_N": float(np.linalg.norm(hub.mean(axis=0))), f"{g}_hub_hold_x": float(hub.mean(axis=0)[0]),
             f"{g}_hub_hold_z": float(hub.mean(axis=0)[2]), f"{g}_hub_peak_N": stats["peak_hub"][g],
             f"{g}_thumb_kPa": stats["peak_p"][f_t] / 1e3, f"{g}_out_kPa": stats["peak_p"][f_o] / 1e3,
+            f"{g}_thumb_peak_at": peak_at(f_t), f"{g}_out_peak_at": peak_at(f_o),
             f"{g}_stop_Nm": stats["stop_tau"][g], f"{g}_stop_out_M_Nm": stats["stop_M"][f_o],
             f"{g}_stop_thumb_M_Nm": stats["stop_M"][f_t], f"{g}_brake_use_Nm": stats["brake_use"][g],
+            f"{g}_brake_stop_Nm": stats["brake_stop"][g], f"{g}_brake_saturated": stats["brake_sat"][g],
+            f"{g}_out_peak_N": stats["peak_N"][f_o], f"{g}_thumb_peak_N": stats["peak_N"][f_t],
         })
     res.update({"tilt_deg": stats["tilt"], "slip_mm": stats["slip"] * 1e3, "stop_slip_mm": stats["stop_slip"] * 1e3,
                 "stop_tilt_deg": stats["stop_tilt"], "power_slip_mm": stats["power_slip"] * 1e3,
