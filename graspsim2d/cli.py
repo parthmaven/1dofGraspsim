@@ -233,16 +233,18 @@ def _report(result: dict, run, log) -> None:
             log(f"  {o:18s} {'PASS' if r['passed'] else 'FAIL'}  score {r['score']:.2f}  {r['reason']}")
     rows = [d for d in result["designs"].values() if d.get("hub_clearance_mm") is not None]
     if rows:
-        log("\nBracket hub clearance over the stroke (least gap, opening angle where it occurs):")
+        log("\nClearance over the stroke (least gap, and the opening from where the fingers meet at which it occurs):")
         for d in sorted(rows, key=lambda d: d["name"]):
-            log(f"  {d['name']:9s} {d['concept']:16s} {d['hub_clearance_mm']:6.2f} mm at {d['hub_clearance_phi_deg']:6.2f} deg"
-                f"   ligament {d['ligament_mm']:.1f} mm" if d.get("ligament_mm") is not None else
-                f"  {d['name']:9s} {d['concept']:16s} {d['hub_clearance_mm']:6.2f} mm at {d['hub_clearance_phi_deg']:6.2f} deg   no cut needed")
+            lig = f"ligament {d['ligament_mm']:.1f} mm" if d.get("ligament_mm") is not None else "no cut needed"
+            brk = (f"brackets {d['bracket_clearance_mm']:6.2f} mm at {d['bracket_clearance_phi_deg']:5.1f} deg ({d.get('bracket', '')})"
+                   if d.get("bracket_clearance_mm") is not None else "brackets not checked")
+            log(f"  {d['name']:9s} {d['concept']:16s} hub {d['hub_clearance_mm']:5.2f} mm at {d['hub_clearance_phi_deg']:5.1f} deg  {lig:16s}  {brk}")
 
 
 def make_figures(out: Path, paths: dict[str, str], log=print) -> list[Path]:
     from .mjsim import simulate
-    from .plots import fig_best_designs, fig_bounds, fig_concepts, fig_design_on_objects, fig_iteration, fig_objects, fig_pass_matrix, fig_traces
+    from .plots import (fig_best_designs, fig_bounds, fig_bracket_clearance, fig_concepts, fig_design_on_objects, fig_iteration,
+                        fig_objects, fig_pass_matrix, fig_traces)
 
     result = json.loads((out / "results.json").read_text())
     archive = json.loads((out / "archive.json").read_text()) if (out / "archive.json").exists() else []
@@ -273,6 +275,9 @@ def make_figures(out: Path, paths: dict[str, str], log=print) -> list[Path]:
     made.append(fdir / "iteration-progress.png")
     fig_bounds(fdir / "designs-in-bounds.png", result, space)
     made.append(fdir / "designs-in-bounds.png")
+    if sc.keep_out is not None and sc.keep_out.brackets:
+        fig_bracket_clearance(fdir / "bracket-clearance.png", result, sc)
+        made.append(fdir / "bracket-clearance.png")
     ar = result["designs"][result["all_rounder"]]
     gd = GripperDesign.from_dict(ar["design"])
     picks = _trace_objects(lib, ar)

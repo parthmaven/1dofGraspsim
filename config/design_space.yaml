@@ -6,9 +6,10 @@
 # and the flat face is parallel to the other finger's when closed (2.5 mm gap):
 # wide from 49.9 mm (where it clears the bracket hub) to 101.5 mm (95 mm mean
 # out of plane), a 28 mm recessed notch, then a 16 mm wide tip to 150 mm.
-# Variables the CAD does not set (pad thickness and hardness, drive torque,
-# opening) keep generic ranges. To use Parth's own bounding box, edit the
-# ranges below and rerun; nothing else changes.
+# Variables the CAD does not set (pad thickness and hardness, drive torque)
+# keep generic ranges; the stroke is Parth's (more than 90 deg per finger). To
+# use Parth's own bounding box, edit the ranges below and rerun; nothing else
+# changes.
 #
 # Per variable:
 #   range: [lower, upper]   searched interval (set lower == upper, or use
@@ -42,8 +43,8 @@ variables:
                         note: "0 = flat face; 33 1/m = 30 mm crown radius"}
   finger_torque:      {range: [1, 12],    unit: N*m,     nominal: 5,    placeholder: true,
                         note: "at each finger pivot; the 1:1 gears give both fingers the same torque, one limit for every object"}
-  max_opening:        {value: 35,         unit: deg,     placeholder: true,
-                        note: "fixed: the search has no cost for a longer stroke"}
+  max_opening:        {value: 90,         unit: deg,
+                        note: "stroke of each finger from where the fingers meet; Parth, Nov 25 2026: the fingers open more than 90 deg. Each grasp records the opening it needs (approach_opening_deg)"}
   pad2_offset:        {range: [35, 75],   unit: mm,      nominal: 55,   placeholder: true}
   pad2_length:        {range: [15, 40],   unit: mm,      nominal: 30,   placeholder: true}
   pad2_angle:         {range: [-5, 15],   unit: deg,     nominal: 6,    placeholder: true}

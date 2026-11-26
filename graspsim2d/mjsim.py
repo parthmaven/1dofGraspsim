@@ -30,7 +30,7 @@ from typing import Any
 import mujoco
 import numpy as np
 
-from .analytic import solve_grip
+from .analytic import approach_opening, solve_grip
 from .geometry import Finger, Pad, build_finger
 from .objects import G, GraspObject
 from .pads import foundation_stiffness, series, shear_stiffness
@@ -44,6 +44,7 @@ FINGER_FRICTION = 0.3
 TABLE_FRICTION = 0.4
 DROP_DISTANCE = 0.02  # m of slip counted as a drop
 BODY_CONTACT_LIMIT = 1.0  # N: load the bare finger body and pad mounts may put on the object
+START_MARGIN = math.radians(1.0)  # beyond the approach opening, where each grasp starts
 
 
 @dataclass
@@ -235,11 +236,13 @@ def build_model(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: fl
     b = _Builder(f, obj, sc, depth)
     d = design
     L = d.finger_reach * 1e-3
-    phi0 = math.radians(d.max_opening)
+    # The jaw opens only as far as this object needs, plus START_MARGIN.
+    phi_app = approach_opening(f, obj, sc, depth)
+    phi0 = min(phi_app + START_MARGIN, f.phi_max) if math.isfinite(phi_app) else f.phi_max
     tau = d.finger_torque
     omega = sc.closing_speed
     damping = tau / omega
-    lo, hi = sc.closed_limit, phi0 + 1e-3
+    lo, hi = sc.closed_limit, f.phi_max + 1e-3
 
     if obj.kind == "box":
         H = obj.height
@@ -643,6 +646,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
         "friction_use": fric_peak,
         "friction_margin": float(min(1.0 / max(fric_peak, 1e-9), 99.0)),
         "dropped": float(dropped),
+        "start_opening_deg": math.degrees(meta["phi0"]),
         "margins": {k: float(min(v, 99.0)) for k, v in margins.items()},
     }
     if dropped:

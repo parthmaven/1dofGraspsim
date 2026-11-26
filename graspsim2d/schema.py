@@ -72,7 +72,7 @@ SCHEMA: tuple[VariableDef, ...] = (
     VariableDef("pad_shore", "shoreA", 40.0, "Pad hardness; sets the elastomer modulus (Gent 1958)."),
     VariableDef("pad_crown_curvature", "1/m", 0.0, "Pad face curvature 1/R (0 = flat; 10 = 100 mm radius)."),
     VariableDef("finger_torque", "N*m", 5.0, "Drive torque at each finger pivot (torque-limited, backdrivable)."),
-    VariableDef("max_opening", "deg", 35.0, "Opening angle of each finger at the start of a grasp."),
+    VariableDef("max_opening", "deg", 90.0, "Stroke of each finger: its largest opening, measured from where the fingers meet. A grasp opens only as far as the object needs."),
     VariableDef("pad2_offset", "mm", 50.0, "Dual-zone only: fingertip to the centre of the proximal box pad."),
     VariableDef("pad2_length", "mm", 30.0, "Dual-zone only: length of the proximal box pad."),
     VariableDef("pad2_angle", "deg", 6.0, "Dual-zone only: face angle of the proximal box pad."),

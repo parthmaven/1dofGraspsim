@@ -160,6 +160,14 @@ def test_cheerios_family_size_validation(setup):
     assert tilt == pytest.approx(20.0, abs=0.3)
     assert r.info["squeeze_out_ratio"] == pytest.approx(math.tan(math.radians(tilt)), abs=0.005)
     assert r.info["squeeze_out_ratio"] == pytest.approx(0.36, abs=0.01)
+    # Deeper, the top edges land on the paddle's main face. The CAD study's deepest case has the
+    # box top 51 mm below the pivots (99 mm insertion) and 65 mm inside the open tips, touching
+    # 55 mm from the pivot line at 46.5 deg per jaw, where holding needs mu 1.05.
+    r = solve_grip(stock, rigid, sc, depth=0.099)
+    assert r.ok and r.info["pads"] == "paddle"
+    assert r.info["phi_touch_deg"] == pytest.approx(46.5, abs=0.3)
+    assert r.info["squeeze_out_ratio"] == pytest.approx(1.05, abs=0.03)
+    assert r.info["phi_touch_deg"] < r.info["approach_opening_deg"] < r.info["phi_touch_deg"] + 1.0
     # With the modelled box wall, the screen's own pick puts the corner on the main face, where the
     # squeeze needs more friction than the carton's 0.5, so the hold fails.
     r = solve_grip(base, box, sc)
@@ -204,6 +212,43 @@ def test_baseline_matches_the_platform_finger(setup):
     assert f.hub_clearance == pytest.approx(sc.keep_out.clearance, abs=0.01)
 
 
+def test_stroke_runs_from_where_the_fingers_meet(setup):
+    space, concepts, lib, sc = setup
+    for c in concepts.values():
+        d = c.make(space)
+        f = build_finger(d, sc.keep_out, sc.closed_limit)
+        assert d.max_opening == 90.0
+        assert f.phi_max - f.phi_meet == pytest.approx(math.radians(90.0))
+        for o in lib.objects:
+            r = solve_grip(d, o, sc, finger=f)
+            if not r.ok:
+                continue
+            # each grasp opens only as far as the object needs, and closes from there
+            assert r.info["phi_touch_deg"] < r.info["approach_opening_deg"] <= math.degrees(f.phi_max)
+            assert r.info["approach_stroke_deg"] == pytest.approx(r.info["approach_opening_deg"] - math.degrees(f.phi_meet))
+
+
+def test_brackets_clear_the_baseline_over_the_whole_stroke(setup):
+    from graspsim2d.geometry import clearance_profile
+
+    space, concepts, _, sc = setup
+    ko = sc.keep_out
+    assert [b.name for b in ko.brackets] == ["FT Dynamic bracket (top)", "FT Dynamic bracket (bot)"]
+    d = concepts["baseline_paddle"].make(space)
+    f = build_finger(d, ko, sc.closed_limit)
+    assert f.feasible, f.issues
+    assert f.hub_clearance == pytest.approx(ko.clearance, abs=0.01)
+    assert f.bracket_clearance > 10.0
+    prof = clearance_profile(f, ko, np.radians(np.linspace(0.0, 90.0, 19)))
+    assert set(prof) == {"hub", *(b.name for b in ko.brackets)}
+    assert min(v.min() for k, v in prof.items() if k != "hub") == pytest.approx(f.bracket_clearance, abs=0.5)
+    assert prof["hub"].min() == pytest.approx(f.hub_clearance, abs=0.05)
+    # A root carried at full height would run through the brackets' fillets beside the hub:
+    # the platform finger's first 46 mm are its lower blade only, below both brackets.
+    full = build_finger(d, dataclasses.replace(ko, root_length=0.0), sc.closed_limit)
+    assert full.bracket_clearance < 0.0 and any("FT Dynamic bracket" in s for s in full.issues)
+
+
 def test_keep_out_rejects_pads_in_the_bracket_and_limits_insertion(setup):
     space, concepts, lib, sc = setup
     c = concepts["baseline_paddle"]
@@ -241,13 +286,15 @@ def test_fingers_are_geared_one_to_one(setup):
     model = mujoco.MjModel.from_xml_string(xml)
     data = mujoco.MjData(model)
     adr = {n: model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)] for n in ("jR", "jL")}
+    start = math.radians(30.0)  # well inside the stroke, wider than this sheet needs
+    assert meta["phi0"] < start
     for n in adr.values():
-        data.qpos[n] = meta["phi0"]
+        data.qpos[n] = start
     for _ in range(1500):  # drive the right finger only; the gear must carry the left one
         data.ctrl[2] = -d.finger_torque
         mujoco.mj_step(model, data)
     jR, jL = data.qpos[adr["jR"]], data.qpos[adr["jL"]]
-    assert meta["phi0"] - jR > math.radians(2.0)
+    assert start - jR > math.radians(2.0)
     assert jL == pytest.approx(jR, abs=1e-3)
 
 

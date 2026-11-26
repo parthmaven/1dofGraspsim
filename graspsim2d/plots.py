@@ -14,7 +14,7 @@ import numpy as np  # noqa: E402
 from matplotlib.patches import Circle, Polygon, Rectangle  # noqa: E402
 
 from .analytic import solve_grip  # noqa: E402
-from .geometry import build_finger, finger_outline_view  # noqa: E402
+from .geometry import bracket_height_solid, build_finger, clearance_profile, finger_outline_view, swept_keep_out, to_view  # noqa: E402
 from .objects import GraspObject, ObjectLibrary  # noqa: E402
 from .scenario import Scenario  # noqa: E402
 from .schema import SCHEMA_BY_NAME, Concept, DesignSpace, GripperDesign  # noqa: E402
@@ -82,7 +82,12 @@ def draw_grasp(ax, design: GripperDesign, obj: GraspObject, sc: Scenario, sim: d
     d_mm = an.info.get("insertion_mm", depth_mm or sc.for_kind(obj.kind).insertion_depth * 1e3)
     L = design.finger_reach
     z_top = -L + d_mm
-    phi = math.radians(an.info["phi_deg"]) if an.ok else math.radians(design.max_opening)
+    if an.ok:
+        phi = math.radians(an.info["phi_deg"])
+    elif "approach_opening_deg" in an.info:
+        phi = math.radians(an.info["approach_opening_deg"])
+    else:
+        phi = build_finger(design, sc.keep_out, sc.closed_limit).phi_max
     below = L - d_mm + 70
     draw_object(ax, obj, z_top, below)
     draw_gripper(ax, design, phi, _color(design.concept), sc=sc)
@@ -199,12 +204,15 @@ def fig_concepts(path: Path, concepts: list[Concept], space: DesignSpace, lib: O
     for j, c in enumerate(concepts):
         d = (designs or {}).get(c.name) or c.make(space)
         ax = axes[0, j]
-        draw_gripper(ax, d, math.radians(d.max_opening), _color(c.name), sc=sc)
+        f = build_finger(d, sc.keep_out, sc.closed_limit)
+        an = solve_grip(d, box, sc, finger=f)
+        phi = math.radians(an.info["approach_opening_deg"]) if "approach_opening_deg" in an.info else f.phi_max
+        draw_gripper(ax, d, phi, _color(c.name), sc=sc)
         ax.set_aspect("equal")
         ax.set_xlim(-130, 130)
         ax.set_ylim(-d.finger_reach - 30, 25)
         ax.axis("off")
-        ax.set_title(f"{c.label}\nopen {d.max_opening:.0f} deg", fontsize=9)
+        ax.set_title(f"{c.label}\nopen {math.degrees(phi - f.phi_meet):.0f} of {d.max_opening:.0f} deg, for the box below", fontsize=9)
         ax.text(0.5, -0.02, _wrap(c.idea, 38), transform=ax.transAxes, ha="center", va="top", fontsize=7)
         for row, o in ((1, box), (2, sheet)):
             sim = ((sims or {}).get(c.name) or {}).get(o.id)
@@ -359,6 +367,85 @@ def fig_bounds(path: Path, result: dict[str, Any], space: DesignSpace) -> None:
     ax.legend(fontsize=7, ncol=2, loc="upper left", bbox_to_anchor=(1.0, 1.0))
     fig.tight_layout()
     fig.savefig(path, dpi=110)
+    plt.close(fig)
+
+
+BRACKET_COLORS = ("#1f77b4", "#2ca02c")
+
+
+def fig_bracket_clearance(path: Path, result: dict[str, Any], sc: Scenario) -> None:
+    """Plan view of the brackets with the all-rounder swung through its stroke, and the least
+    gap to the hub and to each bracket against opening, over every first-pass finalist."""
+    ko = sc.keep_out
+    designs = result["designs"]
+    ar = designs[result["all_rounder"]]
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(15, 6.6), gridspec_kw={"width_ratios": [1.25, 1]})
+    for k, br in enumerate(ko.brackets):
+        col = BRACKET_COLORS[k % len(BRACKET_COLORS)]
+        if br.outline is not None:
+            a1.plot(*br.outline.exterior.xy, color=col, lw=0.8, ls="--")
+        for g in getattr(br.region, "geoms", [br.region]):
+            a1.add_patch(Polygon(np.asarray(g.exterior.coords), closed=True, fc=col, ec=col, alpha=0.35, lw=0.6,
+                                 label=f"{br.name}: part outside the hub and hinges"))
+    for x, z, r in ko.circles:
+        a1.add_patch(Circle((x, z), r, fc="#f4c7c3", ec="#c0392b", lw=0.6, ls="--", hatch="////", alpha=0.55, label="hub keep-out"))
+    for x in (-1, 1):
+        a1.add_patch(Circle((x * 19.0, 0.0), ko.hinge_radius, fc="none", ec="k", lw=0.5, ls=":"))
+    gd = GripperDesign.from_dict(ar["design"])
+    f = build_finger(gd, ko, sc.closed_limit)
+    high = bracket_height_solid(f, ko, swept_keep_out(f, ko, f.phi_meet, f.phi_max))
+    openings = (0, 30, 60, 90)
+    shades = plt.cm.Oranges(np.linspace(0.45, 0.95, len(openings)))
+    for op, shade in zip(openings, shades):
+        ph = f.phi_meet + math.radians(min(op, gd.max_opening))
+        for side in (1, -1):
+            for P in finger_outline_view(f, ph, side)["body"]:
+                a1.add_patch(Polygon(P, closed=True, fc="none", ec=shade, lw=0.5, alpha=0.8))
+            for g in getattr(high, "geoms", [high]):
+                a1.add_patch(Polygon(to_view(np.asarray(g.exterior.coords), ph, f.pivot_x, side), closed=True, fc=shade, ec="k",
+                                     lw=0.3, alpha=0.75, label=f"{ar['name']} at bracket height, {op} deg" if side == 1 else None))
+    a1.set_aspect("equal")
+    a1.set_xlim(-120, 120)
+    a1.set_ylim(-110, 55)
+    a1.set_xlabel("x (mm)")
+    a1.set_ylabel("z (mm), pivots at z = 0")
+    a1.set_title(f"Brackets in plan, with the all-rounder {ar['name']} at 0, 30, 60 and 90 deg from where the fingers meet\n"
+                 f"outline only = the root, the first {ko.root_length:.0f} mm, which runs below the brackets; "
+                 f"dotted = hinge, R{ko.hinge_radius:g}", fontsize=8)
+    handles, labels = a1.get_legend_handles_labels()
+    keep = dict(zip(labels, handles))
+    a1.legend(keep.values(), keep.keys(), fontsize=7, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.1))
+    openings_deg = np.linspace(0.0, 90.0, 46)
+    least: dict[str, np.ndarray] = {}
+    base = designs.get("baseline")
+    base_prof = None
+    for name, d in designs.items():
+        g = GripperDesign.from_dict(d["design"])
+        fz = build_finger(g, ko, sc.closed_limit)
+        prof = clearance_profile(fz, ko, np.radians(np.minimum(openings_deg, g.max_opening)))
+        for k, v in prof.items():
+            least[k] = np.minimum(least.get(k, np.full_like(v, np.inf)), v)
+        if d is base:
+            base_prof = prof
+    colors = {"hub": "#c0392b", **{br.name: BRACKET_COLORS[k % len(BRACKET_COLORS)] for k, br in enumerate(ko.brackets)}}
+    for i, (k, v) in enumerate(least.items()):
+        # the brackets share the fillets beside the hub, so their curves can coincide: draw wide to narrow
+        lw = max(3.4 - 1.0 * i, 1.4)
+        a2.plot(openings_deg, v, lw=lw, color=colors[k], alpha=0.85, label=f"{k}: least over all {len(designs)} designs")
+        if base_prof is not None:
+            a2.plot(openings_deg, base_prof[k], lw=1.0, ls=":", color=colors[k], label=f"{k}: baseline as drawn")
+    a2.axhline(0.0, color="k", lw=0.8)
+    a2.text(1, 0.3, "touching", fontsize=7)
+    a2.set_xlim(0, 90)
+    a2.set_ylim(bottom=-1)
+    a2.set_xlabel("opening from where the fingers meet (deg)")
+    a2.set_ylabel("gap (mm)")
+    a2.grid(alpha=0.3)
+    a2.legend(fontsize=7, loc="upper right")
+    a2.set_title("Least gap to the hub and to each bracket over the whole stroke\n"
+                 f"(hub: its circle at R{ko.circles[0][2]:g}; brackets: the parts at their heights)" if ko.circles else "", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=110, bbox_inches="tight")
     plt.close(fig)
 
 

@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -109,7 +109,7 @@ def tip_half_gap(f: Finger, phi: float) -> float:
 def pass_opening(f: Finger, obj: GraspObject, sc: Scenario) -> float:
     """Smallest jaw angle (rad) at which the object passes between the fingertips, or nan if it never does."""
     half = obj.thickness * 1000.0 / 2
-    lo, hi = sc.closed_limit, math.radians(f.design.max_opening)
+    lo, hi = sc.closed_limit, f.phi_max
     if tip_half_gap(f, hi) < half:
         return math.nan
     if tip_half_gap(f, lo) >= half:
@@ -117,6 +117,28 @@ def pass_opening(f: Finger, obj: GraspObject, sc: Scenario) -> float:
     for _ in range(30):
         mid = 0.5 * (lo + hi)
         lo, hi = (lo, mid) if tip_half_gap(f, mid) >= half else (mid, hi)
+    return hi
+
+
+def approach_opening(f: Finger, obj: GraspObject, sc: Scenario, depth: float) -> float:
+    """Smallest jaw angle (rad) at which the fingers clear the object by FIT_CLEARANCE all the
+    way to `depth` (m) of insertion, i.e. how far the jaw must open to come down over it;
+    nan if the stroke is too short."""
+    x_need = obj.thickness * 1000.0 / 2 + FIT_CLEARANCE
+    z_top = -f.design.finger_reach + depth * 1000.0
+    z_bot = z_top - obj.height * 1000.0
+
+    def clear(phi: float) -> bool:
+        return band_min_x(finger_polys(f, phi), z_bot, z_top) >= x_need
+
+    lo, hi = f.phi_meet, f.phi_max
+    if not clear(hi):
+        return math.nan
+    if clear(lo):
+        return lo
+    for _ in range(16):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (lo, mid) if clear(mid) else (mid, hi)
     return hi
 
 
@@ -302,8 +324,8 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
     x_face = obj.thickness * 1000.0 / 2
     z_top = -L + depth * 1000.0
     z_bot = z_top - obj.height * 1000.0
-    phi_open, phi_lo = math.radians(d.max_opening), sc.closed_limit
-    info0 = {"insertion_mm": depth * 1000.0}
+    phi_lo = sc.closed_limit
+    info0: dict[str, float] = {"insertion_mm": depth * 1000.0}
 
     if z_top >= -d.finger_thickness / 2:
         return _fail(d, obj, "insertion depth puts the object above the finger pivots", **info0)
@@ -311,8 +333,11 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
         off = pres.lateral_offset * 1000.0
         if z_top > sc.keep_out.max_object_top(off - x_face, off + x_face) + 1e-6:
             return _fail(d, obj, "object top would enter the bracket keep-out", **info0)
-    if band_min_x(finger_polys(f, phi_open), z_bot, z_top) < x_face + FIT_CLEARANCE:
+    phi_open = approach_opening(f, obj, sc, depth)
+    if not math.isfinite(phi_open):
         return _fail(d, obj, "does not fit between the open fingers", **info0)
+    info0["approach_opening_deg"] = math.degrees(phi_open)  # jaw angle, like phi_deg
+    info0["approach_stroke_deg"] = math.degrees(phi_open - f.phi_meet)  # opening from where the fingers meet
 
     def touching(phi: float) -> bool:
         return band_min_x(finger_polys(f, phi), z_bot, z_top) <= x_face
@@ -352,6 +377,12 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
         else:
             hi = mid
     ld = load(0.5 * (lo + hi))
+    if ld.torque() <= 0.0:
+        ld = load(lo)
+    # The pad face is sampled at points, so on a stiff contact the torque can jump from zero to
+    # several times the drive's within the last step; scale the load to the drive torque.
+    s = tau / ld.torque() if ld.torque() > 0.0 else 0.0
+    ld = replace(ld, p=ld.p * s, fx=ld.fx * s, pad_strain=ld.pad_strain * s)
     phi = ld.phi
     N = ld.N
     if N <= 1e-9:

@@ -122,6 +122,7 @@ def _evaluate(task: tuple[str, tuple[float, ...], tuple[str, ...] | None]) -> di
         "raw_scores": [r.score for r in res],
         "limiting": [r.limiting for r in res],
         "insertion_mm": [r.info.get("insertion_mm", float("nan")) for r in res],
+        "approach_stroke_deg": [r.info.get("approach_stroke_deg", float("nan")) for r in res],
         "J": objective_from_scores(scores, _W["weight"]),
         "n_pass": int(sum(s >= 1.0 for s in scores)),
     }
@@ -155,6 +156,8 @@ def _simulate_task(task: tuple[dict[str, Any], str, float | None]) -> dict[str, 
         "analytic_score": r.screen["score"],
         "analytic_margins": r.screen["margins"],
         "analytic_limiting": r.screen["limiting"],
+        "approach_opening_deg": r.screen.get("approach_opening_deg"),
+        "approach_stroke_deg": r.screen.get("approach_stroke_deg"),
         "seconds": r.seconds,
     }
 
@@ -422,9 +425,13 @@ class SearchRun:
                     "sim_pass": n_pass,
                     "sim_J": objective_from_scores(sim_scores, self.cfg.min_margin_weight),
                     "sim_worst": worst,
+                    "meet_deg": math.degrees(fz.phi_meet),
                     "hub_clearance_mm": _finite(fz.hub_clearance),
                     "hub_clearance_phi_deg": _finite(fz.hub_clearance_phi),
                     "ligament_mm": _finite(fz.ligament),
+                    "bracket_clearance_mm": _finite(fz.bracket_clearance),
+                    "bracket_clearance_phi_deg": _finite(fz.bracket_clearance_phi),
+                    "bracket": fz.bracket_name,
                     "results": {o: _slim(row.get(o)) for o in ids},
                 }
             )
@@ -510,6 +517,9 @@ def _slim(r: dict[str, Any] | None) -> dict[str, Any] | None:
         "reason": r["reason"],
         "score": r["score"],
         "insertion_mm": r.get("insertion_mm"),
+        "approach_opening_deg": r.get("approach_opening_deg"),
+        "approach_stroke_deg": r.get("approach_stroke_deg"),
+        "start_opening_deg": m.get("start_opening_deg"),
         "margins": m.get("margins", {}),
         "slip_mm": m.get("slip_mm"),
         "rotation_deg": m.get("rotation_deg"),

@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
+from shapely.geometry import Point
+from shapely.geometry import Polygon as SPolygon
 
-from .geometry import KeepOut
+from .geometry import Bracket, KeepOut
 from .objects import G
 
 
@@ -125,10 +127,27 @@ def _keep_out(e: Mapping[str, Any] | None) -> KeepOut | None:
     for c in e["circles"]:
         x, z = (float(v) for v in c["center_mm"])
         circles.append((x, z, float(c["radius_mm"])))
+    br = e.get("brackets") or {}
+    hinge_r = float(br.get("hinge_radius_mm", 0.0))
+    brackets = []
+    for fp in br.get("footprints") or []:
+        outline = SPolygon([tuple(map(float, p)) for p in fp["outline_mm"]]).buffer(0)
+        region = outline
+        for x, z, r in circles:
+            region = region.difference(Point(x, z).buffer(r, quad_segs=64))
+        for x, z in br.get("hinge_centres_mm") or []:
+            region = region.difference(Point(float(x), float(z)).buffer(hinge_r, quad_segs=64))
+        # drop the slivers left between the CAD's facets and the exact circles
+        region = region.buffer(-0.05).buffer(0.05)
+        if not region.is_empty:
+            brackets.append(Bracket(str(fp["name"]), region, outline))
     return KeepOut(
         circles=tuple(circles),
         clearance=float(e.get("clearance_mm", 0.0)),
         min_ligament=float(e.get("min_ligament_mm", 5.0)),
         blocks_objects=bool(e.get("blocks_objects", True)),
         note=str(e.get("note", "")),
+        brackets=tuple(brackets),
+        hinge_radius=hinge_r,
+        root_length=float(br.get("root_length_mm", 0.0)),
     )

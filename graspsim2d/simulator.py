@@ -61,7 +61,8 @@ def _numbers(info: dict[str, Any]) -> dict[str, float]:
 
 
 def _screen_summary(r: GripResult) -> dict[str, Any]:
-    return {"ok": r.ok, "score": r.score, "margins": dict(r.margins), "limiting": r.limiting}
+    return {"ok": r.ok, "score": r.score, "margins": dict(r.margins), "limiting": r.limiting,
+            "approach_opening_deg": r.info.get("approach_opening_deg"), "approach_stroke_deg": r.info.get("approach_stroke_deg")}
 
 
 class AnalyticSimulator:

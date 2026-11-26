@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 import numpy as np
 from shapely.geometry import LineString, MultiPolygon, Point
@@ -29,18 +30,38 @@ MOUNT_MIN = 1.0  # mm of rigid mount left under the thinnest point of a pad
 PAD_MIN_THICKNESS = 1.0  # mm of elastomer left at the ends of a crowned pad
 
 @dataclass(frozen=True)
+class Bracket:
+    """Plan footprint of a fixed bracket beside the finger root, in gripper
+    coordinates (mm), less the keep-out circles and the hinge discs, which are
+    checked on their own."""
+
+    name: str
+    region: Any  # shapely geometry
+    outline: Any = None  # the whole footprint, for drawing
+
+
+@dataclass(frozen=True)
 class KeepOut:
     """Region of the gripper plane that fingers and objects must stay out of,
     such as the footprint of a bracket above the jaw. Circles are (x, z, r) in
     mm in gripper coordinates (origin midway between the pivots, z = 0 on the
     pivot line, fingertips at negative z). Each finger gets a cutout that
-    clears the circles over its whole stroke, from fully closed to fully open."""
+    clears the circles over its whole stroke, from fully closed to fully open.
+
+    Brackets are checked over the same stroke but not cut: a finger that meets
+    one is infeasible. Within `hinge_radius` of each pivot the bracket and the
+    finger's hinge interleave in height, and the first `root_length` mm of the
+    finger runs below the brackets, as on the platform finger, so neither is
+    checked."""
 
     circles: tuple[tuple[float, float, float], ...]
     clearance: float = 0.0  # mm added to every radius
     min_ligament: float = 5.0  # mm of finger material that must remain beside the cutout
     blocks_objects: bool = True  # objects may not enter the region either
     note: str = ""
+    brackets: tuple[Bracket, ...] = ()
+    hinge_radius: float = 0.0  # mm
+    root_length: float = 0.0  # mm along the finger from the pivot
 
     def radii(self) -> list[tuple[float, float, float]]:
         return [(x, z, r + self.clearance) for x, z, r in self.circles]
@@ -179,11 +200,19 @@ class Finger:
     # Body outline after the keep-out cutout (finger-local polygons, for drawing),
     # the least finger material left beside the cutout (mm), and the least gap
     # between the finger and the keep-out's own radius over the stroke (mm,
-    # negative if they overlap) with the opening angle where it occurs (deg).
+    # negative if they overlap) with the opening where it occurs (deg, measured
+    # from where the fingers meet).
     cut_body: tuple[np.ndarray, ...] = field(default_factory=tuple)
     ligament: float = math.inf
     hub_clearance: float = math.inf
     hub_clearance_phi: float = math.nan
+    # Least gap to the brackets over the stroke (mm), where (deg) and which bracket.
+    bracket_clearance: float = math.inf
+    bracket_clearance_phi: float = math.nan
+    bracket_name: str = ""
+    # Jaw angle (rad) where the fingers meet, and the full stroke from there.
+    phi_meet: float = 0.0
+    phi_max: float = math.radians(90.0)
 
     @property
     def pivot_x(self) -> float:
@@ -240,6 +269,8 @@ def build_finger(d: GripperDesign, keep_out: KeepOut | None = None, closed_limit
     needs. Geometric conflicts are reported in `issues`; entries starting with
     'infeasible' make the design unusable."""
     f = _build_finger(d)
+    meet = closed_angle(f, closed_limit)
+    f = replace(f, phi_meet=meet, phi_max=meet + math.radians(d.max_opening))
     if keep_out is None or not keep_out.circles:
         return f
     return apply_keep_out(f, keep_out, closed_limit)
@@ -369,7 +400,7 @@ def closed_angle(f: Finger, lower: float) -> float:
     def min_x(phi: float) -> float:
         return min(float(to_view(P, phi, f.pivot_x)[:, 0].min()) for P in polys)
 
-    hi = math.radians(f.design.max_opening)
+    hi = math.radians(60.0)
     if min_x(lower) >= 0.0:
         return lower
     if min_x(hi) <= 0.0:
@@ -400,8 +431,8 @@ def apply_keep_out(f: Finger, ko: KeepOut, closed_limit: float) -> Finger:
     """Cut the finger body clear of the keep-out over the full stroke. Pads and
     pad mounts may not be cut; the beam must keep `min_ligament` of material."""
     issues = list(f.issues)
-    phi_lo = closed_angle(f, closed_limit)
-    swept = swept_keep_out(f, ko, phi_lo, math.radians(f.design.max_opening))
+    phi_lo, phi_hi = f.phi_meet, f.phi_max
+    swept = swept_keep_out(f, ko, phi_lo, phi_hi)
     for pad in f.pads:
         if SPolygon(pad.outline()).intersects(swept):
             issues.append(f"infeasible: the {pad.name} pad enters the bracket keep-out during the stroke")
@@ -433,14 +464,79 @@ def apply_keep_out(f: Finger, ko: KeepOut, closed_limit: float) -> Finger:
             if not poly.is_empty and poly.area > 1e-6:
                 cut.append(np.asarray(poly.exterior.coords)[:-1])
     solid = unary_union([SPolygon(P) for P in cut] + [SPolygon(pad.outline()) for pad in f.pads])
-    clearance, phi_min = hub_clearance(f, ko, solid, phi_lo, math.radians(f.design.max_opening))
+    clearance, phi_min = hub_clearance(f, ko, solid, phi_lo, phi_hi)
+    b_gap, b_phi, b_name = math.inf, math.nan, ""
+    if ko.brackets:
+        b_gap, b_phi, b_name = bracket_clearance(f, ko, phi_lo, phi_hi, swept)
+        if b_gap < 0.0:
+            issues.append(f"infeasible: the finger meets the {b_name} at {b_phi:.0f} deg of opening")
     return replace(f, issues=tuple(issues), cut_body=tuple(cut), ligament=ligament,
-                   hub_clearance=clearance, hub_clearance_phi=phi_min)
+                   hub_clearance=clearance, hub_clearance_phi=phi_min,
+                   bracket_clearance=b_gap, bracket_clearance_phi=b_phi, bracket_name=b_name)
+
+
+def bracket_height_solid(f: Finger, ko: KeepOut, swept=None):
+    """The parts of the finger at the brackets' heights (finger-local shapely geometry): the
+    beam beyond the root (less the keep-out cutout), every pad and pad mount, less the hinge disc."""
+    beyond_root = SPolygon([(ko.root_length, -1e4), (1e4, -1e4), (1e4, 1e4), (ko.root_length, 1e4)])
+    parts = []
+    for p in f.body:
+        g = SPolygon(p.poly)
+        if p.rect is not None:
+            g = g.intersection(beyond_root)
+            if swept is not None:
+                g = g.difference(swept)
+        parts.append(g)
+    parts += [SPolygon(pad.outline()) for pad in f.pads]
+    return unary_union(parts).difference(Point(0.0, 0.0).buffer(ko.hinge_radius, quad_segs=32))
+
+
+def bracket_clearance(f: Finger, ko: KeepOut, phi_lo: float, phi_hi: float, swept=None, n: int = 91) -> tuple[float, float, str]:
+    """Least gap (mm) between the finger and the brackets over the stroke, the opening
+    (deg, from where the fingers meet) where it occurs, and the bracket's name.
+    A negative gap means they overlap."""
+    solid = bracket_height_solid(f, ko, swept)
+    if solid.is_empty:
+        return math.inf, math.nan, ""
+    best = (math.inf, math.nan, "")
+    for ph in np.linspace(phi_lo, phi_hi, n):
+        for br in ko.brackets:
+            gap = _region_gap(solid, br.region, ph, f.pivot_x)
+            if gap < best[0]:
+                best = (gap, math.degrees(ph - phi_lo), br.name)
+    return best
+
+
+def _region_gap(solid, region, phi: float, pivot_x: float) -> float:
+    """Gap (mm) from the finger-local `solid` to a gripper-frame region at opening `phi`;
+    an overlap counts as minus the square root of its area. Holes in the region are ignored."""
+    gap = math.inf
+    for geom in getattr(region, "geoms", [region]):
+        local = SPolygon(to_local(np.asarray(geom.exterior.coords), phi, pivot_x))
+        g = -math.sqrt(solid.intersection(local).area) if solid.intersects(local) else solid.distance(local)
+        gap = min(gap, float(g))
+    return gap
+
+
+def clearance_profile(f: Finger, ko: KeepOut, openings: np.ndarray) -> dict[str, np.ndarray]:
+    """Gap (mm) to the keep-out circles ("hub") and to each bracket at each opening (rad,
+    from where the fingers meet), for a finger from build_finger."""
+    phis = f.phi_meet + np.asarray(openings, dtype=float)
+    body = f.cut_body or tuple(p.poly for p in f.body)
+    solid = unary_union([SPolygon(P) for P in body] + [SPolygon(p.outline()) for p in f.pads])
+    out = {"hub": np.array([min(solid.distance(Point(to_local(np.array([[xm, z]]), ph, f.pivot_x)[0])) - r
+                                for x, z, r in ko.circles for xm in {x, -x}) for ph in phis])}
+    if ko.brackets:
+        high = bracket_height_solid(f, ko, swept_keep_out(f, ko, f.phi_meet, f.phi_max))
+        for br in ko.brackets:
+            out[br.name] = np.array([_region_gap(high, br.region, ph, f.pivot_x) for ph in phis])
+    return out
 
 
 def hub_clearance(f: Finger, ko: KeepOut, solid, phi_lo: float, phi_hi: float, n: int = 145) -> tuple[float, float]:
     """Least gap (mm) between the finger solid (finger-local shapely geometry) and the
-    keep-out circles at their own radius, over the stroke, and the angle (deg) where it occurs."""
+    keep-out circles at their own radius, over the stroke, and the opening (deg, from
+    phi_lo, where the fingers meet) where it occurs."""
     best, best_phi = math.inf, math.nan
     for ph in np.linspace(phi_lo, phi_hi, n):
         for x, z, r in ko.circles:
@@ -448,5 +544,5 @@ def hub_clearance(f: Finger, ko: KeepOut, solid, phi_lo: float, phi_hi: float, n
                 c = to_local(np.array([[xm, z]]), ph, f.pivot_x)[0]
                 gap = solid.distance(Point(c)) - r
                 if gap < best:
-                    best, best_phi = gap, math.degrees(ph)
+                    best, best_phi = gap, math.degrees(ph - phi_lo)
     return float(best), float(best_phi)
