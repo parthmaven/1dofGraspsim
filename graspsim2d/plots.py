@@ -395,3 +395,50 @@ def fig_traces(path: Path, traces: dict[str, tuple[str, dict[str, np.ndarray]]],
     fig.tight_layout()
     fig.savefig(path, dpi=110)
     plt.close(fig)
+
+
+def fig_sweep(path: Path, result: dict[str, Any], labels: dict[str, str] | None = None) -> None:
+    """One varied variable: margin per object and pass count against it. Two: pass count over the grid."""
+    vary, summary, labels = result["vary"], result["summary"], labels or {}
+    n_obj = len(result["objects"])
+    base = result["base"].get("label") or result["base"]["concept"]
+    title = f"Sweep around {base}, {result['fidelity']} fidelity"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if len(vary) == 1:
+        name = vary[0]["name"]
+        xs = np.array([s[name] for s in summary])
+        score = {(r["point"], r["object_id"]): r["score"] for r in result["outcomes"]}
+        fig, (a1, a2) = plt.subplots(2, 1, figsize=(9, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+        for k, oid in enumerate(result["objects"]):
+            a1.plot(xs, [min(score[(s["point"], oid)], 3.0) for s in summary], marker="os^D"[k // 20 % 4], ms=3,
+                    color=plt.cm.tab20(k % 20), ls="-" if k % 2 == 0 else "--", label=labels.get(oid, oid))
+        a1.axhline(1.0, color="k", ls=":", lw=0.8)
+        a1.set_ylabel("smallest pass margin (>= 1 passes, capped at 3)")
+        a1.set_title(title, fontsize=10)
+        a1.legend(fontsize=7, ncol=2)
+        width = 0.8 * float(np.min(np.diff(np.unique(xs)))) if len(np.unique(xs)) > 1 else 0.8
+        a2.bar(xs, [s["n_pass"] for s in summary], width=width, color="tab:green", ec="k")
+        a2.set_ylim(0, n_obj)
+        a2.set_ylabel("objects passed")
+        a2.set_xlabel(f"{name} ({SCHEMA_BY_NAME[name].unit})")
+    else:
+        (n1, v1), (n2, v2) = ((v["name"], v["values"]) for v in vary[:2])
+        M = np.full((len(v2), len(v1)), np.nan)
+        for s in summary:
+            M[v2.index(s[n2]), v1.index(s[n1])] = s["n_pass"]
+        fig, ax = plt.subplots(figsize=(2.2 + 0.7 * len(v1), 1.6 + 0.45 * len(v2)))
+        im = ax.imshow(M, cmap="RdYlGn", vmin=0, vmax=n_obj, origin="lower", aspect="auto")
+        for i in range(len(v2)):
+            for j in range(len(v1)):
+                ax.text(j, i, f"{M[i, j]:.0f}", ha="center", va="center", fontsize=7)
+        ax.set_xticks(range(len(v1)))
+        ax.set_xticklabels([f"{v:g}" for v in v1], fontsize=7)
+        ax.set_yticks(range(len(v2)))
+        ax.set_yticklabels([f"{v:g}" for v in v2], fontsize=7)
+        ax.set_xlabel(f"{n1} ({SCHEMA_BY_NAME[n1].unit})")
+        ax.set_ylabel(f"{n2} ({SCHEMA_BY_NAME[n2].unit})")
+        ax.set_title(f"{title}\nobjects passed (of {n_obj})", fontsize=9)
+        fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)

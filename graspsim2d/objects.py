@@ -1,9 +1,9 @@
 """Predefined object library: filled cereal boxes and cardboard sheets.
 
-Everything is described in the grasp plane. A box stands upright and the
-gripper comes down on its top end; by default the jaw closes across the depth
-(front to back), so the 2D section is the depth x height side panel and the box
-width is out of plane (`grasp_axis: width` closes across the width instead). A
+Everything is described in the grasp plane. A box stands upright, the gripper
+comes down on its top end and the jaw closes across the depth (front to back),
+so the 2D section is the depth x height side panel and the box width is out of
+plane (`grasp_axis: width` closes across the width instead). A
 sheet hangs from a pinch near its free edge, so the section is thickness x
 hanging length and the sheet width is out of plane.
 

@@ -39,6 +39,7 @@ from .geometry import build_finger
 from .objects import ObjectLibrary, load_objects
 from .scenario import Scenario, load_scenario
 from .schema import Concept, DesignSpace, GripperDesign, load_concepts, load_design_space
+from .simulator import MujocoSimulator
 
 # Analytic criteria standing in for each dynamic criterion when learning corrections.
 # Slip itself is a displacement and has no analytic counterpart; the share of the
@@ -136,36 +137,26 @@ def _neg_obj_score(x: np.ndarray, concept_name: str, oid: str) -> float:
 
 
 def _simulate_task(task: tuple[dict[str, Any], str, float | None]) -> dict[str, Any]:
-    from .mjsim import simulate
-
     ddict, oid, depth = task
-    d = GripperDesign.from_dict(ddict)
-    o = _W["lib"].by_id(oid)
-    t0 = time.perf_counter()
-    an = solve_grip(d, o, _W["sc"], depth=depth)
-    if not an.ok:
-        # The grasp cannot be set up (no fit, body or fingertip collision, ...).
-        out = {"passed": False, "reason": f"not simulated: {an.reason}", "metrics": {}, "score": 0.0,
-               "insertion_mm": an.info.get("insertion_mm", float("nan"))}
-    else:
-        try:
-            r = simulate(d, o, _W["sc"], depth=an.info["insertion_mm"] / 1e3, record=False)
-            out = {"passed": r.passed, "reason": r.reason, "metrics": r.metrics, "score": r.score, "insertion_mm": r.insertion_mm}
-        except Exception as exc:  # a model that fails to build or run counts as a failed grasp
-            out = {"passed": False, "reason": f"simulation error: {exc}", "metrics": {}, "score": 0.0, "insertion_mm": float("nan")}
-    out.update(
-        {
-            "design_label": ddict.get("label", ""),
-            "concept": ddict["concept"],
-            "object_id": oid,
-            "analytic_ok": an.ok,
-            "analytic_score": an.score,
-            "analytic_margins": an.margins,
-            "analytic_limiting": an.limiting,
-            "seconds": time.perf_counter() - t0,
-        }
-    )
-    return out
+    r = MujocoSimulator().run(GripperDesign.from_dict(ddict), _W["lib"].by_id(oid), _W["sc"], depth=depth)
+    metrics = dict(r.metrics)
+    if r.margins:
+        metrics["margins"] = r.margins
+    return {
+        "passed": r.passed,
+        "reason": r.reason,
+        "metrics": metrics,
+        "score": r.score,
+        "insertion_mm": r.insertion_mm,
+        "design_label": ddict.get("label", ""),
+        "concept": ddict["concept"],
+        "object_id": oid,
+        "analytic_ok": r.screen["ok"],
+        "analytic_score": r.screen["score"],
+        "analytic_margins": r.screen["margins"],
+        "analytic_limiting": r.screen["limiting"],
+        "seconds": r.seconds,
+    }
 
 
 # ------------------------------------------------------------------ driver

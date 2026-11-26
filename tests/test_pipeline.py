@@ -227,3 +227,56 @@ def test_dynamic_check_agrees_with_screen_on_static_grip(setup):
     assert sim.metrics["grip_N"] == pytest.approx(an.info["normal_force_N"], rel=0.05)
     assert sim.metrics["slip_mm"] < sc.max_slip * 1000
     assert sim.metrics["peak_pressure_kPa"] == pytest.approx(an.info["loaded_pressure_kPa"], rel=0.25)
+
+
+def test_simulator_interface_wraps_both_levels(setup):
+    from graspsim2d.mjsim import simulate
+    from graspsim2d.simulator import make_simulator
+
+    space, concepts, lib, sc = setup
+    d, o = concepts["baseline_paddle"].make(space), lib.by_id("mini_1oz")
+    ref = solve_grip(d, o, sc)
+    an = make_simulator("analytic").run(d, o, sc)
+    assert (an.score, an.limiting, an.passed) == (pytest.approx(ref.score), ref.limiting, ref.passed)
+    assert an.insertion_mm == pytest.approx(ref.info["insertion_mm"])
+    mj = make_simulator("mujoco").run(d, o, sc)
+    direct = simulate(d, o, sc, depth=ref.info["insertion_mm"] / 1e3, record=False)
+    assert (mj.score, mj.passed) == (pytest.approx(direct.score), direct.passed)
+    assert mj.screen["score"] == pytest.approx(ref.score)
+    assert set(an.to_dict()) == set(mj.to_dict())
+    with pytest.raises(ValueError):
+        make_simulator("fem")
+
+
+def test_sweep_runs_the_grid_and_saves_it(tmp_path, setup):
+    import csv
+
+    from graspsim2d.cli import main
+    from graspsim2d.sweep import parse_vary
+
+    space, concepts, lib, sc = setup
+    out = tmp_path / "sweep"
+    main(["--config", str(CFG), "sweep", "baseline_paddle", "--vary", "finger_torque=2:4:3", "--vary", "pad_shore=40,60",
+          "--objects", "mini_1oz,b_flute_3mm", "--out", str(out), "--workers", "2"])
+    rows = list(csv.DictReader((out / "sweep.csv").open()))
+    summary = list(csv.DictReader((out / "summary.csv").open()))
+    assert len(rows) == 12 and [(float(r["finger_torque"]), float(r["pad_shore"])) for r in summary] == [
+        (2, 40), (2, 60), (3, 40), (3, 60), (4, 40), (4, 60)]
+    row = next(r for r in rows if float(r["finger_torque"]) == 3 and float(r["pad_shore"]) == 60 and r["object_id"] == "mini_1oz")
+    d = concepts["baseline_paddle"].make(space).replace(finger_torque=3.0, pad_shore=60.0)
+    assert float(row["score"]) == pytest.approx(solve_grip(d, lib.by_id("mini_1oz"), sc).score)
+    assert (out / "figures" / "sweep.png").exists() and (out / "objects.yaml").exists()
+    with pytest.raises(ValueError, match="unknown design variable"):
+        parse_vary("finger_length=1,2")
+
+
+def test_run_directory_keeps_its_box_tables(tmp_path):
+    from graspsim2d.cli import CONFIG_FILES, save_inputs
+
+    raw = yaml.safe_load((CFG / "objects.yaml").read_text())
+    raw["box_tables"][0]["file"] = str(CFG / "general_mills_cereal_boxes.csv")
+    (tmp_path / "objects.yaml").write_text(yaml.safe_dump(raw))
+    paths = {k: str(CFG / v) for k, v in CONFIG_FILES.items()} | {"objects": str(tmp_path / "objects.yaml")}
+    save_inputs(tmp_path / "run", paths)
+    assert yaml.safe_load((tmp_path / "run" / "objects.yaml").read_text())["box_tables"][0]["file"] == "general_mills_cereal_boxes.csv"
+    assert "gm_cheerios_family_size_18_oz" in load_objects(tmp_path / "run" / "objects.yaml").ids()

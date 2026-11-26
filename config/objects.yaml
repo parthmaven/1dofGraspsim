@@ -6,12 +6,12 @@
 # derived from the others. Ranges are kept next to the value used so a
 # sensitivity run is a config edit.
 #
-# Grasp plane: a box stands upright and the gripper comes down on its top end
-# (the shortest end). By default the jaw closes across the depth D, so the 2D
-# section is the D x H side panel and the width W is out of plane; set
-# box_defaults.grasp_axis (or a box's own grasp_axis) to `width` to close
-# across W instead. A sheet hangs from a pinch near its free top edge; the
-# section is caliper x hanging length and the sheet width is out of plane.
+# Grasp plane: a box stands upright, the gripper comes down on its top end
+# (the shortest end) and the jaw closes across the depth D, so the 2D section
+# is the D x H side panel and the width W is out of plane. Setting
+# box_defaults.grasp_axis (or a box's own grasp_axis) to `width` closes across
+# W instead. A sheet hangs from a pinch near its free top edge; the section is
+# caliper x hanging length and the sheet width is out of plane.
 
 meta:
   compiled: 2026-11-26

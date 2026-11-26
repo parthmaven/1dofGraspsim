@@ -12,10 +12,10 @@ from pathlib import Path
 
 import yaml
 
-from .analytic import screen_design
 from .objects import load_objects, table_path
 from .scenario import load_scenario
 from .schema import GripperDesign, load_concepts, load_design_space
+from .simulator import FIDELITIES
 
 CONFIG_FILES = {"design_space": "design_space.yaml", "concepts": "concepts.yaml", "objects": "objects.yaml",
                 "scenario": "scenario.yaml", "search": "search.yaml"}
@@ -85,48 +85,106 @@ def cmd_describe(args: argparse.Namespace) -> None:
               f"allow {s['allow_pressure_kPa']:.0f} kPa")
 
 
-def cmd_screen(args: argparse.Namespace) -> None:
-    paths = _paths(args)
-    d = _load_design(args.design, paths)
-    lib = load_objects(paths["objects"])
-    sc = load_scenario(paths["scenario"])
-    res = screen_design(d, lib.objects, sc)
-    print(f"Analytic screen of {d.label or d.concept}:")
-    for r in res:
-        if r.ok:
-            m = " ".join(f"{k}={v:.2f}" for k, v in r.margins.items())
-            print(f"  {r.object_id:18s} {'PASS' if r.passed else 'fail'}  score {r.score:5.2f}  N {r.info['normal_force_N']:5.1f} N  "
-                  f"insertion {r.info['insertion_mm']:5.1f} mm  {m}")
-        else:
-            print(f"  {r.object_id:18s} fail  {r.reason}")
+def _print_outcome(r: dict) -> None:
+    m = r["metrics"]
+    head = f"  {r['object_id']:18s} {'PASS' if r['passed'] else 'fail'}  score {r['score']:5.2f}"
+    if r["fidelity"] == "analytic":
+        body = (f"  N {m['normal_force_N']:5.1f} N  insertion {r['insertion_mm']:5.1f} mm" if "normal_force_N" in m else "")
+    else:
+        body = (f"  slip {m['slip_mm']:6.2f} mm  rot {m['rotation_deg']:5.2f} deg  p {m['peak_pressure_kPa']:6.1f} kPa"
+                if "slip_mm" in m else "")
+    margins = " ".join(f"{k}={v:.2f}" for k, v in r["margins"].items())
+    tail = f"  ({r['seconds']:.1f} s)" if r["fidelity"] == "mujoco" else ""
+    print(f"{head}{body}  {margins or r['reason']}{tail}")
+
+
+def _save_outcomes(out: Path, paths: dict[str, str], d: GripperDesign, rows: list[dict]) -> None:
+    from .sweep import clean, write_outcomes_csv
+
+    save_inputs(out, paths)
+    (out / "results.json").write_text(json.dumps(clean({"design": d.to_dict(), "outcomes": rows}), indent=1))
+    write_outcomes_csv(out / "results.csv", rows)
+    print(f"results -> {out / 'results.json'}, {out / 'results.csv'}")
 
 
 def cmd_simulate(args: argparse.Namespace) -> None:
-    from .mjsim import build_model, simulate
-    from .plots import fig_traces
+    from .simulator import make_simulator, run_batch
 
     paths = _paths(args)
     d = _load_design(args.design, paths)
     lib = load_objects(paths["objects"])
     sc = load_scenario(paths["scenario"])
     ids = args.object_ids.split(",") if args.object_ids else lib.ids()
-    traces = {}
-    for oid in ids:
-        o = lib.by_id(oid)
-        t0 = time.perf_counter()
-        r = simulate(d, o, sc)
-        m = r.metrics
-        print(f"  {oid:18s} {'PASS' if r.passed else 'FAIL'} {r.reason:28s} slip {m.get('slip_mm', float('nan')):6.2f} mm  "
-              f"rot {m.get('rotation_deg', float('nan')):5.2f} deg  p {m.get('peak_pressure_kPa', float('nan')):6.1f} kPa  "
-              f"({time.perf_counter() - t0:.1f} s)")
-        traces[o.label] = (d.label or d.concept, r.trace)
-        if args.xml:
-            xml, _ = build_model(d, o, sc, r.insertion_mm / 1e3)
-            Path(args.xml).mkdir(parents=True, exist_ok=True)
-            (Path(args.xml) / f"{oid}.xml").write_text(xml)
-    if args.plot:
-        fig_traces(Path(args.plot), traces, sc)
-        print(f"traces -> {args.plot}")
+    fidelity = getattr(args, "fidelity", "mujoco")
+    plot, xml = getattr(args, "plot", None), getattr(args, "xml", None)
+    print(f"{'Analytic screen' if fidelity == 'analytic' else 'MuJoCo check'} of {d.label or d.concept}:")
+    if fidelity == "mujoco" and (plot or xml):
+        # Time histories and models come from runs in this process, one grasp at a time.
+        from .geometry import build_finger
+
+        sim = make_simulator(fidelity, record=True)
+        f = build_finger(d, sc.keep_out, sc.closed_limit)
+        outs = [sim.run(d, lib.by_id(o), sc, finger=f) for o in ids]
+        rows = [{"point": 0, **o.to_dict()} for o in outs]
+    else:
+        outs, rows = [], run_batch(fidelity, [d], ids, paths["objects"], paths["scenario"], args.workers or None)
+    for r in rows:
+        _print_outcome(r)
+    print(f"passes {sum(r['passed'] for r in rows)}/{len(rows)}")
+    if outs and plot:
+        from .plots import fig_traces
+
+        Path(plot).parent.mkdir(parents=True, exist_ok=True)
+        fig_traces(Path(plot), {lib.by_id(o.object_id).label: (d.label or d.concept, o.trace) for o in outs}, sc)
+        print(f"traces -> {plot}")
+    if outs and xml:
+        from .mjsim import build_model
+
+        Path(xml).mkdir(parents=True, exist_ok=True)
+        for o in outs:
+            if math.isfinite(o.insertion_mm):
+                (Path(xml) / f"{o.object_id}.xml").write_text(build_model(d, lib.by_id(o.object_id), sc, o.insertion_mm / 1e3)[0])
+    if args.out:
+        _save_outcomes(Path(args.out), paths, d, rows)
+
+
+def cmd_screen(args: argparse.Namespace) -> None:
+    args.fidelity = "analytic"
+    cmd_simulate(args)
+
+
+def cmd_sweep(args: argparse.Namespace) -> None:
+    from .plots import fig_sweep
+    from .sweep import parse_vary, run_sweep, save_sweep
+
+    paths = _paths(args)
+    base = _load_design(args.design, paths)
+    lib = load_objects(paths["objects"])
+    ids = args.object_ids.split(",") if args.object_ids else lib.ids()
+    vary = [parse_vary(v) for v in args.vary]
+    space = load_design_space(paths["design_space"])
+    for name, vals in vary:
+        r = space[name]
+        if min(vals) < r.lower - 1e-9 or max(vals) > r.upper + 1e-9:
+            print(f"note: {name} values go outside the bounding box [{r.lower:g}, {r.upper:g}]")
+    out = Path(args.out)
+    save_inputs(out, paths)
+    n = math.prod(len(v) for _, v in vary)
+    print(f"Sweep around {base.label or base.concept}: {n} points x {len(ids)} objects, {args.fidelity} fidelity -> {out}")
+    t0 = time.perf_counter()
+    res = run_sweep(base, vary, ids, paths, args.fidelity, workers=args.workers or None)
+    files = save_sweep(out, res)
+    if len(vary) <= 2:
+        fig_sweep(out / "figures" / "sweep.png", res, {o.id: o.label for o in lib.objects})
+        files.append(out / "figures" / "sweep.png")
+    names = [nm for nm, _ in vary]
+    print("  " + "  ".join(f"{nm:>14s}" for nm in names) + f"  {'pass':>6s}  {'J':>6s}  {'min':>5s}  worst object")
+    for row in res["summary"]:
+        print("  " + "  ".join(f"{row[nm]:14.4g}" for nm in names)
+              + f"  {row['n_pass']:>2d}/{row['n_objects']:<3d}  {row['J']:6.2f}  {row['min_score']:5.2f}  {row['worst_object']} ({row['worst_reason']})")
+    best = max(res["summary"], key=lambda r: (r["n_pass"], r["J"]))
+    print(f"best point: {' '.join(f'{nm}={best[nm]:g}' for nm in names)} passes {best['n_pass']}/{best['n_objects']}")
+    print(f"done in {time.perf_counter() - t0:.0f} s; wrote " + ", ".join(str(f) for f in files))
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -138,6 +196,8 @@ def cmd_search(args: argparse.Namespace) -> None:
         cfg.n_lhs, cfg.de_maxiter, cfg.per_object_maxiter, cfg.finalists_per_concept, cfg.rounds = 24, 2, 2, 1, 1
     if args.rounds:
         cfg.rounds = args.rounds
+    if args.workers:
+        cfg.workers = args.workers
     out = Path(args.out)
     save_inputs(out, paths)
     log_f = open(out / "search.log", "w")
@@ -253,22 +313,41 @@ def main(argv: list[str] | None = None) -> None:
     for k in CONFIG_FILES:
         p.add_argument(f"--{k.replace('_', '-')}", dest=f"file_{k}", metavar="FILE", help=f"override {CONFIG_FILES[k]}")
     sub = p.add_subparsers(dest="cmd", required=True)
+    design_help = "concept name (nominal design), results.json:NAME, or a design JSON file"
+    objects_help = "comma-separated object ids (default: all)"
+    workers_help = "worker processes (default: all cores)"
     sub.add_parser("describe", help="print the design space, concepts and objects")
-    s = sub.add_parser("screen", help="analytic screen of one design on every object")
-    s.add_argument("design", help="concept name (nominal design), results.json:NAME, or a design JSON file")
-    s = sub.add_parser("simulate", help="MuJoCo check of one design")
-    s.add_argument("design")
-    s.add_argument("--objects", dest="object_ids", help="comma-separated object ids (default: all)")
-    s.add_argument("--plot", help="write time histories to this PNG")
-    s.add_argument("--xml", help="write the MJCF models to this directory")
+    s = sub.add_parser("screen", help="analytic screen of one design on every object (simulate --fidelity analytic)")
+    s.add_argument("design", help=design_help)
+    s.add_argument("--objects", dest="object_ids", help=objects_help)
+    s.add_argument("--out", help="save results.json, results.csv and the inputs in this directory")
+    s.add_argument("--workers", type=int, default=0, help=workers_help)
+    s = sub.add_parser("simulate", help="one design on every object, at either fidelity (default: MuJoCo)")
+    s.add_argument("design", help=design_help)
+    s.add_argument("--fidelity", choices=FIDELITIES, default="mujoco")
+    s.add_argument("--objects", dest="object_ids", help=objects_help)
+    s.add_argument("--out", help="save results.json, results.csv and the inputs in this directory")
+    s.add_argument("--plot", help="MuJoCo: write time histories to this PNG")
+    s.add_argument("--xml", help="MuJoCo: write the MJCF models to this directory")
+    s.add_argument("--workers", type=int, default=0, help=workers_help)
+    s = sub.add_parser("sweep", help="grid over design variables around one design, every object, all cores")
+    s.add_argument("design", help=design_help)
+    s.add_argument("--vary", action="append", required=True, metavar="NAME=VALUES",
+                   help="name=a,b,c or name=lo:hi:n (canonical units, see describe); repeat for a grid")
+    s.add_argument("--fidelity", choices=FIDELITIES, default="analytic")
+    s.add_argument("--objects", dest="object_ids", help=objects_help)
+    s.add_argument("--out", default="runs/sweep")
+    s.add_argument("--workers", type=int, default=0, help=workers_help)
     s = sub.add_parser("search", help="ideate, simulate, iterate over all concepts")
     s.add_argument("--out", default="runs/latest")
     s.add_argument("--rounds", type=int)
     s.add_argument("--quick", action="store_true", help="tiny budget, for testing the pipeline")
+    s.add_argument("--workers", type=int, default=0, help=workers_help)
     s = sub.add_parser("figures", help="redraw the figures of a finished run")
     s.add_argument("run")
     args = p.parse_args(argv)
-    {"describe": cmd_describe, "screen": cmd_screen, "simulate": cmd_simulate, "search": cmd_search, "figures": cmd_figures}[args.cmd](args)
+    {"describe": cmd_describe, "screen": cmd_screen, "simulate": cmd_simulate, "sweep": cmd_sweep, "search": cmd_search,
+     "figures": cmd_figures}[args.cmd](args)
 
 
 if __name__ == "__main__":

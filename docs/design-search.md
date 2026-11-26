@@ -8,13 +8,14 @@ leaders in a planar MuJoCo simulation (close, lift, hold, shake, hold), feeds
 what the simulation learned back into the screen, and reports the best
 all-rounder and the best design for each object.
 
-The bounding box is centred on Parth's finger
-(`UMI6_paddles_paralel_pockets_V01.stp`): two pivots 38 mm apart, geared 1:1
+The bounding box is centred on the platform finger
+(`Finger, Left, MV-UMI01-3DP-001 A.stp`): two pivots 38 mm apart, geared 1:1
 (equal and opposite rotation), the tip 150 mm from the pivot line, and a flat
-face that is parallel to the other finger's when closed, made of a wide paddle
-and a narrow tab. That design is concept C1, and it is always simulated as
-drawn for reference. Every candidate must also clear the FT Dynamic bracket
-(top) above the jaw: each finger is cut to clear it, as Parth's is.
+face that is parallel to the other finger's when closed, made of a wide paddle,
+a recessed notch and a narrow tab. That design is concept C1, and it is always
+simulated as drawn for reference. Every candidate must also clear the hub of
+the FT Dynamic bracket (top) at every angle of its swing: each finger is cut to
+clear it, as the platform finger's notch does.
 
 Everything is 2D: the plane of the jaw (finger opening direction x, lift
 direction z). Each pad is extruded its own width out of the plane, and the
@@ -37,26 +38,41 @@ Without `pip install -e .`, run from the repo root as
 
 ```bash
 python -m graspsim2d describe                      # design space, concepts, objects
-python -m graspsim2d screen baseline_paddle        # analytic screen of a concept's nominal design (C1: Parth's finger)
-python -m graspsim2d simulate self_aligning --objects hbo_28oz,b_flute_3mm --plot traces.png
+python -m graspsim2d screen baseline_paddle        # analytic screen of one design on every object (C1: the platform finger)
+python -m graspsim2d simulate self_aligning --objects hbo_28oz,b_flute_3mm --plot traces.png   # MuJoCo check
+python -m graspsim2d simulate baseline_paddle --fidelity analytic --out runs/baseline   # either level, results saved
+python -m graspsim2d sweep baseline_paddle --vary finger_torque=1:12:12 --out runs/torque   # 1-D sweep, analytic
+python -m graspsim2d sweep crowned --vary finger_torque=2,4,6,8 --vary pad_shore=30,50,70 --fidelity mujoco --out runs/grid
 python -m graspsim2d search --out runs/first_pass  # the full ideate / simulate / iterate loop
-python -m graspsim2d search --quick --out runs/smoke   # tiny budget, one round, about 2 minutes
+python -m graspsim2d search --quick --out runs/smoke   # tiny budget, one round
 python -m graspsim2d search --quick --rounds 2 --out runs/smoke2   # tiny budget, two rounds
 python -m graspsim2d figures runs/first_pass       # redraw the figures of a finished run
 ```
 
-`screen` and `simulate` take a concept name (its nominal design), a design
-from a finished run as `runs/first_pass/results.json:r2-03`, or a JSON file
-with design variables. `simulate --xml DIR` writes the MJCF models so a run can
-be opened in the MuJoCo viewer (`python -m mujoco.viewer --mjcf=DIR/hbo_28oz.xml`).
+`screen`, `simulate` and `sweep` take a concept name (its nominal design), a
+design from a finished run as `runs/first_pass/results.json:r2-03`, or a JSON
+file with design variables, and `--objects` picks objects by id (default: all).
+`screen` is `simulate --fidelity analytic`. `simulate --xml DIR` writes the MJCF
+models so a run can be opened in the MuJoCo viewer
+(`python -m mujoco.viewer --mjcf=DIR/hbo_28oz.xml`).
+
+`sweep --vary name=a,b,c` lists values and `name=lo:hi:n` spaces n values
+evenly, in the units `describe` prints; repeated `--vary` options make a grid
+(their Cartesian product) around the given design. Values outside the bounding
+box are allowed and flagged. `sweep` runs at analytic fidelity unless
+`--fidelity mujoco`.
+
+`simulate`, `sweep` and `search` use every core; `--workers N` limits them
+(`workers` in `search.yaml` also does for `search`). With `--out DIR`, `screen`,
+`simulate` and `sweep` save their results there with a copy of their inputs, as
+`search` always does (see Outputs).
 
 `--config DIR` points every command at another config directory;
 `--design-space FILE`, `--objects FILE`, `--scenario FILE`, `--concepts FILE`
 and `--search FILE` override single files.
 
 The full search with the shipped budget (2 rounds) takes roughly 15 to 30
-minutes on 8 cores. It uses every core unless `workers` in `search.yaml` says
-otherwise.
+minutes on 8 cores.
 
 ## Configuration
 
@@ -67,7 +83,8 @@ directory, so every result keeps the inputs that produced it.
 |---|---|
 | `design_space.yaml` | the bounding box: a range (or fixed value) for each design variable |
 | `concepts.yaml` | the finger concepts, which variables each one searches, any narrower ranges, starting values, and which concept is the reference |
-| `objects.yaml` | materials and objects, with sources for every value |
+| `objects.yaml` | materials, boxes, sheets and the box tables to load, with sources for every value |
+| `general_mills_cereal_boxes.csv` | a box table: one cereal box per row (see Objects) |
 | `scenario.yaml` | presentation, the bracket keep-out, motion sequence, shake, pass criteria and simulation settings |
 | `search.yaml` | search budget |
 
@@ -102,9 +119,10 @@ The variables:
 | `pad_length` | mm | length of the (distal) pad face; the paddle, for the paddle style |
 | `pad_thickness` | mm | elastomer thickness (at the crown apex for crowned pads) |
 | `pad_angle` | deg | pad face angle to the finger axis; + puts the distal end further inward |
-| `pad_tip_margin` | mm | fingertip to the distal end of the pad; for the paddle style, the tab length plus a 2 mm gap |
+| `pad_tip_margin` | mm | fingertip to the distal end of the pad; for the paddle style, the notch plus the tab |
 | `pad_width` | mm | out-of-plane width of the pad (the paddle, for the paddle style) |
 | `tab_width` | mm | paddle style: out-of-plane width of the tab carrying the face on to the tip |
+| `tab_gap` | mm | paddle style: length of the recessed notch between the paddle and the tab |
 | `pad_shore` | Shore A | pad hardness, converted to a modulus (Gent 1958) |
 | `pad_crown_curvature` | 1/m | pad face curvature (0 = flat) |
 | `finger_torque` | N*m | drive torque at each finger pivot (the 1:1 gears give both fingers the same), one value for every object |
@@ -119,7 +137,7 @@ and use it in `graspsim2d/geometry.py`.
 
 | concept | idea |
 |---|---|
-| C1 `baseline_paddle` | Parth's finger: straight, a wide paddle (49.9 to 98.8 mm from the pivot line, 118 mm wide) and a 21 mm tab carrying the same face to the tip, parallel to the other finger's face when closed (2.4 mm gap) |
+| C1 `baseline_paddle` | the platform finger: straight, a wide paddle (49.9 to 101.5 mm from the pivot line, 95 mm mean width), a 28 mm recessed notch, and a 16 mm tab carrying the same face to the tip, parallel to the other finger's face when closed (2.5 mm gap) |
 | C2 `cranked_flat` | the distal section is offset inward, so the fingers can be parallel on a thin sheet while the proximal part clears a box |
 | C3 `crowned` | convex pad face; the contact point rolls along the pad as the jaw angle changes |
 | C4 `dual_zone` | a tip pad for sheets plus a proximal box pad; the closing angle picks the zone |
@@ -130,16 +148,39 @@ which pad style it uses); a new pad style needs code in `geometry.py` and,
 for the dynamic check, `mjsim.py`. `nominal:` gives a concept its own starting
 values where the baseline's do not suit it (C2 to C5 start with a 40 mm pad
 5 mm from the tip). `reference: true` (set on C1) puts the concept's nominal
-design, Parth's finger as drawn, through the dynamic check on every object in
+design, the platform finger as drawn, through the dynamic check on every object in
 round 1 and reports it as `baseline`.
 
 ### Objects
 
-Cereal boxes are presented upright on a table and gripped across their depth
-(the narrow dimension) from above. Sheets hang from a holder that lets go once
-the jaw has closed, and are pinched near their free top edge. Every value in
-`objects.yaml` carries its source and spread in a comment. An object with
-`enabled: false` stays in the file but is skipped.
+Cereal boxes stand upright on a table. The gripper comes down on the top end
+(the shortest end) and closes across the depth, so the box's height x depth
+side panel lies in the jaw plane and the width is out of plane.
+`grasp_axis: width` in `box_defaults` (or on one box) closes across the width
+instead. Cereal settles at the bottom: the contents fill the box up to the fill
+height, so the centre of mass sits below mid-height, which sets the pitch lever
+arm and the box inertia, and the panel above the fill line is backed only by
+air (a pad there may push at most `unsupported_panel_force_N`).
+
+Boxes come from the `boxes` list in `objects.yaml` and from the CSV box tables
+listed under `box_tables`, one box per row, with the columns `product_title,
+size_label, upc, net_mass_g, box_mass_g, height_mm, width_mm, depth_mm,
+fill_height_mm, com_height_mm, bulk_density_g_cm3, source, confidence`. A blank
+`fill_height_mm` falls back to the bulk density (net mass over density and
+footprint), then to `fill_fraction` (0.8); a blank `com_height_mm` uses the
+carton-plus-contents estimate; a blank `box_mass_g` uses the carton blank area
+times the board grammage. The shipped `config/general_mills_cereal_boxes.csv`
+holds one placeholder row (Cheerios Family Size 18 oz, scaled from the sourced
+8.9 oz box at the same bulk density) until the sourced General Mills table
+replaces it: copy the table over that file, or point `file:` at it (a relative
+path is relative to `objects.yaml`). Table boxes get the id prefix `gm_` plus
+the product and size, for example `gm_cheerios_family_size_18_oz`, and rows
+with confidence `placeholder` are labelled so.
+
+Sheets hang from a holder that lets go once the jaw has closed, and are
+pinched near their free top edge. Every value in `objects.yaml` carries its
+source and spread in a comment. An object or box table with `enabled: false`
+stays in the file but is skipped.
 
 ### Scenario and pass criteria
 
@@ -162,7 +203,7 @@ passes when every margin is at least 1:
 Box insertion depth (how far the box goes between the fingers) is chosen per
 object by the robot: `insertion: best` tries `insertion_scan` depths between
 "pads just reach the top edge" and the deepest allowed insertion. When that
-pad-registered depth is out of reach, as it is for Parth's paddle, the scan
+pad-registered depth is out of reach, as it is for the platform finger, the scan
 runs shallower instead, down to the box top at mid-pad. Sheets use a fixed
 `insertion_depth_mm`. `gripper.torque_mode: fixed` gives every object the
 same drive torque.
@@ -181,6 +222,53 @@ is left beside the cutout. With `blocks_objects: true` an object's top must
 also stay below the circle, which caps box insertion at 100.5 mm for a 150 mm
 finger. `clearance_mm` adds to every radius.
 
+## Architecture
+
+```text
+config/  design_space.yaml  concepts.yaml  objects.yaml + box tables (.csv)  scenario.yaml  search.yaml
+            |                  |              |                              |              |
+         schema.py ------------+          objects.py                    scenario.py     search.py
+       (GripperDesign)                   (GraspObject)                   (Scenario)    (search loop)
+            |                                 |                              |              |
+         geometry.py: finger polygons,        |                              |              |
+         1:1 gearing, swept hub keep-out      |                              |              |
+            |                                 |                              |              |
+            +---------------> simulator.py: make_simulator("analytic" | "mujoco").run(design, object, scenario)
+                                 |  analytic.py (screen)      mjsim.py (MuJoCo check)
+                                 v
+                              GraspOutcome: passed, score, limiting criterion, margins, metrics
+                                 |
+              cli.py: describe | screen | simulate | sweep (sweep.py) | search | figures (plots.py)
+                                 |
+                              runs/<name>/: results, inputs, figures
+```
+
+| module | role |
+|---|---|
+| `schema.py` | the typed design-variable schema (`SCHEMA`, `GripperDesign`), the bounding-box loader (units, fixed values, unknown names rejected) and the concepts |
+| `objects.py` | the object library: materials, boxes from YAML and CSV box tables (fill height, centre of mass, grasp axis) and sheets, as `GraspObject`s |
+| `scenario.py` | presentation, drive, keep-out, motion and shake, pass criteria and simulation settings, as a `Scenario` |
+| `geometry.py` | the parametric finger: one polygon per finger for each pad style, the 1:1 geared jaw kinematics, the FT-hub keep-out swept over the stroke and cut from the beam, the ligament and the least hub clearance, feasibility |
+| `pads.py` | the elastomer: Shore A to modulus, bonded compression modulus |
+| `analytic.py` | level 0, the quasi-static screen (`solve_grip`) |
+| `mjsim.py` | level 1, the planar MuJoCo model (`build_model`) and run (`simulate`) |
+| `simulator.py` | one interface over both levels: `AnalyticSimulator` and `MujocoSimulator` return the same `GraspOutcome`; `run_batch` spreads designs x objects over all cores |
+| `sweep.py` | grids over design variables around one design |
+| `search.py` | the concept search (below); its MuJoCo checks go through `MujocoSimulator` |
+| `plots.py` | the figures |
+| `cli.py` | the commands; every saved run gets a copy of its inputs, box tables included |
+
+Both levels score a grasp the same way: one margin per pass criterion (table
+above), each at least 1 to pass; the score is the smallest margin and the
+limiting criterion is the one that sets it. A new object is a YAML entry or a
+box-table row; a new criterion is a margin in `analytic.py` and `mjsim.py`; a
+new simulation level is a class with `fidelity` and `run()` registered in
+`make_simulator`.
+
+`.github/workflows/ci.yml` runs the tests and a smoke run of every command
+(`describe`, `screen`, `simulate`, `sweep`, `search --quick`) on every pull
+request and push to `main`, and keeps the run directories as a build artifact.
+
 ## How it works
 
 ### Geometry and kinematics (`geometry.py`)
@@ -193,8 +281,10 @@ closing on a thin sheet needs the fingertips to meet, so the jaw converges
 slightly. A design is infeasible when its pads overlap, leave the finger, sit
 where they can never touch, or collide with the keep-out. The paddle style
 puts the paddle and the tab on one face line with one rigid mount, so they
-stay coplanar whatever the pad angle. The keep-out cutout is drawn in every
-figure.
+stay coplanar whatever the pad angle, with a recessed notch of `tab_gap`
+between them. The keep-out cutout is drawn in every figure, and every finalist
+records its least clearance to the hub over the stroke (`hub_clearance_mm`,
+with the angle where it occurs), which the final report lists.
 
 ### Analytic screen (`analytic.py`)
 
@@ -208,7 +298,7 @@ through-thickness modulus; box panel on the cereal bed). Self-aligning pads
 turn until their contact moment balances the centring spring. From the pressure
 distribution the screen computes the margins in the table above. The friction
 hold accounts for the moment the friction force puts on the jaw, and for the
-squeeze-out force at a box's top corner. One design on all 13 objects takes
+squeeze-out force at a box's top corner. One design on all 14 objects takes
 about 0.1 to 0.25 s.
 
 ### Dynamic check (`mjsim.py`)
@@ -262,6 +352,15 @@ the finalist with the highest dynamic margin on that object.
 
 ### Outputs
 
+`screen --out DIR` and `simulate --out DIR` write `results.json` (the design
+and one outcome per object), `results.csv` (one row per object: pass, score,
+limiting criterion, each margin and the key metrics) and the inputs.
+`sweep --out DIR` writes `sweep.json` (the spec, every grid point's design and
+every outcome), `sweep.csv` (one row per point and object), `summary.csv` (one
+row per point: objects passed, J, smallest margin and the object that sets it),
+`figures/sweep.png` (margins against one varied variable, or objects passed
+over a two-variable grid) and the inputs.
+
 `search --out DIR` writes:
 
 | file | contents |
@@ -270,8 +369,8 @@ the finalist with the highest dynamic margin on that object.
 | `round1.json`, `round2.json`, ... | per-round summaries, the learned corrections, and the earlier designs each round reselected (`carried`) |
 | `archive.json` | the analytic evaluations kept from each round (concept, variables, per-object scores): every Latin hypercube sample, the final evolved population and each per-object result; intermediate differential-evolution evaluations are not stored |
 | `search.log` | progress and the final report |
-| `*.yaml` | the inputs of the run |
-| `figures/` | `first-pass-best-designs.png` (all-rounder and per-object best, closed on each object), `baseline-as-drawn.png` (Parth's finger on each object, MuJoCo results), `concepts-nominal.png` (analytic screen results), `concepts-best.png` (MuJoCo results), `object-library.png`, `pass-matrix.png`, `iteration-progress.png`, `designs-in-bounds.png`, `shake-traces.png` (all-rounder time histories, including the share of available friction used) |
+| `*.yaml`, `*.csv` | the inputs of the run, box tables included |
+| `figures/` | `first-pass-best-designs.png` (all-rounder and per-object best, closed on each object), `baseline-as-drawn.png` (the platform finger on each object, MuJoCo results), `concepts-nominal.png` (analytic screen results), `concepts-best.png` (MuJoCo results), `object-library.png`, `pass-matrix.png`, `iteration-progress.png`, `designs-in-bounds.png`, `shake-traces.png` (all-rounder time histories, including the share of available friction used) |
 
 ## Tests
 
@@ -282,20 +381,26 @@ PYTHONPATH=. python -m pytest -q
 They cover the config loader (unit conversion, fixed values, unknown names),
 the jaw kinematics, the pad model, the object library, the analytic force
 balance, agreement between the analytic and MuJoCo static grip, the baseline
-against the CAD (pad positions and widths, 2.4 mm closed gap), the keep-out
-(rejecting a paddle that reaches into the bracket, capping insertion), the
-contact-width cap, and the gear coupling (driving one finger carries the
-other).
+against the CAD (pad positions and widths, 2.4 mm closed gap, 1.0 mm hub
+clearance over the stroke), the keep-out (rejecting a paddle that reaches into
+the bracket, capping insertion), the
+contact-width cap, the gear coupling (driving one finger carries the
+other), the box tables (given and fallback fill height and centre of mass,
+missing columns), the grasp axis, the simulator interface (both levels match
+direct calls), sweeps (grid order, saved files, agreement with the screen) and
+run directories keeping their box tables. CI runs them on every pull request.
 
 ## Limits of the model
 
 - 2D: no torsion about the jaw axis, no out-of-plane tipping, no box bulging
-  along its width. Each pad is extruded at constant width; Parth's face tapers
-  (about 148 mm wide near the cutout to 88 mm at the end of the paddle), so
-  the paddle uses its mean width.
-- The keep-out is treated as full height. In the CAD the bracket only covers
-  the upper part of the finger and the lower paddle passes under it, so the
-  2D model is conservative there.
+  along its width. Each pad is extruded at constant width; the platform
+  finger's face tapers (139 mm high at 55 mm from the pivot line to 97 mm at
+  85 mm, then the 27 mm arm edge to 101.5 mm), so the paddle uses the mean
+  width over its length (95 mm), which keeps the contact area.
+- The keep-out is treated as full height. In the CAD the hub and its tube
+  occupy the top 67 mm of the finger's height, and the finger's lower blade
+  reaches back under the tube; no object can reach that region, so the
+  contact model loses nothing, but the cutout is applied to the whole beam.
 - Boxes are rigid bodies; panel denting and crushing are judged by force and
   pressure limits, not simulated deformation. Cereal does not flow.
 - Sheets bend only in the plane, at hinges every `sheet_segment_mm`; creasing
