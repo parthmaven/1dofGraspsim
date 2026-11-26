@@ -216,8 +216,9 @@ def job_t5(job: dict[str, Any]) -> dict[str, Any]:
     t0 = time.time()
     r = simulate_t5(j, case, c["sc"], b1, com_offset=job.get("com_offset", 0.0), squeeze=job.get("squeeze_N"),
                     friction_scale=job.get("friction_scale", 1.0), bare_mu=job.get("bare_mu"),
-                    brake=job.get("brake", 30.0), cut_before_stop=job.get("cut_before_stop", False),
-                    power_s=job.get("power_s"), hub_contact=job.get("hub_contact", True))
+                    brake=job.get("brake", 30.0), stop_g=job.get("stop_g"), cut_before_stop=job.get("cut_before_stop", False),
+                    power_s=job.get("power_s"), shake_g=job.get("shake_g"), hub_contact=job.get("hub_contact", True),
+                    approach=job.get("approach", "close"), hold=job.get("hold", "servo"))
     out = {**job, "kind": "mujoco", "seconds": round(time.time() - t0, 1)}
     for k, v in r.items():
         if k == "margins":
@@ -449,12 +450,84 @@ def block_t5_cut() -> list[dict[str, Any]]:
                     label = f"mid-move cut, {tag}, {'hub' if hub else 'tips only'}" + (f", COM +{com:.0%} W" if com else "")
                     jobs.append(_base("t5cut", d, 45.0, job="t5", test="T5", object=cfg["case"],
                                       mass_kg=float(cfg["rated_kg"][d]), cut_before_stop=True, friction_scale=fs,
-                                      bare_mu=mu, hub_contact=hub, com_offset=com, case=label))
+                                      bare_mu=mu, hub_contact=hub, com_offset=com, case=label, **_t5_path(hub)))
     return jobs
 
 
+def _t5_path(hub: bool) -> dict[str, Any]:
+    """Until Parth says whether a case may rest on the hub, T5 is rated on the tips-only path and the hub path is
+    reported alongside."""
+    return {"t5_path": "hub" if hub else "tips only", "rated": not hub}
+
+
+def t5_jobs(hub: bool) -> list[dict[str, Any]]:
+    """T5 for block 5, with the hub as a contact body (`hub`) or released once the jaw closes (the hand checks'
+    tips-only path, which rates T5). Per design and reading:
+    - the hold test, 30 N squeeze: the five cases at their masses and the two heavy sensitivities, centred and at
+      the 60/40 share, with the 1 g stop at 23 kg;
+    - the strength check: every size at the 23 kg ceiling with 0.5 m g of squeeze, at both shares;
+    - the no-brake power cut, about 1 N m of gear friction, once; the 0.5 g shake as a sensitivity, once;
+    - for a fixed L-angle stop, at 45 deg: the stop-held pair, each finger on its own stop with the gear released
+      and the outside finger's stop removed, on the 2 ft and 3 ft cases at both shares.
+    S4, and S5 at 45 deg, take revision 2.13's stop-seated approach; everything else closes until both fingers touch."""
+    b1 = ctx()["b1"]
+    cfg = b1["t5"]
+    blk = cfg["block"]
+    ceiling = float(cfg["ceiling_kg"])
+    off = float(cfg["com_offset_W"])
+    sq = float(cfg["strength_squeeze_mg"])
+    cases = [(k, float(c["mass_kg"])) for k, c in cfg["cases"].items()]
+    cases += [(k, float(m)) for k, m in cfg["sensitivities"]]
+    sizes = [k for k in cfg["cases"] if k != "shipper"]
+    tag = "hub" if hub else "tips only"
+    name = "t5" if hub else "t5tips"
+    jobs = []
+
+    def add(d, reading, label, **kw):
+        jobs.append(_base(name, d, reading, job="t5", test="T5", hub_contact=hub, case=f"{label}, {tag}", **_t5_path(hub),
+                          **kw))
+
+    for d, readings in blk["designs"].items():
+        for reading in readings:
+            reading = float(reading)
+            seated = reading in [float(r) for r in blk["stop_seated"].get(d, [])]
+            ap = {"approach": "seated"} if seated else {}
+            for com in (0.0, off):
+                share = f", COM +{com:.0%} W" if com else ""
+                for k, m in cases:
+                    add(d, reading, f"hold, {m:g} kg{share}", object=k, mass_kg=m, com_offset=com,
+                        stop_g=1.0 if m >= ceiling - 1e-9 else 0.0, **ap)
+                for k in sizes:
+                    add(d, reading, f"strength, {ceiling:g} kg{share}", object=k, mass_kg=ceiling, com_offset=com,
+                        squeeze_N=sq * ceiling * 9.81, stop_g=0.0, **ap)
+            k = blk["nobrake_case"]
+            add(d, reading, "hold, no brake", object=k, mass_kg=float(cfg["cases"][k]["mass_kg"]), stop_g=0.0,
+                brake=float(cfg["gear_friction_Nm"]), **ap)
+            sh = blk["shake_sensitivity"]
+            add(d, reading, f"hold, {float(sh['g']):g} g shake", object=sh["case"],
+                mass_kg=float(cfg["cases"][sh["case"]]["mass_kg"]), stop_g=0.0, shake_g=float(sh["g"]), **ap)
+            if reading in [float(r) for r in blk["stop_held"].get(d, [])]:
+                for hold, what in (("stops", "on its stops, gear released"), ("thumb_stop", "outside stop removed")):
+                    for k, m in blk["stop_held_cases"]:
+                        m = float(cfg["cases"][k]["mass_kg"] if m is None else m)
+                        for com in (0.0, off):
+                            share = f", COM +{com:.0%} W" if com else ""
+                            add(d, reading, f"stop-held, {what}, {m:g} kg{share}", object=k, mass_kg=m, com_offset=com,
+                                hold=hold, stop_g=1.0 if m >= ceiling - 1e-9 else 0.0, **ap)
+    return jobs
+
+
+def block_t5() -> list[dict[str, Any]]:
+    return t5_jobs(True)
+
+
+def block_t5_tips() -> list[dict[str, Any]]:
+    return t5_jobs(False)
+
+
 BLOCKS = {"refs": block_refs, "s2": block_s2, "s5": block_s5, "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6,
-          "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose, "t5cut": block_t5_cut}
+          "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose, "t5cut": block_t5_cut,
+          "t5": block_t5, "t5tips": block_t5_tips}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:

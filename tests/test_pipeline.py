@@ -762,6 +762,42 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
     # The brake's reading is its friction loss alone, not the gear coupling's or the stroke limits' forces.
     assert all(0.0 <= r[f"{g}_brake_use_Nm"] <= r["brake_Nm"] + 1e-6 for g in "AB")
     assert r["A_thumb_peak_N"] >= r["A_thumb_N_hold"] > 0.0 and r["A_thumb_peak_at"]
+    # The stop along W drives the case outward onto A's hub; the run's peak covers the stop's.
+    assert r["A_hub_peak_N"] >= r["A_hub_stop_peak_N"] > 0.0 and r["A_hub_stop_out_N"] > 0.0 and r["A_hub_peak_phase"]
+
+
+def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
+    from graspsim2d.t5 import case_object, simulate_t5
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("S4", 45.0)
+    case = case_object(c["b1"]["t5"], "2ft", c["lib"].materials)
+    with pytest.raises(ValueError):
+        simulate_t5(j, case, c["sc"], c["b1"], approach="pinch")
+    r = simulate_t5(j, case, c["sc"], {**c["b1"], "shake_s": 0.0}, approach="seated", hold="stops", stop_g=0.0,
+                    power_s=0.2)
+    assert r["ok"] and (r["approach"], r["hold"]) == ("seated", "stops")
+    # S4's stops are set at 45 deg per finger, never short: half a degree past a stroke read from its -0.5 deg meet.
+    assert r["stop_deg_jaw"] == pytest.approx(45.0) and r["preset_deg"] == pytest.approx(45.0)
+    assert r["start_out_mm"] > 0.0 and r["t_approach_s"] > 0.1
+    for g in "AB":
+        assert r[f"{g}_close"] == "seated on its stops" and abs(r[f"{g}_out_off_stop_deg"]) < 0.5
+        # The cradle carries the case clear of the hub, and the outside finger's moment goes into its own stop.
+        assert r[f"{g}_hub_hold_N"] < 1.0 and r[f"{g}_out_stop_load_hold_Nm"] > 1.0
+        assert r[f"{g}_thumb_N_hold"] > 0.0 and r[f"{g}_thumb_contact_mm"] >= 0.0
+    # The arm lifts the case onto the cradle before it squeezes, so the case doesn't move on the fingers in the lift.
+    assert r["print_slip_mm"] < 1.0
+
+    jobs = batch1.block_t5()
+    assert len(jobs) == len({batch1._job_key(x) for x in jobs}) == 312 and all(x["hub_contact"] for x in jobs)
+    assert {(x["design"], x["reading"]) for x in jobs if x.get("approach") == "seated"} == {("S4", 45.0), ("S5", 45.0)}
+    held = [x for x in jobs if x.get("hold")]
+    assert len(held) == 24 and {(x["design"], x["reading"]) for x in held} == {("S3", 45.0), ("S4", 45.0), ("S5", 45.0)}
+    tips = batch1.block_t5_tips()
+    assert len(tips) == 312 and not any(x["hub_contact"] for x in tips)
+    # Until Parth says whether a case may rest on the hub, the tips-only path rates T5.
+    assert all(x["rated"] and x["t5_path"] == "tips only" for x in tips)
+    assert not any(x["rated"] for x in jobs) and {x["rated"] for x in batch1.block_t5_cut()} == {True, False}
 
 
 def test_batch1_t5_cut_block_runs_revision_2_18(batch1):

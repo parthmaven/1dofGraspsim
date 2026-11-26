@@ -205,7 +205,10 @@ batch1:
       2ft: {W_mm: 610, D_mm: 406, H_mm: 406, mass_kg: 12.0, label: "2 ft case"}
       3ft: {W_mm: 914, D_mm: 457, H_mm: 457, mass_kg: 23.0, label: "3 ft case"}
       gm_case: {W_mm: 476, D_mm: 406, H_mm: 324, mass_kg: 7.0, label: "General Mills' 10-box Family Size case"}
-      shipper: {W_mm: 476, D_mm: 406, H_mm: 324, mass_kg: 7.0, thumb_limit_kPa: 25.0, label: "display-ready shipper"}
+      # Tear-away perforations around its upper third: the thumb bears 25 mm or more from them and slides 2 mm or
+      # less on the print.
+      shipper: {W_mm: 476, D_mm: 406, H_mm: 324, mass_kg: 7.0, thumb_limit_kPa: 25.0, label: "display-ready shipper",
+                perforation_from_top: 0.3333, perforation_clear_mm: 25.0, print_slip_mm: 2.0}
     sensitivities: [[1ft, 12.0], [2ft, 23.0]]   # the heaviest cases
     ceiling_kg: 23.0              # the strength checks, every size
     material: c_flute             # a wall pressed from one side compresses over its whole caliper
@@ -231,3 +234,13 @@ batch1:
     # Rated masses on the reference drive, from each spec's G1 text (S3's at the 60/40 share).
     midmove_cut: {case: 2ft, designs: [S1, S2, S3, S6], bare_mu_sensitivity: 0.24,
                   rated_kg: {S1: 13.8, S2: 12.8, S3: 14.0, S6: 13.3}}
+    gear_friction_Nm: 1.0         # per gripper, with the drive off: the stop-held runs and the no-brake case
+    # Block 5 of the batch-1 plan: S5 at both readings, S4 at 45 deg, and the other four and the platform for
+    # comparison. S3 and S4 are built for the 45 deg reading (their L-angle stop).
+    block:
+      designs: {P0: [45, 90], S1: [45, 90], S2: [45, 90], S3: [45], S4: [45], S5: [45, 90], S6: [45, 90]}
+      stop_seated: {S4: [45], S5: [45]}           # rev 2.13: the jaw stays on its 45 deg stops
+      stop_held: {S3: [45], S4: [45], S5: [45]}   # fixed L-angle stops, the 45 deg reading only
+      stop_held_cases: [[2ft, null], [3ft, null]]
+      nobrake_case: 2ft
+      shake_sensitivity: {case: 2ft, g: 0.5}
