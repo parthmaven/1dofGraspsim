@@ -17,19 +17,19 @@ idea: >
   STEP's recess becomes the crate hook. It is a pocket of 18 to 22 mm with a level or slightly
   back-cut far wall and 3 mm root fillets, and at least 10 mm of ligament behind it. The tip
   becomes Parth's chisel, 2 to 2.6 mm thick at its root with a 0.8 to 1.2 mm land and no
-  elastomer, so it is at most 2.5 mm thick at the 15 mm T3 entry. The chisel is stepped about 5 mm back
-  from the tooth face, so the T5 case bears on the tooth, 18 to 20 mm deep, instead of on
-  the chisel's point. The root, hinge, face plane, back taper and widths stay as on the
-  platform. This is the batch's least-change reference, and every other lane should beat it.
+  elastomer, toed in about 14.5 deg so it hangs plumb at the T3 grasp angle and needs only a
+  2 mm gap. Its point is set 5.5 mm back from the tooth face, so the T5 case bears on the
+  tooth, 18 to 20 mm deep, instead of on the chisel. The root, hinge, face plane, back taper
+  and widths stay as on the platform. This is the batch's least-change reference, and every other lane should beat it.
   It differs from S3 and S5 in keeping the flat platform face and the platform's T5 tip
   bearing, and from S6 in using a separate, replaceable pad.
 
 strategy:
   T1: "Top-edge grip on the paddle pad. The box's top edge lands on the cartridge at u 50 to 88, at an insertion of 60 to 100 mm, 0 to 3 mm below the box top, which is above the fill line on every catalog box at every fill, so the 10 N panel limit sets the torque."
-  T2: "The bare tooth faces pinch the sheet: about 8 mm of flat between the pocket's far wall and the chisel step. The step keeps the chisel's point off the sheet."
-  T3: "The chisel is at most 2.5 mm thick at the 15 mm entry (2.2 mm at nominal), with a flat inner face, so it enters a full case's 1.3 mm gap without pushing the neighbour into the next box. The 5 mm step lands on the box top at 15 to 17.5 mm of entry, which sets the entry depth, so the 20 mm sensitivity isn't reached."
+  T2: "The bare tooth faces pinch the sheet: about 7 mm of flat between the pocket's far wall and the chisel step. The step keeps the chisel's point off the sheet."
+  T3: "The chisel is toed in 14.6 deg, so at CFS's 15.5 deg grasp angle it hangs within 1 deg of plumb. The inserted 15 mm sweeps 2.0 mm, so it pushes each neighbour 0.7 mm at a full case's 1.3 mm gap and not at all at 3 mm; the worst range corner sweeps 2.9 mm. The step's corner sits 15.9 mm above the point at that angle (at least 15.6 across the ranges), so it lands on the target's top edge just past the 15 mm entry and sets the depth, and the 20 mm sensitivity isn't reached. The toe-in is set for CFS: at the grasp angles of 60 and 45 mm boxes the same tip sweeps 3.6 and 4.4 mm (sr-spec-check.py; fp-t3-chisel-lean.py agrees on CFS)."
   T4: "The pocket (18 to 22 mm long, 8 to 11 mm deep) seats the 15 x 6 mm lip. The 23 to 27 mm tooth fits the 30 mm of free wall under it. The far wall is level-cut, back-cut by up to 2 mm."
-  T5: "No cradle. At the L the faces are 36 mm off the case, so each finger closes to about 30 deg until the tooth, just behind the chisel, bears on the case about 133 mm from the pivot. The actuator holds the opening, backed by a power-off brake."
+  T5: "No cradle. At the L the faces are 36 mm off the case, so each finger closes to about 29 deg until the tooth, just behind the chisel, bears on the case about 133 mm from the pivot. The actuator holds the opening, backed by a power-off brake."
   durability: "Platform sections: 39 mm at the root, at least 10 mm behind the pocket, 18 to 20 mm at the tooth. 3 mm fillets at the pocket and the chisel step. The pad cartridge is replaceable with a hex key, and the chisel carries only T3 loads."
 
 fingers:
@@ -47,11 +47,11 @@ fingers:
       - ["finger_reach - tooth_len - hook_len", "17.75 - hook_depth"]     # pocket floor, proximal end (3 mm root radius)
       - ["finger_reach - tooth_len + hook_backcut", "17.75 - hook_depth"] # pocket floor, distal end: the back-cut foot
       - ["finger_reach - tooth_len", 17.75]                               # far wall mouth: the tooth's leading corner
-      - ["finger_reach - chisel_len", 17.75]                              # end of the bare tooth face
-      - ["finger_reach - chisel_len + 1.5", "17.75 - chisel_setback"]     # step down to the chisel (3 mm radius)
-      - ["finger_reach", "17.75 - chisel_setback"]                        # chisel inner face, flat to the point
+      - ["finger_reach - chisel_len", 17.75]                              # end of the bare tooth face; the T3 depth stop
+      - ["finger_reach - chisel_len + 1.5", "17.75 - chisel_setback - chisel_rise"]  # step down to the chisel's root (3 mm radius)
+      - ["finger_reach", "17.75 - chisel_setback"]                        # chisel inner face, toed in to the point
       - ["finger_reach", "17.75 - chisel_setback - tip_land"]             # the land
-      - ["finger_reach - chisel_len", "17.75 - chisel_setback - chisel_t"]  # chisel back at its root
+      - ["finger_reach - chisel_len", "17.75 - chisel_setback - chisel_rise * chisel_len / (chisel_len - 1.5) - chisel_t"]  # chisel back at its root, toed in with the face
       - ["finger_reach - tooth_len", "17.75 - hook_depth - hook_lig"]     # tooth back, under the far wall
       - [90.0, -18.25]                                                    # the platform's back taper
       - [46.0, -21.25]
@@ -77,7 +77,7 @@ fingers:
         thickness_profile_mm:
           - ["finger_reach", "tip_land"]
           - ["finger_reach - chisel_len + 1.5", "chisel_t"]
-          - ["finger_reach - chisel_len", "chisel_setback + chisel_t"]
+          - ["finger_reach - chisel_len", "chisel_setback + chisel_rise * chisel_len / (chisel_len - 1.5) + chisel_t"]
           - ["finger_reach - tooth_len", "hook_depth + hook_lig"]
       undercut:
         u_from: "finger_reach - tooth_len - hook_len"
@@ -115,17 +115,18 @@ search:
     hook_depth: {range: [8, 11], unit: mm, nominal: 8.1, meaning: "crate pocket depth (STEP: 8.1)"}
     hook_backcut: {range: [0, 2], unit: mm, nominal: 1, meaning: "far wall's foot runs this far distal of its mouth (0 = level-cut)"}
     hook_lig: {range: [10, 14], unit: mm, nominal: 11.35, meaning: "in-plane ligament behind the pocket's far end (STEP: 11.35)"}
-    tooth_len: {range: [23, 27], unit: mm, nominal: 25, meaning: "far wall to tip; must fit the 30 mm of free wall under the T4 lip"}
-    chisel_len: {range: [16.5, 19], unit: mm, nominal: 17, meaning: "chisel length from the step to the point; at 16.5 with the thickest chisel_t and tip_land the tip is 2.47 mm thick at the 15 mm T3 entry"}
-    chisel_t: {range: [2.0, 2.6], unit: mm, nominal: 2.4, meaning: "chisel thickness at its root; at most 2.6 so the tip stays under about 2.6 mm at the 15 mm T3 entry (a full case's gap is 1.3 mm)"}
+    tooth_len: {range: [25, 27], unit: mm, nominal: 25, meaning: "far wall to tip; must fit the 30 mm of free wall under the T4 lip; at least 25 leaves the tooth a 7 mm block behind the 18 mm chisel (its neck, pocket foot to back, is 7.4 mm at nominal and 4.1 at the thinnest corner)"}
+    chisel_len: {range: [18, 18.5], unit: mm, nominal: 18, meaning: "chisel length from the step to the point; at least 18 keeps the step's corner above the 15 mm T3 line at CFS's grasp angle, and at most 18.5 keeps the T5 bearing on the tooth at a 5.5 mm setback"}
+    chisel_t: {range: [2.0, 2.6], unit: mm, nominal: 2.4, meaning: "chisel thickness at its root, across u; it tapers to tip_land at the point"}
     tip_land: {range: [0.8, 1.2], unit: mm, nominal: 1.0, meaning: "land at the point"}
-    chisel_setback: {range: [0, 6], unit: mm, nominal: 5, meaning: "chisel's inner face set back from the face plane; 0 is the platform's flush face, about 4.7 mm or more moves the T5 bearing onto the tooth"}
+    chisel_setback: {range: [5.5, 6], unit: mm, nominal: 5.5, meaning: "the point's set-back from the face plane; the T5 case meets the finger at about 16 deg, so more than chisel_len x tan 16 deg (5.2 mm at 18) keeps the bearing on the tooth, not the chisel"}
+    chisel_rise: {range: [3.8, 5.0], unit: mm, nominal: 4.3, meaning: "chisel toe-in: the face's root end sits this much further out than the point; atan(chisel_rise / (chisel_len - 1.5)) = 14.6 deg at nominal, within 1 deg of plumb at CFS's grasp angle in T3"}
   fixed_by_spec:
     - "root and hinge (u <= 46), the platform's: a hardware rule"
     - "face plane v = 17.75 and the back taper (46, -21.25) to (90, -18.25): the platform's, because this is the least-change lane"
     - "body widths, the platform's CAD (155 to 97 mm on the paddle, 28 mm on the arm): least change; S2 and S6 widen the arm"
     - "pad width 90 mm: fits the paddle's narrowest height, 97 mm at u 85 to 90"
-    - "chisel step 1.5 mm long: the full-height tooth face starts chisel_len from the point, behind the 15 mm T3 entry"
+    - "chisel step 1.5 mm long: the full-height tooth face starts chisel_len from the point, and at the T3 grasp angle its corner sits 15.6 to 16 mm above the point, just behind the 15 mm entry"
 
 stroke:
   readings: [45, 90]
@@ -153,17 +154,25 @@ notes: >
   with a power-off brake on the drive (EE). That puts the full opening moment through the
   mesh, so the gears must be metal. The end-of-stroke stop only protects the mesh from
   overtravel.
-  The chisel setback is the one geometric change beyond the lane's list. Without it, the T5
-  case bears on the 1.2 mm land: a 3 mm by 28 mm chisel takes about 37 N at the 16 MPa
-  allowable, which is a 5 kg case. With a setback of 4.7 mm or more (chisel_len x tan 15 deg)
-  the bearing moves to the tooth.
+  The chisel's setback and toe-in are the geometric changes beyond the lane's list. Without the
+  setback, the T5 case bears on the 1.2 mm land: a 3 mm by 28 mm chisel takes about 37 N at the
+  16 MPa allowable, which is a 5 kg case. The case meets the finger at about 16 deg, so a setback
+  of more than chisel_len x tan 16 deg (5.2 mm at 18 mm) moves the bearing to the tooth; 5.5 mm
+  does, at every corner of the ranges. The toe-in follows FP's chisel-lean check: the round-3
+  straight chisel leaned 19.8 deg at CFS's grasp angle and needed an 11.6 mm gap, or 5.3 mm where
+  its step stopped the entry at 14 mm. Toed in to CFS's angle, and lengthened from 17 to 18 mm so
+  the step clears the 15 mm line, it needs 2.0 mm.
   General Mills' gates. G1, T5 safety: rated T5 mass 23 kg for the finger. At 23 kg x1.5 with
-  the 60/40 share the arm peaks at 6.0 MPa with K_t 2 at the pocket ligament (u 117, 15 by
-  28 mm), and the root is 1.7 MPa on its real section, against 16 MPa; the 12 kg 2 ft case
-  gives 3.2 MPa. The gripper is rated 23 kg only with the next-phase hinge hardware (SR memo,
-  hinge check). On the platform's printed hinge as built it rates about 13 kg, limited by the
-  25 x 32 x 4 bearing next to the gear and by the gear's screws into the print, and the
-  reference drive's 25 N m peak sets 14 kg. With the motor off, the L is held by a
+  the 60/40 share the arm peaks at 5.7 MPa with K_t 2 at the pocket ligament (u 115, 16 by
+  28 mm), against 16 MPa; the 12 kg 2 ft case gives 3.0 MPa. The root, on the STEP's own
+  sections, peaks at 4.1 MPa with K_t 2 at the outer M5 (u 52). The 14 mm knuckle inboard of
+  the inner M5 is a free end and carries none of the moment; the mount's arm carries it there
+  (SR memo, VAL-Q8). The gripper is rated 23 kg only with the next-phase hinge hardware,
+  including a machined finger mount (SR memo, hinge check). As built it rates about 6 kg: the
+  printed mount's arm reaches 31 MPa nominal at its holes at 23 kg (5.9 kg with K_t 2, 11.7 kg
+  on nominal stress), and once its clamp slips the inner M5 bears on a 2 mm floor in the
+  knuckle (7.2 kg). The 25 x 32 x 4 bearing next to the gear and the gear's screws bind at 13
+  to 14 kg, and the reference drive's 25 N m peak at 14 kg. With the motor off, the L is held by a
   spring-applied power-off brake on the drive, at least 70 N m at the output (42 N m per
   gripper at 23 kg). There's no 45 deg stop, because S1 never seats one. Out-of-plane
   envelope: the finger is the platform's 161 mm (z -162 to -1.5 in the platform frame), and
@@ -182,17 +191,18 @@ notes: >
 expected:
   T1: "Weak: 1 to 3 of 8 boxes (the mini, perhaps Cheerios 8.9 oz). Every contact is the top edge on the empty panel, so holding a 0.5 to 0.9 kg box at mu 0.5 needs 11 to 20 N against the 10 N limit."
   T2: "Fair: about 3 to 5 of 6 sheets at a low torque. The bare tooth flats are short and hard (mu 0.3 to 0.35), so the thick flutes risk crush where the flat's edge meets them."
-  T3: "Enters: at most 2.5 mm thick at the 15 mm entry (2.2 mm at nominal), flat on the target's side. Holding CFS on a bare chisel at mu 0.3 within 10 N is marginal."
-  T4: "Passes both cases at the 45 deg reading: the pocket seats the lip and the tooth fits under it. FP's estimate is about 10 MPa at the tooth root at 15 kg, against the 16 MPa allowable."
-  T5: "Supports only with the brake. 38 to 42 N m opening moment per gripper at 23 kg (169 to 203 N under the case and 113 N of thumb squeeze, at 133 mm), over the actuator's 10 to 25 N m. The arm stresses are low: 6.0 MPa with K_t 2 at the pocket at 23 kg, 3.2 MPa at the 12 kg duty."
+  T3: "Enters: the inserted 15 mm sweeps 2.0 mm at CFS's grasp angle (2.9 mm at the worst range corner), a 0.7 mm push at 1.3 mm and none at 3 mm; the step stops the entry at about 16 mm. Holding CFS on a bare chisel at mu 0.3 within 10 N is marginal."
+  T4: "Passes both cases at the 45 deg reading: the pocket seats the lip and the tooth fits under it. FP's estimate is about 10 MPa at the tooth root at 15 kg, against the 16 MPa allowable. On the tooth's real neck, 7.4 mm from the pocket's foot to the back by 28 mm, mine is 10 MPa with K_t 2 with the crate on one far wall, and 20 MPa with FP's dynamic factor of 2 (see risks)."
+  T5: "Supports only with the brake. 37 to 42 N m opening moment per gripper at 23 kg (169 to 203 N under the case and 113 N of thumb squeeze, at 132 mm), over the actuator's 10 to 25 N m. The finger's stresses are low: 5.7 MPa with K_t 2 at the pocket and 4.1 MPa at the root at 23 kg, 3.0 MPa at the 12 kg duty. The printed mount's arm, 33 MPa with K_t 2 at the duty, needs the next phase's machined mount."
 
 tradeoffs:
   - "Least change and lowest risk to T3 and T4, but T1 is stuck at the top edge, so this is the baseline to beat, not a candidate."
-  - "The chisel setback trades about 5 mm of T3 entry margin (the step lands on the box top at about 15.5 mm) for a T5 bearing on the tooth instead of the point."
+  - "The 5.5 mm setback and the toe-in put the T5 bearing on the tooth and let the chisel into a full case with a 0.7 mm push, but the step stops the entry at about 16 mm, and the toe-in is square only to CFS: a full case of 45 mm boxes sees 4.4 mm of swept width, a 3.1 mm push at 1.3 mm."
   - "The cartridge adds a joint (a dovetail and one captive screw), but it makes the wear item a two-minute swap with a hex key, without a re-print."
 
 risks:
   - "The carrier cracks at the dovetail or the screw boss and becomes foreign material. Blue, detectable PU keyed through the carrier and a captive stainless lock screw are the mitigation, and a retention test (pull-out at the dovetail after the year's 3 M grasps) is part of the durability run."
   - "The 3 mm chisel chips on a crash or a mis-placed approach. A printed chisel is a wear part; the next step is a stainless insert."
-  - "T5 depends on a brake and the next-phase hinge: 0.8 to 1.4 kN of tooth force at the 19 mm pitch radius at 23 kg, which the platform's 25 x 32 x 4 bearings and printed seats can't carry (SR memo, hinge check)."
+  - "T5 depends on a brake and the next-phase hinge: 0.8 to 1.4 kN of tooth force at the 19 mm pitch radius at 23 kg, which the platform's 25 x 32 x 4 bearings, printed seats and printed finger mount can't carry (SR memo, hinge check and VAL-Q8)."
+  - "The tooth's neck is thin. The section from the pocket's back-cut foot to the tooth's rising back is 7.4 mm by 28 mm at nominal and 4.1 mm at the thinnest corner of the ranges (sr-spec-check.py). A vertical cut through the foot also takes in the far wall, which is why the 10 mm ligament rule didn't catch it. With a 15 kg crate on one far wall, the lip 3 mm below the face, K_t 2 and FP's dynamic factor of 2, I estimate 20 MPa at nominal against 16 (10 MPa without the dynamic factor) and about 70 MPa at that corner. It is the platform's own pocket and width; the toe-in thickened it from 5.4 mm (30 MPa), and a 27 mm tooth only reaches 8.4 mm (17 MPa). For FP's T4 load model: if it holds, S1's tooth needs to be at least 35 mm wide (30 mm with a 27 mm tooth), in place of the platform's 28."
   - "The 28 mm arm width under the pocket is the platform's. If the T4 crate's lip loads one edge, the hook sees torsion that 2D can't show."
