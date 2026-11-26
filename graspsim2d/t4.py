@@ -14,7 +14,8 @@ and hooks both lips. T4b: one gripper on each long wall, the outside finger's un
 finger on the inner face; the right gripper is the spec's jaw and the left its mirror, so each outside finger is
 the spec's outside finger. Each jaw opens to clear the lips, descends to the hook height, and closes on the drive
 torque with its arm free along x, so both fingers find the wall; the arms then lock, squeeze, lift, hold, shake,
-make the stop and end on the power cut. Bare printed faces and pads take the friction of PA12 and a pad on HDPE or PP.
+make the stop and end on the power cut. Bare faces take the bare finger's friction on HDPE or PP (stainless from
+revision 2.34, PA12 on the baseline), and pads a pad's.
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ from .jaw import Jaw
 from .mj1 import BAD_STATE, DROP, GRIP, OBJ, TABLE, _fmt, _min_jerk
 from .objects import G, GraspObject, Material
 from .scenario import Scenario
+from .sensor import Wrench, worst
+from .sensor import config as sensor_config
 from .t5 import T5Timeline, _GripperBuilder, mirrored
 
 TOL_MM2 = 0.05  # overlap area treated as touching
@@ -446,6 +449,17 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
     nf = 2 * len(gs)
     f6 = np.zeros(6)
     n_avg = max(1, int(round(0.005 / (every * model.opt.timestep))))
+    # Rev 2.34: each gripper's wrist sensor; its whole window runs from the end of the close to the power cut.
+    wrench = {g: Wrench(model, b1, f"grip{g}", builders[g].geom_depth, every * model.opt.timestep, mirror=g == "B")
+              for g in gs}
+    hold_s = float(sensor_config(b1).get("hold_s", 1.0))
+
+    def phase_at(t: float) -> str:
+        if t < t_desc:
+            return "descend"
+        if t < t_close:
+            return "close"
+        return "squeeze" if t < t0 else tl.phase(t)
 
     def contacts():
         """World force (N) on each lip and wall from each finger: F[finger, part] = (Fx, Fz)."""
@@ -533,7 +547,13 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
         if (data.time < t_step or any(data.warning[w].number for w in BAD_STATE) or not np.isfinite(data.qacc).all()):
             unstable, unstable_s = True, t_step
             break
-        if i % every or t < tl.t_settle:
+        if i % every:
+            continue
+        t_now = data.time
+        for g in gs:
+            wrench[g].sample(model, data, t_now, phase_at(t_now), t_close <= t_now < tl.t_power,
+                             tl.t_final - hold_s <= t_now < tl.t_final)
+        if t < tl.t_settle:
             continue
         t = data.time
         rel = np.array([data.qpos[q_cx] - data.qpos[qadr("kx")], data.qpos[q_cz] - data.qpos[qadr("kz")]])
@@ -571,6 +591,9 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
         if slip > DROP:
             dropped = tl.phase(t)
             break
+    for g in gs:
+        row.update(wrench[g].readings(f"{g}_"))
+    row.update(worst(row, "".join(gs)))
     row.update(close_state)
     row.update({"ok": not unstable and ref is not None, "reset_flag": bool(unstable)})
     if unstable:

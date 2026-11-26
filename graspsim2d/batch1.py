@@ -10,6 +10,7 @@ flight, and stop it with `pkill -9 -f graspsim2d.batch1`, never Ctrl-C:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import json
 import math
@@ -50,29 +51,78 @@ def commit() -> str:
         return "unknown"
 
 
-def ctx() -> dict[str, Any]:
+_FINGER: list[str | None] = [None]  # the finger material in use; None takes the config's `finger_material`
+
+
+def finger_values(d: Any, finger: str) -> Any:
+    """A config tree as fingers of `finger`'s material see it: on the PA12 baseline each `key_pa12` value replaces
+    `key`'s; the suffixed keys drop out either way."""
+    if isinstance(d, list):
+        return [finger_values(x, finger) for x in d]
+    if not isinstance(d, dict):
+        return d
+    out = {k: finger_values(v, finger) for k, v in d.items() if not (isinstance(k, str) and k.endswith("_pa12"))}
+    if finger == "pa12":
+        out.update({k[:-5]: finger_values(v, finger) for k, v in d.items() if isinstance(k, str) and k.endswith("_pa12")})
+    return out
+
+
+def _shared() -> dict[str, Any]:
     if not _CTX:
         from .jaw import load_marks
         from .objects import load_objects
         from .scenario import load_scenario
         sc = load_scenario(B1 / "scenario.yaml")
-        _CTX.update(sc=sc, b1=sc.raw["batch1"], lib=load_objects(B1 / "objects.yaml"),
-                    lay=yaml.safe_load((B1 / "layouts.yaml").read_text()), marks=load_marks(B1 / "marked_faces.yaml"),
-                    jaws={})
+        _CTX.update(sc=sc, lib_raw=load_objects(B1 / "objects.yaml"), lay=yaml.safe_load((B1 / "layouts.yaml").read_text()),
+                    marks=load_marks(B1 / "marked_faces.yaml"), jaws={}, by_finger={})
     return _CTX
 
 
+def finger() -> str:
+    return _FINGER[0] or str(_shared()["sc"].raw["batch1"].get("finger_material", "pa12"))
+
+
+@contextlib.contextmanager
+def finger_material(name: str | None):
+    """Run what's inside on fingers of `name`'s material (None keeps the one in use)."""
+    old = _FINGER[0]
+    if name is not None:
+        known = _shared()["sc"].raw["batch1"].get("finger_materials") or {}
+        if name not in known:
+            raise ValueError(f"unknown finger material {name!r}; have {sorted(known)}")
+        _FINGER[0] = name
+    try:
+        yield
+    finally:
+        _FINGER[0] = old
+
+
+def ctx(material: str | None = None) -> dict[str, Any]:
+    """The batch-1 context for one finger material: the scenario, layouts, marks and jaws are shared, while `b1` and
+    the object library carry that material's bare friction and density."""
+    base = _shared()
+    f = material or finger()
+    per = base["by_finger"]
+    if f not in per:
+        from .objects import with_finger
+        b1 = finger_values(base["sc"].raw["batch1"], f)
+        b1["finger_material"] = f
+        per[f] = {"sc": base["sc"], "lay": base["lay"], "marks": base["marks"], "jaws": base["jaws"], "b1": b1,
+                  "lib": with_finger(base["lib_raw"], f), "finger": f}
+    return per[f]
+
+
 def fp_library():
-    """The first pass's 14 objects (config/objects.yaml) with batch 1's bare friction table."""
+    """The first pass's 14 objects (config/objects.yaml) with batch 1's bare friction table, for the finger in use."""
     c = ctx()
     if "lib_fp" not in c:
         from dataclasses import replace
         from .objects import load_objects
-        bare = {k: float(v["bare_friction"]) for k, v in yaml.safe_load((B1 / "objects.yaml").read_text())["materials"].items()
-                if "bare_friction" in v}
+        mats = c["lib"].materials
         lib = load_objects(CFG / "objects.yaml")
-        lib.objects = [replace(o, material=replace(o.material, bare_friction=bare.get(o.material.name, o.material.bare_friction)))
-                       for o in lib.objects]
+        lib.objects = [replace(o, material=replace(o.material, bare_friction=mats[o.material.name].bare_friction,
+                                                   printed_friction=mats[o.material.name].printed_friction))
+                       if o.material.name in mats else o for o in lib.objects]
         c["lib_fp"] = lib
     return c["lib_fp"]
 
@@ -249,12 +299,15 @@ def job_t3(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
+    """One job, on the finger material its `finger` names (the config's selection without one)."""
     try:
         f = {"scan": job_scan, "sheet_screen": job_sheet_screen, "mj": job_mj, "t5": job_t5, "t3": job_t3}[job["job"]]
-        return _clean(f(job))
+        with finger_material(job.get("finger")):
+            return _clean({**f(job), "finger_material": finger()})
     except Exception as e:  # noqa: BLE001 - a failed job is a row, not a dead batch
         import traceback
-        row = {**job, "kind": "error", "reason": f"{type(e).__name__}: {e}", "traceback": traceback.format_exc()[-2000:]}
+        row = {**job, "kind": "error", "reason": f"{type(e).__name__}: {e}", "traceback": traceback.format_exc()[-2000:],
+               "finger_material": job.get("finger") or finger()}
         try:
             row.update(_torque_flag(get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))))
         except Exception:  # noqa: BLE001 - the jaw itself may be what failed

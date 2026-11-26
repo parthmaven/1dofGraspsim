@@ -24,9 +24,10 @@ import numpy as np
 from shapely.ops import unary_union
 
 from .jaw import Jaw, convex_pieces
-from .mj1 import BAD_STATE, DROP, GRIP, OBJ, PA12_DENSITY, RETURN_G, STOP_SPEED, TABLE, _Builder, _envelope, _fmt, _min_jerk, _p
+from .mj1 import BAD_STATE, DROP, GRIP, OBJ, RETURN_G, STOP_SPEED, TABLE, _Builder, _envelope, _fmt, _min_jerk, _p
 from .objects import G, GraspObject, Material
 from .scenario import Scenario
+from .sensor import Rolling, Wrench, hub_depth, layer_depth, worst
 
 UNSTABLE = "simulation went unstable"
 HUB, DECK = 8, 16
@@ -81,7 +82,8 @@ class _GripperBuilder(_Builder):
                 out.append(f'<geom name="{gname}" type="mesh" mesh="{name}" mass="0" friction="{_fmt(self.mu_bare)} 0.005 0.0001" '
                            f'priority="1" contype="{GRIP}" conaffinity="{OBJ | TABLE}" rgba="0.55 0.6 0.68 1"/>')
                 self.body_geoms[gname] = side
-                m = PA12_DENSITY * piece.area * 1e-6 * w * 1e-3
+                self.geom_depth[gname] = layer_depth(self.b1, js, float(c.x), float(c.y), w)
+                m = self.density * piece.area * 1e-6 * w * 1e-3
                 mass += m
                 mom += m * ((c.x * 1e-3) ** 2 + (c.y * 1e-3) ** 2)
                 k += 1
@@ -232,6 +234,9 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
         return {"ok": False, "reason": f"the stroke ends at {math.degrees(jaw.phi_max):.1f} deg, short of the L"}
 
     region = hub_region(sc)
+    # Rev 2.34: the hub stays the printed tube, at printed PA12's bare friction whatever the fingers are; on the PA12
+    # baseline that is the fingers' own, sensitivity and all.
+    mu_hub = None if b1.get("finger_material", "pa12") == "pa12" else case.material.printed * friction_scale
     com_x = com_offset * W
     m = case.mass
     k_servo = float(sc.sim.get("servo_kp", 2.0e6))
@@ -258,7 +263,8 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
                     f'solreffriction="{_fmt(2 * b.dt)} 1" solimpfriction="0.999 0.9999 0.001 0.5 2"/>'
                     f'<inertial pos="0 0 {_fmt(-jw.reach * 0.5e-3)}" mass="{_fmt(max(m_f, 1e-3))}" diaginertia="{_fmt((max(mom, 1e-6),) * 3)}"/>'
                     f"{xml}</body>")
-            hub_xml, hub_names[g] = _hub_xml(region, g, sgn < 0, b.mu_bare, HUB_WIDTH_MM, b.assets)
+            hub_xml, hub_names[g] = _hub_xml(region, g, sgn < 0, b.mu_bare if mu_hub is None else mu_hub, HUB_WIDTH_MM,
+                                             b.assets)
             theta = sgn * 0.75 * math.pi
             x0 = sgn * (W / 2 + hf / math.sqrt(2) + app + dx)
             z0 = -hf / math.sqrt(2) + dz
@@ -346,24 +352,31 @@ def _geom_points(model, data, i: int) -> np.ndarray:
     return data.geom_xpos[i] + v @ R.T
 
 
-def _hub_readings(g: str, sustained: list[float], t: list[float], forces: list[np.ndarray], start: tuple[str, float],
-                  sample_s: float, avg_s: float) -> dict[str, Any]:
-    """Revision 2.21's hub force for one gripper: sustained, the mean over the final hold's last 1 s; peak, the
-    largest `avg_s` average from the stop (or, with no stop, the power cut) to 5 s after it, with that window's
-    mean push outward along W and down, and its start after the event."""
+def _hub_readings(g: str, sustained: list[float], t: list[float], forces: list[np.ndarray], phases: list[str],
+                  event: tuple[str, float], sample_s: float, avg_s: float) -> dict[str, Any]:
+    """Revision 2.34's hub force for one gripper: sustained, the mean over the final hold's last 1 s; peak, the
+    largest `avg_s` average from the end of the close to 5 s after the stop (or, with no stop, the power cut), so
+    settle and lift peaks count, with that window's mean push outward along W and down, its start after the event
+    (negative before it) and its phase. Revision 2.21's peak, from the event on, is kept beside it."""
     out = {f"{g}_hub_sustained_N": float(np.mean(sustained)) if sustained else math.nan,
            f"{g}_hub_peak_5ms_N": math.nan, f"{g}_hub_peak_5ms_out_N": math.nan, f"{g}_hub_peak_5ms_down_N": math.nan,
-           f"{g}_hub_peak_5ms_after_s": math.nan, "hub_peak_from": start[0]}
+           f"{g}_hub_peak_5ms_after_s": math.nan, f"{g}_hub_peak_5ms_phase": "", f"{g}_hub_window_peak_N": math.nan,
+           f"{g}_hub_peak_5ms_from_event_N": math.nan, "hub_peak_from": "end of the close", "hub_peak_event": event[0]}
     n = max(1, int(round(avg_s / sample_s)))
     if len(forces) < n:
         return out
     F = np.asarray(forces)
-    kern = np.ones(n) / n
-    avg = np.convolve(np.linalg.norm(F, axis=1), kern, "valid")
+    T = np.asarray(t)
+    mag = np.linalg.norm(F, axis=1)
+    avg = np.convolve(mag, np.ones(n) / n, "valid")
     k = int(np.argmax(avg))
     sgn = 1.0 if g == "A" else -1.0
     out.update({f"{g}_hub_peak_5ms_N": float(avg[k]), f"{g}_hub_peak_5ms_out_N": sgn * float(F[k:k + n, 0].mean()),
-                f"{g}_hub_peak_5ms_down_N": -float(F[k:k + n, 2].mean()), f"{g}_hub_peak_5ms_after_s": t[k] - start[1]})
+                f"{g}_hub_peak_5ms_down_N": -float(F[k:k + n, 2].mean()), f"{g}_hub_peak_5ms_after_s": float(T[k] - event[1]),
+                f"{g}_hub_peak_5ms_phase": phases[k + n // 2], f"{g}_hub_window_peak_N": float(mag.max())})
+    after = T[:len(avg)] >= event[1]
+    if after.any():
+        out[f"{g}_hub_peak_5ms_from_event_N"] = float(avg[after].max())
     return out
 
 
@@ -466,6 +479,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     inward = {"A": -1.0, "B": 1.0}
     every = 4 * builders["A"].substeps
     dt = model.opt.timestep
+    # Rev 2.34: each gripper's wrist sensor, over its fingers, their elements and its hub.
+    sensors = {g: Wrench(model, b1, f"grip{g}", {**builders[g].geom_depth, **{nm: hub_depth(b1) for nm in hub_names[g]}},
+                         every * dt, mirror=g == "B") for g in G_}
     j_f = {f: jid(f"j{f}") for f in body_of}
     eq_gear = {g: name(mujoco.mjtObj.mjOBJ_EQUALITY, f"gear{g}") for g in G_}
     stop_phi = jaw.phi_max if stop_phi is None else stop_phi
@@ -604,6 +620,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     w_tau = {g: (0.0, "") for g in G_}
     w_tau_buf = {g: collections.deque(maxlen=n5) for g in G_}
     w_tau5 = {g: (0.0, "") for g in G_}
+    # Rev 2.34: every contact's 5 ms peak in each phase, the cut included.
+    roll = {(g, part): Rolling(n5) for g in G_ for part in ("out", "thumb", "hub")}
 
     def face_tilt(f: str, nm: str) -> float:
         """The face's angle (deg) to the nearer of the case's axes at this instant, or nan for a one-element face."""
@@ -699,10 +717,11 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     z_base = 0.0
     i = -1
     t_end = math.inf
-    hub_win = hub_peak_win = (math.inf, -math.inf)
+    hub_win = (math.inf, -math.inf)
+    hub_peak_end = math.inf
     hub_from = ("", math.nan)
     hub_sus = {g: [] for g in G_}
-    hub_pk = {"t": [], **{g: [] for g in G_}}
+    hub_pk = {"t": [], "ph": [], **{g: [] for g in G_}}
 
     def start_squeeze(t):
         """The jaw has closed or seated: the arms go over to force control, the tips-only path releases the hub,
@@ -764,6 +783,18 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         t = data.time
         ms = measure()
         load = {g: ms["N"][fingers[g]["out"]] + ms["N"][fingers[g]["thumb"]] + float(np.linalg.norm(ms["hub"][g])) for g in G_}
+        if phase in ("squeeze", "timeline"):
+            ph_s = "squeeze" if tl is None else tl.phase(t)
+            for g in G_:
+                sensors[g].sample(model, data, t, ph_s, brake_on is None or cut_before_stop, hub_win[0] <= t <= hub_win[1])
+                roll[(g, "out")].add(ms["N"][fingers[g]["out"]], ph_s)
+                roll[(g, "thumb")].add(ms["N"][fingers[g]["thumb"]], ph_s)
+                roll[(g, "hub")].add(float(np.linalg.norm(ms["hub"][g])), ph_s)
+            if t <= hub_peak_end:
+                hub_pk["t"].append(t)
+                hub_pk["ph"].append(ph_s)
+                for g in G_:
+                    hub_pk[g].append(ms["hub"][g].copy())
         if phase in ("squeeze", "timeline") and (brake_on is None or cut_before_stop):
             # Through the cut on revision 2.18's mid-move cut, as its damage limits are.
             window(t, "squeeze" if tl is None else tl.phase(t), ms)
@@ -834,11 +865,11 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 tl = T5Timeline(sc, t, shake_g, (sc.shake_lateral_hz, sc.shake_vertical_hz), float(b1.get("shake_s", 3.0)),
                                 stop_g, power_s, cut_before_stop, final_s=cfg.get("final_hold_s"))
                 t_end = tl.t_end
-                # Revision 2.21's hub readings: sustained over the final hold's last 1 s; peak from the stop (or,
-                # with no stop, the power cut) to 5 s after it.
+                # The hub: sustained over the final hold's last 1 s; peak from the end of the close to 5 s after the
+                # stop (or, with no stop, the power cut), revision 2.34.
                 hub_win = (tl.t_final - float(cfg.get("hub_sustained_s", 1.0)), tl.t_final)
                 hub_from = ("stop", tl.stop[0]) if tl.stop is not None else ("power cut", tl.t_power)
-                hub_peak_win = (hub_from[1], hub_from[1] + float(cfg.get("hub_peak_window_s", 5.0)))
+                hub_peak_end = hub_from[1] + float(cfg.get("hub_peak_window_s", 5.0))
             continue
         ph = tl.phase(t)
         tau_g = {g: -(float(data.actuator_force[a_drive[fingers[g]["out"]]]) + float(data.actuator_force[a_drive[fingers[g]["thumb"]]]))
@@ -852,10 +883,6 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         if hub_win[0] <= t <= hub_win[1]:
             for g in G_:
                 hub_sus[g].append(float(np.linalg.norm(ms["hub"][g])))
-        if hub_peak_win[0] <= t <= hub_peak_win[1]:
-            hub_pk["t"].append(t)
-            for g in G_:
-                hub_pk[g].append(ms["hub"][g].copy())
         rel = np.array([data.qpos[q_cx] - data.qpos[qadr("kx")], data.qpos[q_cz] - data.qpos[qadr("kz")]])
         if ref_print is None:
             ref_print = rel.copy()
@@ -971,6 +998,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                            "mass_kg": case.mass, "com_offset_W": com_offset, "squeeze_N": squeeze, "stop_g": stop_g,
                            "cut_before_stop": cut_before_stop, "brake_Nm": brake, "power_s": power_s,
                            "mu_bare": builders["A"].mu_bare, "mu_pad": builders["A"].mu_pad,
+                           "mu_hub": float(model.geom_friction[gid(hub_names["A"][0]), 0]) if hub_names["A"] else math.nan,
+                           "finger_material": b1.get("finger_material", "pa12"),
+                           "finger_density_kg_m3": builders["A"].density,
                            "dropped_in": dropped_in, "t_approach_s": t_app_end, "t_close_s": t_close_end,
                            "contact_average_s": n5 * every * dt}
     for g in G_:
@@ -999,8 +1029,11 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             f"{g}_brake_stop_Nm": stats["brake_stop"][g], f"{g}_brake_saturated": stats["brake_sat"][g],
             f"{g}_out_peak_N": stats["peak_N"][f_o], f"{g}_thumb_peak_N": stats["peak_N"][f_t],
         })
-        res.update(_hub_readings(g, hub_sus[g], hub_pk["t"], hub_pk[g], hub_from, every * dt,
+        res.update(_hub_readings(g, hub_sus[g], hub_pk["t"], hub_pk[g], hub_pk["ph"], hub_from, every * dt,
                                  float(cfg.get("hub_peak_avg_s", 0.005))))
+        res.update(sensors[g].readings(f"{g}_"))
+        for part in ("out", "thumb", "hub"):
+            res[f"{g}_{part}_phase_5ms_N"] = roll[(g, part)].phases()
         n_hub = res[f"{g}_hub_hold_N"]
         n_all = n_hub + res[f"{g}_out_N_hold"] + res[f"{g}_thumb_N_hold"]
         res[f"{g}_hub_share"] = n_hub / n_all if n_all > 1e-9 else math.nan
@@ -1030,6 +1063,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         if perf_z is not None and math.isfinite(lo):
             zp = perf_z * 1e3
             res[f"{g}_thumb_perf_mm"] = 0.0 if lo <= zp <= hi else min(abs(lo - zp), abs(hi - zp))
+    res.update(worst(res, "AB"))
     res.update({"tilt_deg": stats["tilt"], "slip_mm": stats["slip"] * 1e3, "stop_slip_mm": stats["stop_slip"] * 1e3,
                 "stop_tilt_deg": stats["stop_tilt"], "power_slip_mm": stats["power_slip"] * 1e3,
                 "power_tilt_deg": stats["power_tilt"], "slip_all_mm": stats["slip_all"] * 1e3,

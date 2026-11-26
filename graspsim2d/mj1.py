@@ -37,9 +37,16 @@ from .objects import G, GraspObject
 from .pads import foundation_stiffness, series, shear_stiffness
 from .scenario import Scenario
 from .screen1 import K_RIGID, Limits, _band_min, _geometry, _view
+from .sensor import layer_depth
 
 GRIP, OBJ, TABLE = 1, 2, 4
 PA12_DENSITY = 1010.0
+
+
+def finger_density(b1: dict) -> float:
+    """kg/m^3 of the selected finger material (`finger_material`); printed PA12 where the config names none."""
+    mats = b1.get("finger_materials") or {}
+    return float((mats.get(b1.get("finger_material", "pa12")) or {}).get("density_kg_m3", PA12_DENSITY))
 PAD_DENSITY = 1200.0
 TABLE_FRICTION = 0.4
 DROP = 0.02  # m of slip counted as a drop
@@ -110,6 +117,7 @@ class _El:
     seg: float  # mm
     w: float  # m
     ext: float  # mm, vertical extent at the planned grip
+    depth: float = 0.0  # mm along the sensor's axis below the top datum, from the element's layer
 
 
 class _Builder:
@@ -138,6 +146,8 @@ class _Builder:
         self.elements: list[_El] = []
         self.assets: list[str] = []
         self.body_geoms: dict[str, int] = {}
+        self.density = finger_density(b1)
+        self.geom_depth: dict[str, float] = {}  # every finger geom, for the sensor's bending
 
     def armature(self, k: float, mass: float) -> float:
         w = 2 * math.pi * self.f_el
@@ -164,7 +174,8 @@ class _Builder:
                 out.append(f'<geom name="{gname}" type="mesh" mesh="{name}" mass="0" friction="{_fmt(self.mu_bare)} 0.005 0.0001" '
                            f'priority="1" contype="{GRIP}" conaffinity="{OBJ | TABLE}" rgba="0.55 0.6 0.68 1"/>')
                 self.body_geoms[gname] = side
-                m = PA12_DENSITY * piece.area * 1e-6 * w * 1e-3
+                self.geom_depth[gname] = layer_depth(self.b1, js, float(c.x), float(c.y), w)
+                m = self.density * piece.area * 1e-6 * w * 1e-3
                 mass += m
                 mom += m * ((c.x * 1e-3) ** 2 + (c.y * 1e-3) ** 2)
                 k += 1
@@ -227,7 +238,9 @@ class _Builder:
                 f'mass="0" friction="{_fmt(mu)} 0.005 0.0001" priority="2" contype="{GRIP}" conaffinity="{OBJ | TABLE}" '
                 f'solref="{_fmt(self.contact_tc)} 1" rgba="{rgba}"/></body>')
             tz_view = abs(float(np.cos(phi) * nv - np.sin(phi) * nu))  # |dz| per unit length along the face
-            self.elements.append(_El(jn, jn, side, face.kind, pad.name, area, seg, w, seg * max(tz_view, 0.05)))
+            depth = layer_depth(self.b1, self.jaw.sides[side], float(cu), float(cv), float(lay["w"][j]))
+            self.geom_depth[jn] = depth
+            self.elements.append(_El(jn, jn, side, face.kind, pad.name, area, seg, w, seg * max(tz_view, 0.05), depth))
         return "".join(parts) + "".join(close)
 
 

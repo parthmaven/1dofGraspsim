@@ -599,7 +599,9 @@ def test_bed_limit_applies_only_below_the_fill_line(setup):
 def batch1():
     from graspsim2d import batch1 as b
 
-    return b
+    # The calibrated checks run on the PA12 baseline; the stainless tests switch over themselves.
+    with b.finger_material("pa12"):
+        yield b
 
 
 def test_batch1_specs_build_feasible_jaws(batch1):
@@ -816,10 +818,13 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
     assert r["A_thumb_peak_N"] >= r["A_thumb_N_hold"] > 0.0 and r["A_thumb_peak_at"]
     # The stop along W drives the case outward onto A's hub; the run's peak covers the stop's.
     assert r["A_hub_peak_N"] >= r["A_hub_stop_peak_N"] > 0.0 and r["A_hub_stop_out_N"] > 0.0 and r["A_hub_peak_phase"]
-    # Revision 2.21: sustained over the final hold's last 1 s, peak the largest 5 ms average after the stop.
-    assert r["hub_peak_from"] == "stop" and 0.0 <= r["A_hub_peak_5ms_after_s"] <= 5.0
-    assert r["A_hub_stop_peak_N"] >= r["A_hub_peak_5ms_N"] >= r["A_hub_sustained_N"] > 0.0 and r["A_hub_peak_5ms_out_N"] > 0.0
-    assert r["B_hub_sustained_N"] > 0.0
+    # Revision 2.34: sustained over the final hold's last 1 s; peak the largest 5 ms average from the end of the close
+    # to 5 s after the stop, so it covers revision 2.21's, read from the stop on.
+    assert r["hub_peak_from"] == "end of the close" and r["hub_peak_event"] == "stop"
+    assert r["A_hub_peak_5ms_after_s"] <= 5.0 and r["A_hub_peak_5ms_phase"]
+    assert r["A_hub_window_peak_N"] >= r["A_hub_peak_5ms_N"] >= r["A_hub_peak_5ms_from_event_N"] > 0.0
+    assert r["A_hub_stop_peak_N"] >= r["A_hub_peak_5ms_from_event_N"] >= r["A_hub_sustained_N"] > 0.0
+    assert r["A_hub_peak_5ms_out_N"] > 0.0 and r["B_hub_sustained_N"] > 0.0
     # Revision 2.31's window: from the end of the close to the power cut, through every phase, as the largest 5 ms average.
     assert r["contact_average_s"] == pytest.approx(0.005, abs=0.0005)
     phases = {"squeeze", "settle", "lift", "hold", "shake", "final", "stop", "power"}
@@ -829,8 +834,22 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
             assert r[f"{g}_{part}_5ms_phase"] in phases and r[f"{g}_{part}_window_peak_phase"] in phases
             assert r[f"{g}_{part}_5ms_face"] and 0.0 < r[f"{g}_{part}_5ms_face_N"] <= r[f"{g}_{part}_5ms_N"] + 1e-6
             assert 0.0 <= r[f"{g}_{part}_5ms_face_res_frac"] <= 1.0
+            # Revision 2.34: each contact's 5 ms peak in every phase; the mid-move cut's window runs through the cut,
+            # so the largest phase is the window's peak.
+            by = r[f"{g}_{part}_phase_5ms_N"]
+            assert {"settle", "lift", "stop", "power"} <= set(by) <= phases
+            assert max(by.values()) == pytest.approx(r[f"{g}_{part}_5ms_N"], abs=0.01)
+        assert set(r[f"{g}_hub_phase_5ms_N"]) <= phases
+        assert max(r[f"{g}_hub_phase_5ms_N"].values()) == pytest.approx(r[f"{g}_hub_peak_5ms_N"], abs=0.01)
         assert r[f"{g}_window_peak_Nm"] >= r[f"{g}_window_5ms_Nm"] > 0.0
         assert r[f"{g}_window_5ms_Nm_phase"] in phases
+        # The wrist sensor: the case's weight share and the arms' squeeze, at least, in the final hold.
+        assert r[f"{g}_sensor_F_N_hold"] > 0.5 * case.mass * 9.81 / 2
+        assert r[f"{g}_sensor_F_N"] >= r[f"{g}_sensor_F_N_hold"] and r[f"{g}_sensor_F_N_phase"] in phases
+        assert max(r[f"{g}_sensor_F_N_by_phase"].values()) == pytest.approx(r[f"{g}_sensor_F_N"], abs=1e-3)
+        assert r[f"{g}_sensor_T_Nm"] > 0.0 and r[f"{g}_sensor_Mb_Nm"] > 0.0
+    assert r["sensor_F_N"] == max(r["A_sensor_F_N"], r["B_sensor_F_N"])
+    assert r["finger_material"] == "pa12" and r["finger_density_kg_m3"] == 1010.0 and r["mu_hub"] == r["mu_bare"]
 
 
 def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
@@ -854,8 +873,8 @@ def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
         assert r[f"{g}_thumb_N_hold"] > 0.0 and r[f"{g}_thumb_contact_mm"] >= 0.0
     # The arm lifts the case onto the cradle before it squeezes, so the case doesn't move on the fingers in the lift.
     assert r["print_slip_mm"] < 1.0
-    # With no stop, the hub's peak is read from the power cut.
-    assert r["hub_peak_from"] == "power cut" and r["A_hub_sustained_N"] < 1.0
+    # With no stop, the hub's peak window ends 5 s after the power cut.
+    assert r["hub_peak_event"] == "power cut" and r["A_hub_sustained_N"] < 1.0
 
     jobs = batch1.block_t5()
     assert len(jobs) == len({batch1._job_key(x) for x in jobs}) == 312 and all(x["hub_contact"] for x in jobs)
@@ -942,7 +961,85 @@ def test_t4b_s4_seats_both_lips_on_the_tote(batch1):
     # outside finger) on the -x lip, each carrying half the 15 kg.
     for g in "AB":
         assert r[f"{g}_seated"] and r[f"{g}_seat_N"] == pytest.approx(15.0 * 9.81 / 2, rel=0.1)
+        # Each wrist sensor reads its half of the crate: the pinch on the wall cancels between the two fingers.
+        assert r[f"{g}_sensor_F_N_hold"] == pytest.approx(15.0 * 9.81 / 2, rel=0.1)
     assert r["passed"] and r["slip_mm"] < 2.0 and r["power_cut_held"]
+
+
+def test_sensor_sums_the_external_contacts():
+    import mujoco
+
+    from graspsim2d.sensor import Wrench
+
+    # A 2 kg block rests on the jaw's plate 50 mm across from the sensor's axis; the plate sits 50 mm along the axis
+    # from the sensor's centre (74 mm below the datum against the centre's 24).
+    m = mujoco.MjModel.from_xml_string("""<mujoco><option timestep="0.0005" cone="elliptic"/><worldbody>
+      <body name="grip"><geom name="plate" type="box" size="0.12 0.05 0.01" pos="0 0 -0.01"/></body>
+      <body name="load" pos="0.05 0 0.0201"><freejoint/><geom type="box" size="0.02 0.02 0.02" mass="2"/></body>
+      </worldbody></mujoco>""")
+    d = mujoco.MjData(m)
+    w = Wrench(m, {}, "grip", {"plate": 74.0}, m.opt.timestep)
+    while d.time < 0.4:
+        mujoco.mj_step(m, d)
+        w.sample(m, d, d.time, "hold", True, d.time > 0.3)
+    r = w.readings()
+    W = 2.0 * 9.81
+    assert r["sensor_F_N_hold"] == pytest.approx(W, rel=0.01)
+    assert r["sensor_T_Nm_hold"] == pytest.approx(W * 0.05, rel=0.01)
+    assert r["sensor_Mb_Nm_hold"] == pytest.approx(W * 0.05, rel=0.01)
+    assert r["sensor_F_N"] >= r["sensor_F_N_hold"] and r["sensor_F_N_by_phase"]["hold"] == pytest.approx(r["sensor_F_N"], abs=1e-3)
+
+
+def test_batch1_finger_material_switch(batch1):
+    from graspsim2d.mj1 import finger_density
+
+    assert batch1.finger() == "pa12"
+    with batch1.finger_material("stainless"):
+        c = batch1.ctx()
+        mats = c["lib"].materials
+        # Revision 2.34: bare stainless on carton 0.20, corrugated 0.30, HDPE or PP 0.20; T3's drag at the top of its
+        # range; the printed hub keeps PA12's 0.35 on corrugated.
+        assert batch1.finger() == c["b1"]["finger_material"] == "stainless"
+        assert mats["cereal_carton_flakes"].bare_friction == mats["chipboard_20pt"].bare_friction == pytest.approx(0.20)
+        assert mats["c_flute"].bare_friction == mats["bc_double_wall"].bare_friction == pytest.approx(0.30)
+        assert mats["c_flute"].printed == pytest.approx(0.35)
+        assert batch1.get_obj("gm_cheerios_family_18oz").material.bare_friction == pytest.approx(0.20)
+        assert batch1.fp_library().by_id("b_flute_3mm").material.bare_friction == pytest.approx(0.30)
+        assert c["b1"]["t3"]["drag_friction"] == pytest.approx(0.30) and "drag_friction_pa12" not in c["b1"]["t3"]
+        assert c["b1"]["t5"]["midmove_cut"]["bare_mu_sensitivity"] == pytest.approx(0.24)
+        assert c["b1"]["t4"]["materials"]["pp"]["bare_friction"] == pytest.approx(0.2)
+        assert finger_density(c["b1"]) == 8000.0
+    c = batch1.ctx()
+    assert c["b1"]["t3"]["drag_friction"] == pytest.approx(0.5) and finger_density(c["b1"]) == 1010.0
+    assert c["lib"].materials["c_flute"].bare_friction == pytest.approx(0.35)
+    assert c["b1"]["t3"]["robust_drag"] == batch1.ctx("stainless")["b1"]["t3"]["robust_drag"] == pytest.approx(1.2)
+    with pytest.raises(ValueError):
+        with batch1.finger_material("pla"):
+            pass
+    # A job names its finger material, and its row records the one it ran on.
+    job = {"block": "t", "design": "S2", "reading": 45.0, "job": "sheet_screen", "object": "c_flute_4mm", "depth_mm": 30.0}
+    assert batch1.run_job({**job, "finger": "stainless"})["finger_material"] == "stainless"
+    assert batch1.run_job(job)["finger_material"] == "pa12" and batch1.finger() == "pa12"
+
+
+def test_t5_on_stainless_keeps_the_printed_hub(batch1):
+    from graspsim2d.t5 import case_object, simulate_t5
+
+    with batch1.finger_material("stainless"):
+        c = batch1.ctx()
+        j = batch1.get_jaw("S2", 45.0)
+        case = case_object(c["b1"]["t5"], "1ft", c["lib"].materials)
+        r = simulate_t5(j, case, c["sc"], {**c["b1"], "shake_s": 0.0}, stop_g=0.0, power_s=0.2)
+    assert r["ok"] and r["finger_material"] == "stainless" and r["finger_density_kg_m3"] == 8000.0
+    assert r["mu_bare"] == pytest.approx(0.30) and r["mu_hub"] == pytest.approx(0.35)
+    # The hub's peak window opens at the end of the close, so the settle and the lift count.
+    assert r["hub_peak_from"] == "end of the close" and r["hub_peak_event"] == "power cut"
+    by = r["A_hub_phase_5ms_N"]
+    assert {"squeeze", "settle", "lift", "power"} <= set(by)
+    assert r["A_hub_peak_5ms_N"] == pytest.approx(max(by.values()), abs=0.01)
+    assert r["A_hub_peak_5ms_N"] >= max(by["settle"], by["lift"]) - 0.01
+    for g in "AB":
+        assert r[f"{g}_sensor_F_N_hold"] > 0.0 and r[f"{g}_sensor_Mb_Nm_hold"] > 0.0
 
 
 def test_batch1_t5_cut_block_runs_revision_2_18(batch1):

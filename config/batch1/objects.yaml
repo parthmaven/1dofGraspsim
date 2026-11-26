@@ -34,9 +34,12 @@ materials:
     # 0.45-0.9 static (silicone/NBR on board [P], rubber on cardboard 0.5-0.8 [S]);
     # the review recommends 0.6 static, 0.9 x static kinetic. Design value: 0.5.
     friction: 0.5
-    # Bare printed PA12 on coated carton: 0.3 - 0.5 (docs/general-mills-cereal-boxes.md);
-    # the low end, for holding (test conditions rev 2.8, friction table) [A].
-    bare_friction: 0.3
+    # Bare finger on coated carton (test conditions friction table) [A]. Stainless, rated from rev 2.34:
+    # paperboard on polished steel 0.15 - 0.3, varnish and print at the low end (VAL round 16), 0.20 until a
+    # bench test of the finish. Bare printed PA12, the baseline: 0.3 - 0.5 (docs/general-mills-cereal-boxes.md),
+    # the low end, for holding (rev 2.8).
+    bare_friction: 0.20
+    bare_friction_pa12: 0.3
     # Pad on the panel where product backs it: the panel spreads the load into
     # the cereal bed. No measured bed stiffness was found [E]: 0.6 MPa over 30 mm.
     contact_modulus_MPa: 0.6
@@ -53,7 +56,8 @@ materials:
     caliper_mm: 0.48
     grammage_gsm: 380
     friction: 0.5
-    bare_friction: 0.3
+    bare_friction: 0.20
+    bare_friction_pa12: 0.3
     contact_modulus_MPa: 1.5
     contact_depth_mm: 30
     allow_pressure_kPa: 100
@@ -65,14 +69,17 @@ materials:
   # plastic hinge 0.357*SCT*t; corrugated 0.8 x the midpoint of the M_max range
   # (crease onset 0.6-1.0 x M_max). allow_pressure_kPa: onset of permanent
   # through-thickness damage (corrugated: first yield of the flat-crush curve,
-  # before FCT; chipboard: ZD yield). bare_friction: bare printed PA12 on the
-  # sheet; the friction table gives corrugated 0.35 and has no chipboard row, so
-  # chipboard takes the carton row's 0.3 [A].
+  # before FCT; chipboard: ZD yield). bare_friction: the bare finger on the
+  # sheet, stainless from rev 2.34, with bare printed PA12, the baseline, in
+  # bare_friction_pa12. The friction table gives corrugated stainless 0.30 (cartons
+  # on steel 0.3 - 0.35, VAL round 16) and PA12 0.35, and has no chipboard row, so
+  # chipboard takes the carton row's 0.20 and 0.3 [A].
   chipboard_20pt:
     caliper_mm: 0.51            # [P GSA A-A-1507A]
     grammage_gsm: 352           # [P GSA] (350 [V])
     friction: 0.55              # 0.6-0.8 static / 0.55-0.75 kinetic [E]
-    bare_friction: 0.3
+    bare_friction: 0.20
+    bare_friction_pa12: 0.3
     zd_modulus_MPa: 30          # 20-40 [E, paperboard ply models]
     allow_pressure_kPa: 1000    # ZD yield 1000-2000 [E]
     bending_stiffness_Nm: 0.015 # MD/CD 0.034/0.015 [E from Eska Taber]; RDM 0.035/0.017 [V]
@@ -82,7 +89,8 @@ materials:
     caliper_mm: 0.76
     grammage_gsm: 520           # 495-550 [V/S]
     friction: 0.55
-    bare_friction: 0.3
+    bare_friction: 0.20
+    bare_friction_pa12: 0.3
     zd_modulus_MPa: 30
     allow_pressure_kPa: 1000
     bending_stiffness_Nm: 0.045 # MD/CD 0.11/0.045 [V RDM, E Eska]
@@ -92,7 +100,8 @@ materials:
     caliper_mm: 1.52
     grammage_gsm: 975           # 945-1006 [V/P]
     friction: 0.55
-    bare_friction: 0.3
+    bare_friction: 0.20
+    bare_friction_pa12: 0.3
     zd_modulus_MPa: 30
     allow_pressure_kPa: 1000
     bending_stiffness_Nm: 0.35  # MD/CD 0.79/0.35 [V Eska, ISO 5629]
@@ -102,7 +111,8 @@ materials:
     caliper_mm: 1.6             # 1.5-1.75 [V/P]
     grammage_gsm: 420           # 341-508 [V/P]
     friction: 0.76              # NBR pad on corrugated: 0.82 static / 0.76 kinetic [P Park 2019]
-    bare_friction: 0.35
+    bare_friction: 0.30
+    bare_friction_pa12: 0.35
     zd_modulus_MPa: 7.5         # 5-8 [E]; single wall 5.6 MPa [P arXiv 2507.02189]
     allow_pressure_kPa: 320     # first yield 322-338 [P KTU]; FCT 276-414 [V]
     bending_stiffness_Nm: 0.7   # MD/CD 1.61/0.81 [P SCAN-P 65]; 1.87/0.60 [P Garbowski]
@@ -112,7 +122,8 @@ materials:
     caliper_mm: 3.0             # 2.8-3.2 [V/P]
     grammage_gsm: 420           # 338-495 [V/P]
     friction: 0.76
-    bare_friction: 0.35
+    bare_friction: 0.30
+    bare_friction_pa12: 0.35
     zd_modulus_MPa: 5.0         # 4-6 [E]
     allow_pressure_kPa: 90      # first yield 90-140 [P KTU]; FCT 172-276 [V]
     bending_stiffness_Nm: 3.1   # MD/CD 5.6/3.1 [P TAPPI T 836, 32 ECT B]
@@ -122,7 +133,8 @@ materials:
     caliper_mm: 3.9             # 3.6-4.1 [P]
     grammage_gsm: 520           # 438-594 [S/P]
     friction: 0.76
-    bare_friction: 0.35
+    bare_friction: 0.30
+    bare_friction_pa12: 0.35
     zd_modulus_MPa: 4.0         # secant to first yield ~150 kPa at 0.15 mm over 4 mm [E]; 3-6
     allow_pressure_kPa: 105     # first yield 105-141 [P KTU]; FCT 124-207 [V]
     bending_stiffness_Nm: 5.9   # MD/CD 11.3/5.9 (32 ECT) [P TAPPI T 836]
@@ -132,7 +144,8 @@ materials:
     caliper_mm: 6.8             # 6.5-7.1 [V/P]
     grammage_gsm: 680           # 558-803 [V/P]
     friction: 0.76
-    bare_friction: 0.35
+    bare_friction: 0.30
+    bare_friction_pa12: 0.35
     zd_modulus_MPa: 4.0         # 3-5 [E]
     allow_pressure_kPa: 100     # first yield ~100-200 [E]; FCT is not defined for double wall (ISO 3035)
     bending_stiffness_Nm: 14.8  # MD/CD 19.9/14.8 [P SCAN-P 65]; 17.8/13.4 [P Garbowski]

@@ -41,7 +41,12 @@ class Material:
     bending_strength: float = 0.0  # N*m/m: bending moment per width that creases the board
     shear_friction_note: str = ""
     sources: tuple[str, ...] = ()
-    bare_friction: float = 0.3  # bare printed finger on this surface
+    bare_friction: float = 0.3  # bare finger on this surface, in the selected finger material
+    printed_friction: float | None = None  # bare printed PA12 on this surface: the printed hub's, whatever the fingers
+
+    @property
+    def printed(self) -> float:
+        return self.bare_friction if self.printed_friction is None else self.printed_friction
 
 
 @dataclass(frozen=True)
@@ -138,7 +143,18 @@ def _material(name: str, e: Mapping[str, Any]) -> Material:
         bending_strength=float(e.get("bending_strength_Nm_per_m", 0.0)),
         sources=tuple(e.get("sources", []) or []),
         bare_friction=float(e.get("bare_friction", 0.3)),
+        printed_friction=float(e["bare_friction_pa12"]) if "bare_friction_pa12" in e else None,
     )
+
+
+def with_finger(lib: ObjectLibrary, finger: str) -> ObjectLibrary:
+    """The library seen by fingers of `finger`'s material: the PA12 baseline swaps each bare friction for printed PA12's."""
+    if finger != "pa12":
+        return lib
+    mats = {k: replace(m, bare_friction=m.printed) for k, m in lib.materials.items()}
+    objects = [replace(o, material=mats.get(o.material.name, replace(o.material, bare_friction=o.material.printed)))
+               for o in lib.objects]
+    return ObjectLibrary(objects=objects, materials=mats, source=lib.source, meta=lib.meta)
 
 
 def _given(e: Mapping[str, Any], key: str) -> float | None:

@@ -84,9 +84,19 @@ class JawSide:
     outline: Any  # shapely: body plus pads, for drawing and table/hub checks
     widths: list[tuple[float, float]] | None
     default_width: float
+    parts: list | None = None  # the spec's comb parts (outline.LayerPart), finger-local
 
     def width_at(self, u: float) -> float:
         return width_at(self.widths, u) if self.widths else self.default_width
+
+    def layers_at(self, u: float, v: float) -> frozenset[str]:
+        """The layers of the part nearest a finger-local point, as `_part_rule` finds it; both off a comb."""
+        best, layers = 0.6, LAYERS
+        for p in self.parts or ():
+            d = p.poly.distance(Point(u, v))
+            if d < best - 1e-6:
+                best, layers = d, p.layers
+        return layers
 
     @property
     def grip_faces(self) -> list[Face]:
@@ -277,7 +287,7 @@ def jaw_from_spec(g: SpecGripper, marks: Mapping[str, Any] | None = None, torque
         bare_marked = [f for f in faces if f.kind == "marked"]
         outline = unary_union([sf.body] + [SPolygon(p.outline()) for p in sf.pads])
         sides[side] = JawSide(side, faces, _cut_back(body, bare_all), _cut_back(body, bare_marked), outline,
-                              list(sf.widths) if sf.widths else None, sf.width_at(60.0))
+                              list(sf.widths) if sf.widths else None, sf.width_at(60.0), list(sf.parts))
     tau = float(v.get("finger_torque", 3.0)) if torque is None else torque
     brakes = tuple(sorted({REFERENCE_BRAKE, *[float(b) for b in spec.brake_ratings()]}))
     notes = list(dict.fromkeys(g.right.merged + g.left.merged))

@@ -42,6 +42,8 @@ from .mj1 import BAD_STATE, DROP, GRIP, OBJ, TABLE, _Builder, _fmt, _min_jerk, _
 from .objects import G, GraspObject
 from .scenario import Scenario
 from .screen1 import Limits, _band_min, _geometry, _view
+from .sensor import Wrench, layer_depth
+from .sensor import config as sensor_config
 
 # a neighbour or the case wall; the next box out, which stops a neighbour; the fingers' rigid tip hulls; the target
 # while the tips enter, when it touches only the shelf (only while both fingers' lowest `entry` mm clear its faces,
@@ -290,6 +292,9 @@ def simulate_t3(jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, gap: float |
         o_xml, o_names = _outline_xml(jaw, side, nm, mu_drag, b.assets, hull)
         xml += o_xml
         outlines += o_names
+        for gname in o_names:
+            cu, cv = float(hull.centroid.x), float(hull.centroid.y)
+            b.geom_depth[gname] = layer_depth(b1, jaw.sides[side], cu, cv, jaw.sides[side].width_at(cu))
         m_f, I_f = max(m_f, 1e-3), max(mom, 1e-6)
         fingers.append(
             f'<body name="finger{nm}" pos="{_fmt((side * jaw.pivot_x * 1e-3, 0, 0))}" gravcomp="1">'
@@ -441,6 +446,18 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
     kp, kv = float(model.actuator_gainprm[0, 0]), float(-model.actuator_biasprm[0, 2])
     dt = model.opt.timestep
     every = 4 * b.substeps
+    # Rev 2.34: the wrist sensor over the whole jaw. T3's whole window runs from the descent, since the entry is its
+    # load case, to the power cut; the final hold's mean is over the hold's last 1 s before the cut.
+    wrench = Wrench(model, b1, "base", b.geom_depth, every * dt)
+    hold_s = float(sensor_config(b1).get("hold_s", 1.0))
+
+    def phase_at(t: float) -> str:
+        for name, end in (("descend", t_desc), ("entry", t_close0), ("close", t_close), ("settle", t_settle),
+                          ("lift", t_lift), ("hold", t_cut)):
+            if t < end:
+                return name
+        return "cut"
+
     box_H = H
     fill_rel = -box.headspace
     band = lim.band_mm * 1e-3
@@ -566,6 +583,7 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
             continue
         t = data.time
         F, pf, body = measure()
+        wrench.sample(model, data, t, phase_at(t), t < t_cut, t_cut - hold_s <= t < t_cut)
         zn = zones(F)
         for s in nb_body:
             c = corner(s)
@@ -641,6 +659,7 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
             dropped = "lift" if t < t_lift else "hold"
             break
 
+    row.update(wrench.readings())
     row.update({"ok": not unstable and ref is not None, "elements": n_el, "substeps": b.substeps, "reset_flag": bool(unstable),
                 "close_s": t_close - t_close0, "contact_angle_deg": math.degrees(first_touch - jaw.phi_meet)
                 if math.isfinite(first_touch) else math.nan})
