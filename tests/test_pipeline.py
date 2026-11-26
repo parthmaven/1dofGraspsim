@@ -833,6 +833,44 @@ def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
     assert not any(x["rated"] for x in jobs) and {x["rated"] for x in batch1.block_t5_cut()} == {True, False}
 
 
+def test_t3_tips_enter_the_gap_and_hold(batch1):
+    from graspsim2d.t3 import entry_check, simulate_t3
+
+    c = batch1.ctx()
+    box = batch1.get_obj("gm_cheerios_family_18oz", "catalog")
+    j = batch1.get_jaw("S2", 45.0)
+    g = entry_check(j, box.thickness * 1e3, 1.3, 15.0)
+    # SR's toed-in chisels: on Family Size the tips sweep 2.02 - 2.06 mm, a 0.7 - 0.8 mm push at the 1.3 mm gap.
+    assert g["ok"] and 2.0 < g["sweep_R_mm"] < 2.1 and 0.7 < g["push_need_R_mm"] < 0.8
+    assert g["capture_lo_mm"] < 0.0 < g["capture_hi_mm"] < 0.5
+    # A tip 3 mm off, or at a closed gap, lands on a box top: the entry fails without a MuJoCo run.
+    for kw in ({"lateral": 3.0}, {"gap": 0.0}):
+        r = simulate_t3(j, box, c["sc"], c["b1"], **kw)
+        assert r["landed"] and not r["passed"] and r["limiting"] == "entry" and "elements" not in r
+        assert r["cam_radius_R_mm"] > 1.0
+    # The shoulder 15.5 mm up S2's tips is a depth stop over the target's top, so 20 mm is out of reach.
+    r = simulate_t3(j, box, c["sc"], c["b1"], entry=20.0)
+    assert not r["passed"] and r["limiting"] == "entry" and 15.0 < r["depth_stop_R_mm"] < 16.0 and "elements" not in r
+    assert math.isnan(g["depth_stop_R_mm"])
+    r = simulate_t3(j, box, c["sc"], c["b1"], friction_scale=0.8, drag_scale=1.2, power_s=0.2)
+    assert r["ok"] and not r["reset_flag"] and not r["stalled"]
+    assert r["entry_reached_mm"] == pytest.approx(15.0, abs=0.05)
+    # The neighbours tip out of the way: the push matches the geometry, under 5 N on the 5 ms average.
+    for s in "RL":
+        assert r[f"push_{s}_mm"] == pytest.approx(g[f"push_need_{s}_mm"], abs=0.15)
+        assert r[f"push_{s}_N"] < 5.0 and r[f"drag_{s}_mm"] < 0.5
+    assert r["passed"] and r["pass_rule"].startswith("entry depth, then push") and r["slip_mm"] < 0.5
+    assert r["band_N"] > 10.0 and r["power_cut_held"] and 0.0 <= r["brake_use_Nm"] <= 30.0
+
+    jobs = batch1.block_t3()
+    assert len(jobs) == len({batch1._job_key(x) for x in jobs})
+    assert {x["case"] for x in jobs if x["design"] == "S2"} == {
+        "nominal", "friction x0.8", "corner +3 mm", "gap 0 mm", "gap 3 mm", "entry 20 mm", "case wall L"}
+    assert {"corner -3 mm", "case wall R"} <= {x["case"] for x in jobs if x["design"] == "S4"}
+    row = batch1.run_job({**next(x for x in jobs if x["design"] == "S2" and x["case"] == "gap 0 mm")})
+    assert row["kind"] == "mujoco" and row["landed"] and row["gap_mm"] == 0.0 and row["passed"] is False
+
+
 def test_batch1_t5_cut_block_runs_revision_2_18(batch1):
     jobs = batch1.block_t5_cut()
     assert len(jobs) == len({batch1._job_key(j) for j in jobs}) == 40

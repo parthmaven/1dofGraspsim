@@ -228,9 +228,29 @@ def job_t5(job: dict[str, Any]) -> dict[str, Any]:
     return {**out, **_torque_flag(j)}
 
 
+def job_t3(job: dict[str, Any]) -> dict[str, Any]:
+    """One T3 run, tips between boxes. A job's `depth_mm` is the entry depth below the box tops."""
+    from .t3 import simulate_t3
+    c = ctx()
+    j = get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))
+    b1 = {**c["b1"], **job.get("b1_over", {})}
+    o = get_obj(job["object"], job.get("fill", "catalog"), job.get("library", "b1"))
+    t0 = time.time()
+    r = simulate_t3(j, o, c["sc"], b1, gap=job.get("gap_mm"), entry=job.get("depth_mm"), lateral=job.get("lateral_mm", 0.0),
+                    friction_scale=job.get("friction_scale", 1.0), drag_scale=job.get("drag_scale", 1.0),
+                    wall_side=job.get("wall_side", 0), brake=job.get("brake", 30.0), power_s=job.get("power_s"))
+    out = {**job, "kind": "mujoco", "seconds": round(time.time() - t0, 1)}
+    for k, v in r.items():
+        if k == "margins":
+            out.update(_flat("m_", v))
+        elif k != "trace" and out.get(k) is None:
+            out[k] = v
+    return {**out, **_torque_flag(j)}
+
+
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
     try:
-        f = {"scan": job_scan, "sheet_screen": job_sheet_screen, "mj": job_mj, "t5": job_t5}[job["job"]]
+        f = {"scan": job_scan, "sheet_screen": job_sheet_screen, "mj": job_mj, "t5": job_t5, "t3": job_t3}[job["job"]]
         return _clean(f(job))
     except Exception as e:  # noqa: BLE001 - a failed job is a row, not a dead batch
         import traceback
@@ -525,9 +545,42 @@ def block_t5_tips() -> list[dict[str, Any]]:
     return t5_jobs(False)
 
 
+def block_t3() -> list[dict[str, Any]]:
+    """T3, tips between boxes, per design and reading: nominal and friction x0.8 (drag x1.2) at the full-case gap
+    and the 15 mm entry; then, at nominal friction, the +-3 mm placement corners, the 0 and 3 mm gaps, the 20 mm
+    entry and the first box out against the case wall. An asymmetric pair takes both corners and the wall on each
+    side. Only the nominal run holds its power cut the full 5 s."""
+    b1 = ctx()["b1"]
+    cfg = b1["t3"]
+    place = float(b1.get("placement_mm", 3.0))
+    base = dict(job="t3", test="T3", object=cfg["box"], fill=cfg.get("fill", "catalog"), depth_mm=float(cfg["entry_mm"]),
+                gap_mm=float(cfg["gap_mm"]), lateral_mm=0.0)
+    jobs = []
+    for d, readings in cfg["designs"].items():
+        for reading in readings:
+            reading = float(reading)
+            sides = (1,) if get_jaw(d, reading).symmetric else (1, -1)
+
+            def add(case: str, **kw: Any) -> None:
+                jobs.append(_base("t3", d, reading, **{**base, "case": case, **kw}))
+
+            add("nominal")
+            add("friction x0.8", friction_scale=float(b1.get("robust_friction", 0.8)),
+                drag_scale=float(cfg.get("robust_drag", 1.2)), power_s=1.0)
+            for s in sides:
+                add(f"corner {'+' if s > 0 else '-'}{place:g} mm", lateral_mm=s * place, power_s=1.0)
+            for g in cfg["gap_sensitivities_mm"]:
+                add(f"gap {float(g):g} mm", gap_mm=float(g), power_s=1.0)
+            e = float(cfg["entry_sensitivity_mm"])
+            add(f"entry {e:g} mm", depth_mm=e, power_s=1.0)
+            for s in sides:
+                add(f"case wall {'L' if s > 0 else 'R'}", wall_side=-s, power_s=1.0)
+    return jobs
+
+
 BLOCKS = {"refs": block_refs, "s2": block_s2, "s5": block_s5, "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6,
           "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose, "t5cut": block_t5_cut,
-          "t5": block_t5, "t5tips": block_t5_tips}
+          "t5": block_t5, "t5tips": block_t5_tips, "t3": block_t3}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:

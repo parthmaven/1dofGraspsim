@@ -250,3 +250,33 @@ batch1:
       stop_held_cases: [[2ft, null], [3ft, null]]
       nobrake_case: 2ft
       shake_sensitivity: {case: 2ft, g: 0.5}
+  # T3, tips between boxes (test conditions rev 2.21): Cheerios Family Size for the target and both neighbours,
+  # face to face on the shelf along the jaw axis. No shake at either level. Each design runs at its 45 deg reading.
+  # The boxes' top edges are square; a tip that lands on one reports the edge radius that would cam it in.
+  t3:
+    box: gm_cheerios_family_18oz
+    fill: catalog
+    gap_mm: 1.3                   # a full case, at the top edge
+    gap_sensitivities_mm: [0.0, 3.0]  # touching at the top edge; a partly emptied case
+    blocked_after_mm: 1.3         # a neighbour slides one more gap before the next box stops it
+    entry_mm: 15.0                # the tips reach this far below the box tops
+    entry_sensitivity_mm: 20.0
+    clear_mm: 3.0                 # the tips start this far above the box tops
+    descend_m_s: 0.05
+    entry_settle_s: 0.1
+    lift_mm: 50.0
+    hold_s: 1.0
+    jaw_servo_Nm_rad: 2.0e4       # the jaw holds its entry opening on its servo, up to the drive's peak, until it closes
+    shelf_friction: 0.35          # a neighbour on the shelf
+    carton_friction: 0.4          # carton on carton: the target against a neighbour or the case wall
+    drag_friction: 0.5            # the tips sliding in between boxes; the robust run takes x1.2
+    robust_drag: 1.2
+    push_limit_mm: 3.0            # entry, per neighbour, measured at its top edge
+    push_limit_N: 5.0             # the neighbours only: a mark inside the shipping case does no harm
+    push_average_s: 0.005         # the push force is scored, and the descent stops on it, as a 5 ms average
+    # A neighbour's top edge dents under a tip: the tip meets it through a critically damped contact at this time
+    # constant (about 50 N/mm at the corner), against MuJoCo's stiff default, on which a free box chatters.
+    edge_contact_tc_s: 0.002
+    drag_limit_mm: 2.0
+    case_wall: {flex_mm: 5.0, at_N: 20.0, thickness_mm: 4.0, mass_kg: 0.05}   # the first box out
+    designs: {P0: [45], S1: [45], S2: [45], S3: [45], S4: [45], S5: [45], S6: [45]}
