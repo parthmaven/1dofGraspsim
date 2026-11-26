@@ -376,8 +376,23 @@ def block_pr2() -> list[dict[str, Any]]:
     return jobs
 
 
+def block_pr2_depths() -> list[dict[str, Any]]:
+    """PR #2's four 13-of-14 designs in MuJoCo at PR #2's own insertion depth on each box, scored by batch 1:
+    separates the batch-1 scan's depth choice from its limits."""
+    lib = fp_library()
+    boxes = [o.id for o in lib.objects if o.kind == "box"]
+    jobs = []
+    for k, v in pr2_designs().items():
+        for b in boxes:
+            jobs.append({"block": "pr2depth", "design": f"pr2 {k}", "reading": float(v["reading"]), "job": "mj", "test": "T1",
+                         "object": b, "fill": "catalog", "library": "fp", "case": "PR #2 depth",
+                         "depth_mm": float(v["pr2"]["per_object"][b]["insertion_mm"]), "lateral_mm": 0.0, "stops": [],
+                         "power_s": 0.5, "nobrake": False})
+    return jobs
+
+
 BLOCKS = {"refs": block_refs, "s2": block_s2, "s5": block_s5, "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6,
-          "pr2": block_pr2}
+          "pr2": block_pr2, "pr2depth": block_pr2_depths}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:
