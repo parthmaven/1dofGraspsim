@@ -28,7 +28,17 @@ jobs:
           graspsim2d screen baseline_paddle --out runs/ci/screen
           graspsim2d simulate baseline_paddle --objects mini_1oz,b_flute_3mm --out runs/ci/simulate
           graspsim2d sweep baseline_paddle --vary finger_torque=1:9:5 --out runs/ci/sweep
-          graspsim2d search --quick --out runs/ci/search
+      - name: Quick search on four objects
+        run: |
+          python - <<'EOF'
+          import pathlib, yaml
+          raw = yaml.safe_load(open("config/objects.yaml"))
+          raw["enabled"] = ["mini_1oz", "hbo_28oz", "chipboard_0p5mm", "b_flute_3mm"]
+          raw["box_tables"] = [dict(t, file=str(pathlib.Path("config", t["file"]).resolve())) for t in raw.get("box_tables") or []]
+          pathlib.Path("runs/ci").mkdir(parents=True, exist_ok=True)
+          yaml.safe_dump(raw, open("runs/ci/objects_small.yaml", "w"))
+          EOF
+          graspsim2d --objects runs/ci/objects_small.yaml search --quick --out runs/ci/search
       - uses: actions/upload-artifact@v4
         if: always()
         with:

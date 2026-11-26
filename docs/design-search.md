@@ -71,8 +71,8 @@ box are allowed and flagged. `sweep` runs at analytic fidelity unless
 `--design-space FILE`, `--objects FILE`, `--scenario FILE`, `--concepts FILE`
 and `--search FILE` override single files.
 
-The full search with the shipped budget (2 rounds) takes roughly 15 to 30
-minutes on 8 cores.
+The full search with the shipped budget (2 rounds) takes about 15 minutes on
+8 cores.
 
 ## Configuration
 
@@ -343,8 +343,10 @@ Each round:
    screen's friction hold margin is corrected with the share of the available
    friction the pads use in MuJoCo instead. Sheet bending is the clearest case
    for corrections: with the default shake, 1.5 mm chipboard (first bending
-   mode near 2 to 3 Hz) sees about 2.3 times the rigid-sheet crease moment,
-   0.5 mm chipboard about 0.3 times, and corrugated sheets about 1 to 1.1 times.
+   mode near 2 to 3 Hz) sees about 3 times the rigid-sheet crease moment (2.9
+   to 4.1 across the simulated designs), 0.5 mm chipboard about 0.3 times, and
+   corrugated sheets about 1.0 to 1.3 times (medians; more on some pad
+   layouts).
 
 The best all-rounder is the finalist that passes the most objects in the
 dynamic check (ties go to the higher dynamic J). The best design per object is
