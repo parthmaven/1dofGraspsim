@@ -820,6 +820,17 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
     assert r["hub_peak_from"] == "stop" and 0.0 <= r["A_hub_peak_5ms_after_s"] <= 5.0
     assert r["A_hub_stop_peak_N"] >= r["A_hub_peak_5ms_N"] >= r["A_hub_sustained_N"] > 0.0 and r["A_hub_peak_5ms_out_N"] > 0.0
     assert r["B_hub_sustained_N"] > 0.0
+    # Revision 2.31's window: from the end of the close to the power cut, through every phase, as the largest 5 ms average.
+    assert r["contact_average_s"] == pytest.approx(0.005, abs=0.0005)
+    phases = {"squeeze", "settle", "lift", "hold", "shake", "final", "stop", "power"}
+    for g in "AB":
+        for part in ("out", "thumb"):
+            assert r[f"{g}_{part}_window_peak_N"] >= r[f"{g}_{part}_5ms_N"] >= r[f"{g}_{part}_N_hold"] > 0.0
+            assert r[f"{g}_{part}_5ms_phase"] in phases and r[f"{g}_{part}_window_peak_phase"] in phases
+            assert r[f"{g}_{part}_5ms_face"] and 0.0 < r[f"{g}_{part}_5ms_face_N"] <= r[f"{g}_{part}_5ms_N"] + 1e-6
+            assert 0.0 <= r[f"{g}_{part}_5ms_face_res_frac"] <= 1.0
+        assert r[f"{g}_window_peak_Nm"] >= r[f"{g}_window_5ms_Nm"] > 0.0
+        assert r[f"{g}_window_5ms_Nm_phase"] in phases
 
 
 def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
