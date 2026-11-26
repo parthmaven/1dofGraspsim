@@ -252,8 +252,12 @@ def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str,
         deep = min(deep, float(scan["stop_mm"]))
     deep = min(deep, table)
     out = [{**keep, "job": "mj", "test": "T1", "case": "nominal", "depth_mm": d, "lateral_mm": 0.0}]
+    x08 = {**keep, "job": "mj", "test": "T1", "case": "friction x0.8", "depth_mm": d, "lateral_mm": 0.0,
+           "friction_scale": float(c["b1"].get("robust_friction", 0.8)), "power_s": 1.0}
     if scan.get("nominal_only"):
         return out
+    if scan.get("x08_only"):
+        return out + [x08]
     sides = (place,) if symmetric else (place, -place)
     for s in sides:
         out.append({**keep, "job": "mj", "test": "T1", "case": f"corner deep{'+' if s > 0 else '-'}", "depth_mm": deep,
@@ -261,8 +265,7 @@ def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str,
         out.append({**keep, "job": "mj", "test": "T1", "case": f"corner shallow{'+' if s > 0 else '-'}",
                     "depth_mm": max(d - place, place), "lateral_mm": s, "power_s": 1.0})
     if scan["fill"] == "catalog":
-        out.append({**keep, "job": "mj", "test": "T1", "case": "friction x0.8", "depth_mm": d, "lateral_mm": 0.0,
-                    "friction_scale": float(c["b1"].get("robust_friction", 0.8)), "power_s": 1.0})
+        out.append(x08)
         for case, over in scan.get("sens") or []:
             out.append({**keep, "job": "mj", "test": "T1", "case": case, "depth_mm": d, "lateral_mm": 0.0, "power_s": 1.0,
                         **over})
@@ -394,8 +397,21 @@ def block_pr2_depths() -> list[dict[str, Any]]:
     return jobs
 
 
+FAMILY_SIZE = "gm_cheerios_family_18oz"
+
+
+def block_fs_loose() -> list[dict[str, Any]]:
+    """Family Size at loose fill, the one loose-fill box the test conditions' Fill row names, with its friction
+    x0.8 run, for every T1 design and length on its own block's settings."""
+    jobs = []
+    for block in (block_refs, block_s2, block_s5, block_s3_sheets_platform, block_s1_s6):
+        jobs += [{**j, "block": "fsloose", "x08_only": True} for j in block()
+                 if j["job"] == "scan" and j["object"] == FAMILY_SIZE and j["fill"] == "loose"]
+    return jobs
+
+
 BLOCKS = {"refs": block_refs, "s2": block_s2, "s5": block_s5, "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6,
-          "pr2": block_pr2, "pr2depth": block_pr2_depths}
+          "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:

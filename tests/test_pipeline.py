@@ -616,6 +616,16 @@ def test_batch1_rescore_uses_the_first_pass_objects(batch1):
     assert [f["case"] for f in batch1.t1_followups(scan)] == ["nominal"]
 
 
+def test_batch1_family_size_loose_runs_its_x08(batch1):
+    jobs = batch1.block_fs_loose()
+    lengths = {(j["design"], j.get("reach_cap")) for j in jobs}
+    assert len(jobs) == len(lengths) == 10 and {("S2", None), ("S2", 170.0), ("S5", 170.0)} <= lengths
+    assert all(j["fill"] == "loose" and j["object"] == batch1.FAMILY_SIZE and j["x08_only"] for j in jobs)
+    scan = {**jobs[0], "simulate": True, "depth_mm": 30.0, "table_cap_mm": 200.0, "stop_mm": None}
+    follow = batch1.t1_followups(scan)
+    assert [f["case"] for f in follow] == ["nominal", "friction x0.8"] and follow[1]["fill"] == "loose"
+
+
 def test_batch1_mount_flag_includes_the_limit(batch1):
     assert batch1.ctx()["b1"]["mount_fatigue_Nm_per_finger"] == pytest.approx(3.9)  # test conditions 2.16
     j = batch1.get_jaw("S3", 45.0)
