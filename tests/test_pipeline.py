@@ -110,19 +110,22 @@ def test_diverging_box_and_converging_sheet(setup):
     assert sheet.info["phi_deg"] < 0.0
 
 
-def test_baseline_matches_parths_cad(setup):
+def test_baseline_matches_the_platform_finger(setup):
     space, concepts, _, sc = setup
     d = concepts["baseline_paddle"].make(space)
     f = build_finger(d, sc.keep_out, sc.closed_limit)
     assert f.feasible, f.issues
     paddle, tab = f.pads
-    assert (paddle.width, tab.width) == (118.0, 21.0)
+    assert (paddle.width, tab.width) == (95.0, 16.0)
     assert paddle.face_u - paddle.length / 2 == pytest.approx(49.9)
     assert tab.face_u + tab.length / 2 == pytest.approx(d.finger_reach)
-    # CAD: faces parallel and 2.4 mm apart when closed
+    assert tab.face_u - tab.length / 2 == pytest.approx(129.5)  # the arm's recessed notch ends here
+    # CAD: faces parallel and about 2.5 mm apart when closed
     assert d.pivot_spacing - 2 * paddle.face_v == pytest.approx(2.4)
     assert tab.face_v == pytest.approx(paddle.face_v)
     assert 5.0 <= f.ligament < d.finger_thickness and f.cut_body
+    # clears the hub by the CAD's 0.86 mm gap over the whole stroke
+    assert f.hub_clearance == pytest.approx(sc.keep_out.clearance, abs=0.01)
 
 
 def test_keep_out_rejects_pads_in_the_bracket_and_limits_insertion(setup):
@@ -130,7 +133,7 @@ def test_keep_out_rejects_pads_in_the_bracket_and_limits_insertion(setup):
     c = concepts["baseline_paddle"]
     i = c.active.index("pad_length")
     x = list(c.to_vector(c.make(space)))
-    x[i] = 70.0  # paddle would start 28 mm from the pivot line, inside the bracket lobe
+    x[i] = 70.0  # paddle would start 31.5 mm from the pivot line, inside the bracket hub
     f = build_finger(c.make(space, x), sc.keep_out, sc.closed_limit)
     assert not f.feasible and any("keep-out" in s for s in f.issues)
     assert build_finger(c.make(space, x)).feasible  # fine without the bracket
@@ -148,7 +151,7 @@ def test_contact_width_is_capped_by_the_object(setup):
     f = build_finger(concepts["baseline_paddle"].make(space), sc.keep_out, sc.closed_limit)
     mini, cheerios = lib.by_id("mini_1oz"), lib.by_id("cheerios_8p9oz")
     assert _pad_models(f, mini)[0].w == pytest.approx(mini.width)
-    assert _pad_models(f, cheerios)[0].w == pytest.approx(0.118)
+    assert _pad_models(f, cheerios)[0].w == pytest.approx(0.095)
 
 
 def test_fingers_are_geared_one_to_one(setup):

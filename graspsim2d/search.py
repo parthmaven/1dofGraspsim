@@ -415,6 +415,7 @@ class SearchRun:
             table.setdefault(r["design_name"], {})[r["object_id"]] = r
         designs = []
         for f in finalists:
+            fz = build_finger(GripperDesign.from_dict(f["design"]), self.sc.keep_out, self.sc.closed_limit)
             row = table.get(f["name"], {})
             n_pass = sum(1 for o in ids if row.get(o, {}).get("passed"))
             worst = min((min(row[o]["score"], 2.0) if row.get(o, {}).get("passed") else 0.0) for o in ids) if row else 0.0
@@ -430,6 +431,9 @@ class SearchRun:
                     "sim_pass": n_pass,
                     "sim_J": objective_from_scores(sim_scores, self.cfg.min_margin_weight),
                     "sim_worst": worst,
+                    "hub_clearance_mm": _finite(fz.hub_clearance),
+                    "hub_clearance_phi_deg": _finite(fz.hub_clearance_phi),
+                    "ligament_mm": _finite(fz.ligament),
                     "results": {o: _slim(row.get(o)) for o in ids},
                 }
             )
@@ -500,6 +504,10 @@ def _distinct(evals: list[dict[str, Any]], k: int, bounds: list[tuple[float, flo
         if len(picked) >= k:
             break
     return picked
+
+
+def _finite(x: float) -> float | None:
+    return float(x) if math.isfinite(x) else None
 
 
 def _slim(r: dict[str, Any] | None) -> dict[str, Any] | None:

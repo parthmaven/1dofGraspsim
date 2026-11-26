@@ -50,23 +50,25 @@ class VariableDef:
 
 
 # Every variable the geometry generator reads. Nominals describe the baseline,
-# Parth's CAD finger (UMI6 paddles, parallel when closed): pivots 38 mm apart
-# and geared 1:1, tip 150 mm forward of the pivots, a flat face parallel to the
-# finger and 17.8 mm inboard of its pivot (2.4 mm gap when closed), wide from
-# 49.9 to 98.8 mm forward of the pivot line (about 118 mm mean projected width),
-# then a 21 mm tab carrying the same face to the tip.
+# the platform finger (Finger, Left, MV-UMI01-3DP-001 A): pivots 38 mm apart and
+# geared 1:1, tip 150 mm forward of the pivot line, a flat face parallel to the
+# finger and 17.75 mm inboard of its pivot (2.5 mm gap when closed). The face
+# is wide from 49.9 mm (the bracket notch) to 101.5 mm forward of the pivot line
+# (119 mm out of plane to 88 mm, then the 27 mm arm edge: 95 mm mean), recessed
+# from 101.5 to 129.5 mm, and 16 mm wide (mean) from there to the tip.
 SCHEMA: tuple[VariableDef, ...] = (
     VariableDef("pivot_spacing", "mm", 38.0, "Distance between the two finger pivot axes."),
     VariableDef("finger_reach", "mm", 150.0, "Fingertip distance forward of the pivot line, fingers parallel."),
     VariableDef("finger_thickness", "mm", 21.6, "In-plane depth of the finger beam."),
     VariableDef("crank_offset", "mm", 0.0, "Inward offset of the distal finger section (0 = straight finger)."),
     VariableDef("crank_position", "1", 0.45, "Where the crank starts, as a fraction of the reach from the pivot."),
-    VariableDef("pad_length", "mm", 48.9, "Length of the (distal) pad face along the finger; the paddle for the paddle style."),
+    VariableDef("pad_length", "mm", 51.6, "Length of the (distal) pad face along the finger; the paddle for the paddle style."),
     VariableDef("pad_thickness", "mm", 6.0, "Elastomer pad thickness (at the crown apex for crowned pads)."),
     VariableDef("pad_angle", "deg", 0.0, "Pad face angle to the finger axis; + makes the distal end stand further inward."),
-    VariableDef("pad_tip_margin", "mm", 51.2, "Distance from the fingertip to the distal end of the pad (paddle style: tab length plus a 2 mm gap)."),
-    VariableDef("pad_width", "mm", 118.0, "Out-of-plane width of the pad and finger (the 2D extrusion width); contact is capped at the object's width."),
-    VariableDef("tab_width", "mm", 21.0, "Paddle style only: out-of-plane width of the tab that carries the paddle face on to the fingertip (0 = no tab)."),
+    VariableDef("pad_tip_margin", "mm", 48.5, "Distance from the fingertip to the distal end of the pad (paddle style: the notch plus the tab)."),
+    VariableDef("pad_width", "mm", 95.0, "Out-of-plane width of the pad and finger (the 2D extrusion width); contact is capped at the object's width."),
+    VariableDef("tab_width", "mm", 16.0, "Paddle style only: out-of-plane width of the tab that carries the paddle face on to the fingertip (0 = no tab)."),
+    VariableDef("tab_gap", "mm", 28.0, "Paddle style only: length of the recessed notch between the paddle and the tab (28 mm on the platform finger, 2 mm on the earlier UMI6 revision)."),
     VariableDef("pad_shore", "shoreA", 40.0, "Pad hardness; sets the elastomer modulus (Gent 1958)."),
     VariableDef("pad_crown_curvature", "1/m", 0.0, "Pad face curvature 1/R (0 = flat; 10 = 100 mm radius)."),
     VariableDef("finger_torque", "N*m", 5.0, "Drive torque at each finger pivot (torque-limited, backdrivable)."),
@@ -83,7 +85,7 @@ SCHEMA: tuple[VariableDef, ...] = (
 SCHEMA_BY_NAME: dict[str, VariableDef] = {v.name: v for v in SCHEMA}
 PAD_STYLES = ("flat", "crowned", "dual", "pivoting", "paddle")
 # Values for variables added after a design was saved, so older results still load.
-_LEGACY_DEFAULTS: dict[str, float] = {"tab_width": 0.0}
+_LEGACY_DEFAULTS: dict[str, float] = {"tab_width": 0.0, "tab_gap": 2.0}
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,7 @@ class GripperDesign:
     pad_tip_margin: float
     pad_width: float
     tab_width: float
+    tab_gap: float
     pad_shore: float
     pad_crown_curvature: float
     finger_torque: float

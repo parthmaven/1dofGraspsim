@@ -19,7 +19,7 @@ import math
 from dataclasses import dataclass, field, replace
 
 import numpy as np
-from shapely.geometry import LineString, MultiPolygon
+from shapely.geometry import LineString, MultiPolygon, Point
 from shapely.geometry import Polygon as SPolygon
 from shapely.ops import unary_union
 
@@ -27,8 +27,6 @@ from .schema import GripperDesign
 
 MOUNT_MIN = 1.0  # mm of rigid mount left under the thinnest point of a pad
 PAD_MIN_THICKNESS = 1.0  # mm of elastomer left at the ends of a crowned pad
-TAB_GAP = 2.0  # mm between the paddle and its tip tab (paddle style)
-
 
 @dataclass(frozen=True)
 class KeepOut:
@@ -179,9 +177,13 @@ class Finger:
     pads: tuple[Pad, ...]
     issues: tuple[str, ...] = field(default_factory=tuple)
     # Body outline after the keep-out cutout (finger-local polygons, for drawing),
-    # and the least finger material left beside the cutout (mm).
+    # the least finger material left beside the cutout (mm), and the least gap
+    # between the finger and the keep-out's own radius over the stroke (mm,
+    # negative if they overlap) with the opening angle where it occurs (deg).
     cut_body: tuple[np.ndarray, ...] = field(default_factory=tuple)
     ligament: float = math.inf
+    hub_clearance: float = math.inf
+    hub_clearance_phi: float = math.nan
 
     @property
     def pivot_x(self) -> float:
@@ -307,9 +309,10 @@ def _build_finger(d: GripperDesign) -> Finger:
             extra = math.radians(d.pivot_range)
         pads.append(place("pad", "all", u_end, d.pad_length, alpha, extra=extra, crown=crown, pivot=pivot))
     elif d.pad_style == "paddle":
-        # Paddle plus a narrower tab that continues the same face to the fingertip,
-        # both on one mount sized for the whole face line.
-        has_tab = d.tab_width > 1e-6 and d.pad_tip_margin > TAB_GAP + 2.0
+        # Paddle, then a recessed notch of tab_gap, then a narrower tab that
+        # continues the same face to the fingertip, all on one mount sized for
+        # the whole face line.
+        has_tab = d.tab_width > 1e-6 and d.pad_tip_margin > d.tab_gap + 2.0
         cos_a = max(math.cos(alpha), 1e-6)
         span = d.pad_length + ((L - u_end) / cos_a if has_tab else 0.0)
         line = place("paddle", "all", L if has_tab else u_end, span, alpha)
@@ -317,7 +320,7 @@ def _build_finger(d: GripperDesign) -> Finger:
         pc = p0 + (d.pad_length / 2) * line.tangent
         pads.append(replace(line, face_u=float(pc[0]), face_v=float(pc[1]), length=d.pad_length))
         if has_tab:
-            s0 = d.pad_length + TAB_GAP
+            s0 = d.pad_length + d.tab_gap
             tc = p0 + (s0 + (span - s0) / 2) * line.tangent
             pads.append(Pad("tab", "all", float(tc[0]), float(tc[1]), alpha, span - s0, t_p, d.tab_width, d.pad_shore))
     elif d.pad_style == "dual":
@@ -389,7 +392,7 @@ def swept_keep_out(f: Finger, ko: KeepOut, phi_lo: float, phi_hi: float, n: int 
     for x, z, r in ko.radii():
         for xm in {x, -x}:
             pts = np.vstack([to_local(np.array([[xm, z]]), ph, f.pivot_x) for ph in phis])
-            parts.append(LineString(pts).buffer(r, quad_segs=24))
+            parts.append(LineString(pts).buffer(r, quad_segs=64))
     return unary_union(parts)
 
 
@@ -429,4 +432,21 @@ def apply_keep_out(f: Finger, ko: KeepOut, closed_limit: float) -> Finger:
         for poly in (g.geoms if isinstance(g, MultiPolygon) else [g]):
             if not poly.is_empty and poly.area > 1e-6:
                 cut.append(np.asarray(poly.exterior.coords)[:-1])
-    return replace(f, issues=tuple(issues), cut_body=tuple(cut), ligament=ligament)
+    solid = unary_union([SPolygon(P) for P in cut] + [SPolygon(pad.outline()) for pad in f.pads])
+    clearance, phi_min = hub_clearance(f, ko, solid, phi_lo, math.radians(f.design.max_opening))
+    return replace(f, issues=tuple(issues), cut_body=tuple(cut), ligament=ligament,
+                   hub_clearance=clearance, hub_clearance_phi=phi_min)
+
+
+def hub_clearance(f: Finger, ko: KeepOut, solid, phi_lo: float, phi_hi: float, n: int = 145) -> tuple[float, float]:
+    """Least gap (mm) between the finger solid (finger-local shapely geometry) and the
+    keep-out circles at their own radius, over the stroke, and the angle (deg) where it occurs."""
+    best, best_phi = math.inf, math.nan
+    for ph in np.linspace(phi_lo, phi_hi, n):
+        for x, z, r in ko.circles:
+            for xm in {x, -x}:
+                c = to_local(np.array([[xm, z]]), ph, f.pivot_x)[0]
+                gap = solid.distance(Point(c)) - r
+                if gap < best:
+                    best, best_phi = gap, math.degrees(ph)
+    return float(best), float(best_phi)

@@ -150,6 +150,13 @@ def _report(result: dict, run, log) -> None:
         for o in ids:
             r = ref["results"][o]
             log(f"  {o:18s} {'PASS' if r['passed'] else 'FAIL'}  score {r['score']:.2f}  {r['reason']}")
+    rows = [d for d in result["designs"].values() if d.get("hub_clearance_mm") is not None]
+    if rows:
+        log("\nBracket hub clearance over the stroke (least gap, opening angle where it occurs):")
+        for d in sorted(rows, key=lambda d: d["name"]):
+            log(f"  {d['name']:9s} {d['concept']:16s} {d['hub_clearance_mm']:6.2f} mm at {d['hub_clearance_phi_deg']:6.2f} deg"
+                f"   ligament {d['ligament_mm']:.1f} mm" if d.get("ligament_mm") is not None else
+                f"  {d['name']:9s} {d['concept']:16s} {d['hub_clearance_mm']:6.2f} mm at {d['hub_clearance_phi_deg']:6.2f} deg   no cut needed")
 
 
 def make_figures(out: Path, paths: dict[str, str], log=print) -> list[Path]:

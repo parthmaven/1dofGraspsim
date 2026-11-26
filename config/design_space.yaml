@@ -1,10 +1,11 @@
 # Bounding box of design variables for the 2D 1-DoF two-finger gripper.
 #
-# PLACEHOLDER RANGES, centred on the baseline: Parth's finger
-# (UMI6_paddles_paralel_pockets_V01.stp). Its two pivots are 38 mm apart and
-# geared 1:1, the tip is 150 mm from the pivot line, and the flat face is
-# parallel to the other finger's when closed (2.4 mm gap): a paddle from 49.9
-# to 98.8 mm (about 118 mm wide out of plane), then a 21 mm wide tab to the tip.
+# PLACEHOLDER RANGES, centred on the baseline: the platform finger
+# (Finger, Left, MV-UMI01-3DP-001 A in gripper-umi-platform-v0.1). Its two
+# pivots are 38 mm apart and geared 1:1, the tip is 150 mm from the pivot line,
+# and the flat face is parallel to the other finger's when closed (2.5 mm gap):
+# wide from 49.9 mm (where it clears the bracket hub) to 101.5 mm (95 mm mean
+# out of plane), a 28 mm recessed notch, then a 16 mm wide tip to 150 mm.
 # Variables the CAD does not set (pad thickness and hardness, drive torque,
 # opening) keep generic ranges. To use Parth's own bounding box, edit the
 # ranges below and rerun; nothing else changes.
@@ -26,13 +27,16 @@ variables:
                         note: "baseline 21.6 puts the face 17.8 mm inboard of the pivot with a 6 mm pad"}
   crank_offset:       {range: [0, 24],    unit: mm,      nominal: 0,    placeholder: true}
   crank_position:     {range: [0.25, 0.6], unit: "1",    nominal: 0.45, placeholder: true}
-  pad_length:         {range: [20, 78],   unit: mm,      nominal: 48.9, placeholder: true}
+  pad_length:         {range: [25, 78],   unit: mm,      nominal: 51.6, placeholder: true}
   pad_thickness:      {range: [2, 12],    unit: mm,      nominal: 6,    placeholder: true}
   pad_angle:          {range: [-15, 15],  unit: deg,     nominal: 0,    placeholder: true}
-  pad_tip_margin:     {range: [0, 104],   unit: mm,      nominal: 51.2, placeholder: true,
-                        note: "baseline: 49.2 mm tab plus a 2 mm gap; single-pad concepts narrow this to 0-30"}
-  pad_width:          {range: [60, 176],  unit: mm,      nominal: 118,  placeholder: true}
-  tab_width:          {range: [10, 32],   unit: mm,      nominal: 21,   placeholder: true}
+  pad_tip_margin:     {range: [0, 97],    unit: mm,      nominal: 48.5, placeholder: true,
+                        note: "baseline: 28 mm notch plus a 20.5 mm tip; single-pad concepts narrow this to 0-30"}
+  pad_width:          {range: [50, 140],  unit: mm,      nominal: 95,   placeholder: true,
+                        note: "the platform finger is 161 mm tall out of plane"}
+  tab_width:          {range: [6, 26],    unit: mm,      nominal: 16,   placeholder: true}
+  tab_gap:            {range: [2, 54],    unit: mm,      nominal: 28,   placeholder: true,
+                        note: "recessed notch between paddle and tip; 2 mm on the earlier UMI6 revision"}
   pad_shore:          {range: [30, 70],   unit: shoreA,  nominal: 40,   placeholder: true}
   pad_crown_curvature: {range: [0, 33],   unit: 1/m,     nominal: 0,    placeholder: true,
                         note: "0 = flat face; 33 1/m = 30 mm crown radius"}
