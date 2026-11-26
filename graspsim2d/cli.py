@@ -311,6 +311,14 @@ def _trace_objects(lib, ar) -> list:
 def cmd_figures(args: argparse.Namespace) -> None:
     out = Path(args.run)
     paths = {k: str(out / v) if (out / v).exists() else str(Path(args.config) / v) for k, v in CONFIG_FILES.items()}
+    if (out / "sweep.json").exists() and not (out / "results.json").exists():
+        from .plots import fig_sweep
+
+        res = json.loads((out / "sweep.json").read_text())
+        if len(res["vary"]) <= 2:
+            fig_sweep(out / "figures" / "sweep.png", res, {o.id: o.label for o in load_objects(paths["objects"]).objects})
+            print(f"figure: {out / 'figures' / 'sweep.png'}")
+        return
     make_figures(out, paths)
 
 

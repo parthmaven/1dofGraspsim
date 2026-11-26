@@ -525,14 +525,33 @@ def fig_sweep(path: Path, result: dict[str, Any], labels: dict[str, str] | None 
         name = vary[0]["name"]
         xs = np.array([s[name] for s in summary])
         score = {(r["point"], r["object_id"]): r["score"] for r in result["outcomes"]}
-        fig, (a1, a2) = plt.subplots(2, 1, figsize=(9, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+        panel = {(r["point"], r["object_id"]): (r["margins"].get("panel"), r["reason"] == "dropped") for r in result["outcomes"]}
+        boxes = [o for o in result["objects"] if any(panel[(s["point"], o)][0] is not None for s in summary)]
+        fig, axes = plt.subplots(3 if boxes else 2, 1, figsize=(9, 9.5 if boxes else 7), sharex=True,
+                                 gridspec_kw={"height_ratios": [3, 2, 1] if boxes else [3, 1]})
+        a1, a2 = axes[0], axes[-1]
         for k, oid in enumerate(result["objects"]):
             a1.plot(xs, [min(score[(s["point"], oid)], 3.0) for s in summary], marker="os^D"[k // 20 % 4], ms=3,
                     color=plt.cm.tab20(k % 20), ls="-" if k % 2 == 0 else "--", label=labels.get(oid, oid))
         a1.axhline(1.0, color="k", ls=":", lw=0.8)
-        a1.set_ylabel("smallest pass margin (>= 1 passes, capped at 3)")
+        a1.set_ylabel("smallest pass margin (>= 1 passes,\ncapped at 3; 0 = dropped)")
         a1.set_title(title, fontsize=10)
         a1.legend(fontsize=7, ncol=2)
+        if boxes:
+            # a dropped run keeps the margins measured up to the drop
+            a3 = axes[1]
+            for k, oid in enumerate(result["objects"]):
+                if oid not in boxes:
+                    continue
+                c = plt.cm.tab20(k % 20)
+                pts = [(x, min(m, 3.0), dropped) for x, s in zip(xs, summary) for m, dropped in [panel[(s["point"], oid)]] if m is not None]
+                a3.plot([p[0] for p in pts], [p[1] for p in pts], color=c, lw=1, ls="-" if k % 2 == 0 else "--")
+                for dropped, style in ((False, dict(mfc=c)), (True, dict(mfc="white"))):
+                    sel = [p for p in pts if p[2] == dropped]
+                    if sel:
+                        a3.plot([p[0] for p in sel], [p[1] for p in sel], ls="none", marker="o", ms=4, mec=c, **style)
+            a3.axhline(1.0, color="k", ls=":", lw=0.8)
+            a3.set_ylabel("panel margin on each box\n(open marker: the box dropped)")
         width = 0.8 * float(np.min(np.diff(np.unique(xs)))) if len(np.unique(xs)) > 1 else 0.8
         a2.bar(xs, [s["n_pass"] for s in summary], width=width, color="tab:green", ec="k")
         a2.set_ylim(0, n_obj)

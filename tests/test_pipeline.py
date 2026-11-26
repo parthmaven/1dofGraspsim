@@ -464,6 +464,12 @@ def test_sweep_runs_the_grid_and_saves_it(tmp_path, setup):
     assert (out / "figures" / "sweep.png").exists() and (out / "objects.yaml").exists()
     with pytest.raises(ValueError, match="unknown design variable"):
         parse_vary("finger_length=1,2")
+    one = tmp_path / "sweep1"
+    main(["--config", str(CFG), "sweep", "baseline_paddle", "--vary", "finger_torque=1:3:3", "--objects", "mini_1oz,hbo_28oz",
+          "--out", str(one), "--workers", "2"])
+    (one / "figures" / "sweep.png").unlink()
+    main(["--config", str(CFG), "figures", str(one)])
+    assert (one / "figures" / "sweep.png").exists()
 
 
 def test_run_directory_keeps_its_box_tables(tmp_path):

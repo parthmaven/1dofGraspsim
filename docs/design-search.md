@@ -49,10 +49,12 @@ python -m graspsim2d simulate self_aligning --objects hbo_28oz,b_flute_3mm --plo
 python -m graspsim2d simulate baseline_paddle --fidelity analytic --out runs/baseline   # either level, results saved
 python -m graspsim2d sweep baseline_paddle --vary finger_torque=1:12:12 --out runs/torque   # 1-D sweep, analytic
 python -m graspsim2d sweep crowned --vary finger_torque=2,4,6,8 --vary pad_shore=30,50,70 --fidelity mujoco --out runs/grid
+python -m graspsim2d sweep baseline_paddle --vary finger_torque=0.25:5:20 --fidelity mujoco --out runs/baseline_torque   # the platform finger against torque
 python -m graspsim2d search --out runs/first_pass  # the full ideate / simulate / iterate loop
+python -m graspsim2d --design-space config/design_space_stroke45.yaml search --out runs/first_pass_stroke45   # the same at a 45° stroke
 python -m graspsim2d search --quick --out runs/smoke   # tiny budget, one round
 python -m graspsim2d search --quick --rounds 2 --out runs/smoke2   # tiny budget, two rounds
-python -m graspsim2d figures runs/first_pass       # redraw the figures of a finished run
+python -m graspsim2d figures runs/first_pass       # redraw the figures of a finished search, or of a one- or two-variable sweep
 ```
 
 `screen`, `simulate` and `sweep` take a concept name (its nominal design), a
@@ -77,8 +79,8 @@ box are allowed and flagged. `sweep` runs at analytic fidelity unless
 `--design-space FILE`, `--objects FILE`, `--scenario FILE`, `--concepts FILE`
 and `--search FILE` override single files.
 
-The full search with the shipped budget (2 rounds) takes about 15 minutes on
-8 cores.
+The full search with the shipped budget (2 rounds) takes about 21 minutes on
+8 cores (1,252 s at the 90° stroke and 1,244 s at 45°).
 
 ## Configuration
 
@@ -241,12 +243,20 @@ recorded. Every candidate keeps the platform finger's root, the first
 `root_length_mm` (46 mm) ahead of the pivot line, which carries the hinge and
 is shaped around the brackets in 3D: at their heights it has material only on
 its outer side. In 3D the platform jaw (finger, paddle part and hinge
-interfaces) clears both brackets from 0° to 110°. The check therefore covers
-the rest of the beam, which the design variables change, and every pad and pad
-mount wherever it sits. It leaves out the hub, which the circle above handles,
-and the disc of `hinge_radius_mm` (18.5 mm) around each pivot, where the
-bracket's pivot lobe and the finger's hinge share the axis at different
-heights.
+interfaces) clears both brackets at jaw angles from −1.5° to 130.5°
+(`root_clear_deg`): at −2° and from 130.75° the finger meets them. A
+candidate's stroke must lie in that band. The 2D check covers the rest of the
+beam, which the design variables change, and every pad and pad mount wherever
+it sits. It leaves out the hub, which the circle above handles, and the disc
+of `hinge_radius_mm` (18.5 mm) around each pivot, where the bracket's pivot
+lobe and the finger's hinge share the axis at different heights.
+
+Past the stroke, `widest_opening` steps the hub and the brackets on until the
+first touch, and each finalist records the result as `widest_opening_deg`,
+with what stops it (`widest_opening_limit`). Parts beyond the root sit more
+than 46 mm from the pivot, and no bracket material outside the hub is more
+than 38.1 mm from one, so the limit is always the root's 130.5° less the angle
+at which the fingers meet.
 
 ## Architecture
 
@@ -330,7 +340,7 @@ finger body) must touch it first, and the tips must not meet above it. The jaw
 then closes until the pad compression balances the drive torque. The pad face
 is sampled at points, so on a stiff contact the torque can jump past the
 drive's within one bisection step. The final load is therefore scaled to the
-drive torque. Pads are a Winkler foundation: bonded elastomer compression
+drive torque: in the deepest rigid validation case below, 98.0 N at 5 N·m. Pads are a Winkler foundation: bonded elastomer compression
 modulus E_c = E(1 + 2S^2) (S is the shape factor, capped by the bulk modulus)
 over the pad thickness, in series with the object's surface stiffness (board
 through-thickness modulus; box panel on the cereal bed). Self-aligning pads
@@ -343,7 +353,11 @@ squeeze also pushes the box toward the fingertips. At the box's top edge,
 which meets the face edge-on, that share is all of it, so a grasp on the top
 edges alone needs μ ≥ tan θ. A face that closes toward the tips gets no credit
 for wedging the box in. The screen also reports the jaw opening at which an
-object passes between the fingertips (`pass_opening`). One design on all 14
+object passes between the fingertips (`pass_opening`), and the least grip per
+finger that hold and pitch each need, without and with their safety factors
+(`min_grip_hold_N`, `min_grip_hold_sf_N`, `min_grip_pitch_N`,
+`min_grip_pitch_sf_N`). Near a box's top, pitch can set the grip rather than
+the weight. One design on all 14
 objects takes about 0.2 to 0.45 s.
 
 ### Validation: the platform finger on Cheerios Family Size
@@ -363,10 +377,14 @@ kept where the CAD has it) on a rigid box edge, as the study does:
 | case (CAD study) | CAD study | screen |
 |---|---|---|
 | box just passes between the tips | 17.4° per jaw, 94 mm tip gap | 17.45°, 94.0 mm |
-| tip-pad pinch as drawn: box top 18 mm inside the tips | 20.0°, 107 mm tip gap, contact 131 mm from the pivot line, μ ≥ 0.36 | insertion 20.8 mm: box top 17.9 mm inside the tips, first touch at 19.97° on the tab at 131.0 mm, top edge only, μ ≥ 0.358 |
+| tip-pad pinch as drawn: box top 18 mm inside the tips | first touch at 20.0°, 107 mm tip gap, contact 131 mm from the pivot line, μ ≥ tan 20.0° = 0.36 | insertion 20.8 mm: box top 17.9 mm inside the tips, first touch at 19.97° (tan 0.363) on the tab at 131.0 mm, top edge only; loaded at 19.72°, μ ≥ 0.358 |
 | deepest contact on the tip pad | 20.7°, contact at 126 mm, μ ≥ 0.38 | 20.2°, 128.4 mm (the model's tab starts at 129.5 mm) |
-| corner on the arm and main face | 24.6° to 46.5°, μ ≥ 0.46 to 1.05 | main face at insertions of 52 to 99 mm: 26.0° to 46.6°, corner 100 to 55 mm out, μ ≥ 0.48 to 1.04. The model's notch is recessed finger body, so the depths that would put the corner on the CAD's arm (41.5 to 49 mm) are rejected |
-| deepest main-face case: box top 51 mm below the pivots, 65 mm inside the open tips | 46.5°, contact 55 mm from the pivot line, μ ≥ 1.05 | insertion 99 mm: 65.0 mm inside the tips, 46.58°, 55.4 mm, μ ≥ 1.04 |
+| corner on the arm and main face | first touch at 24.6° to 46.5°, μ ≥ 0.46 to 1.05 | main face at insertions of 52 to 99 mm: first touch at 26.0° to 46.6° (tan 0.488 to 1.057), corner 100 to 55 mm out; loaded, μ ≥ 0.48 to 1.04. The model's notch is recessed finger body, so the depths that would put the corner on the CAD's arm (41.5 to 49 mm) are rejected |
+| deepest main-face case: box top 51 mm below the pivots, 65 mm inside the open tips | first touch at 46.5°, contact 55 mm from the pivot line, μ ≥ 1.05 | insertion 99 mm: 65.0 mm inside the tips, first touch at 46.58° (tan 1.057), 55.4 mm; loaded at 46.11°, μ ≥ 1.04 |
+
+The study's μ is the tangent of the angle at first touch. The screen's is the
+tangent of the loaded face angle, which sits a quarter to half a degree further
+closed, so it reads slightly lower.
 
 The model's 6 mm, 40 A pad sits on a box wall with the cereal-backed stiffness,
 top edge included. With that pad, the tip-pad pinch dents the wall about 8 mm
@@ -395,8 +413,15 @@ of the lift, so the closing impact (up to twice the static force at 1 rad/s)
 counts only as the `closing_impact_pressure_kPa` metric. Each run starts 1°
 beyond the object's approach opening (`START_MARGIN`; `start_opening_deg` in the
 metrics), not at the full stroke. The closing speed is damping-limited, so the
-speed at contact is the same either way, and a start at 90° would not close
-within the 0.9 s close phase. One run takes about 4 to 6 s.
+speed at contact is the same either way. The close lasts `close_s`, or longer
+when the jaw starts wide: the free travel from the start opening to where the
+fingers meet at `closing_speed_rad_s`, plus `squeeze_s` (`close_time_s` in the
+metrics). The finger body collides as cut: where the hub cut runs through a
+body rectangle, `collision_rects` slices it across its length into strips at
+most 3 mm wide, each holding only the material present over its whole width,
+so the hub notch stays open. A dropped object scores 0, and the run keeps every
+other margin measured up to the drop, with slip at 0. One run takes about 4 to
+6 s.
 
 ### Search loop (`search.py`)
 
@@ -438,14 +463,16 @@ limiting criterion, each margin and the key metrics) and the inputs.
 `sweep --out DIR` writes `sweep.json` (the spec, every grid point's design and
 every outcome), `sweep.csv` (one row per point and object), `summary.csv` (one
 row per point: objects passed, J, smallest margin and the object that sets it),
-`figures/sweep.png` (margins against one varied variable, or objects passed
-over a two-variable grid) and the inputs.
+`figures/sweep.png` and the inputs. For one varied variable, `sweep.png` plots
+each object's smallest margin, each box's empty-panel margin (open markers
+where the box dropped) and the objects passed; for two, the objects passed over
+the grid. `figures DIR` redraws it.
 
 `search --out DIR` writes:
 
 | file | contents |
 |---|---|
-| `results.json` | the all-rounder, best design per object, best per concept, the reference design (`references`), and every finalist with its per-object dynamic and analytic results |
+| `results.json` | the all-rounder, best design per object, best per concept, the reference design (`references`), and every finalist with its per-object dynamic and analytic results, its hub and bracket clearances, its widest clear opening and its length as drawn (`drawn_length_mm`) |
 | `round1.json`, `round2.json`, ... | per-round summaries, the learned corrections, and the earlier designs each round reselected (`carried`) |
 | `archive.json` | the analytic evaluations kept from each round (concept, variables, per-object scores): every Latin hypercube sample, the final evolved population and each per-object result; intermediate differential-evolution evaluations are not stored |
 | `search.log` | progress and the final report |
@@ -458,20 +485,24 @@ over a two-variable grid) and the inputs.
 PYTHONPATH=. python -m pytest -q
 ```
 
-They cover the config loader (unit conversion, fixed values, unknown names),
-the jaw kinematics, the pad model, the object library, the analytic force
-balance, agreement between the analytic and MuJoCo static grip, the baseline
-against the CAD (pad positions and widths, 2.4 mm closed gap, 1.0 mm hub
-clearance over the stroke), the keep-out (rejecting a paddle that reaches into
-the bracket, capping insertion), the 90° stroke from where the fingers meet
-(each grasp's approach opening lies inside it), the brackets (the baseline
-clears both over the whole stroke; a full-width root would not), the
-contact-width cap, the gear coupling (driving one finger carries the
-other), the box tables (given and fallback fill height and centre of mass,
-missing columns, ids by UPC), the grasp axis, the simulator interface (both
-levels match direct calls), sweeps (grid order, saved files, agreement with the
-screen), run directories keeping their box tables, and the Cheerios Family Size
-validation above. CI runs them on every pull request.
+They cover the config loader (unit conversion, fixed values and the nominal
+they set, unknown names), the jaw kinematics, the pad model, the object
+library, the analytic force balance, the least grip for hold and pitch,
+agreement between the analytic and MuJoCo static grip, the baseline against the
+CAD (pad positions and widths, 2.4 mm closed gap, 1.0 mm hub clearance over the
+stroke), the keep-out (rejecting a paddle that reaches into the bracket,
+capping insertion), the 90° stroke from where the fingers meet (each grasp's
+approach opening lies inside it), the brackets (the baseline clears both over
+the whole stroke; a full-width root would not), the contact-width cap, the
+drawn length of a cranked tip, the gear coupling (driving one finger carries
+the other), the close time growing with the start opening, the collision model
+keeping the hub notch open, dropped runs keeping every margin, the box tables
+(given and fallback fill height and centre of mass, missing columns, ids by
+UPC), the grasp axis, the simulator interface (both levels match direct calls),
+sweeps (grid order, saved files, agreement with the screen, redrawing a sweep's
+figure), run directories keeping their box tables, and the Cheerios Family Size
+validation above, including the first-touch and loaded angles. CI runs them on
+every pull request.
 
 ## Limits of the model
 
