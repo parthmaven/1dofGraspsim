@@ -10,7 +10,9 @@ P0:
 S1:
   outside: [{u: ["finger_reach - tooth_len", "finger_reach"], why: "T2: the bare tooth faces; T3: the chisel"}]
 S2:
-  outside: [{u: ["finger_reach - chisel_len", "finger_reach"], why: "T3: the chisel"}]
+  outside: [{u: ["finger_reach - chisel_len", "finger_reach"], why: "T3: the chisel"},
+            {u: ["finger_reach - tooth_len + 1.55", "finger_reach - tooth_len + 1.65"],
+             why: "T1: the dam's top, where the squeezed pad's dam lands on boxes 61 mm thick and over (VAL R9.4)"}]
 S3:
   outside: [{u: ["finger_reach - clamp_length - tooth_length", "finger_reach"],
              why: "T1: the clamp faces and the shoulders' stop faces; T2: the proud shoulders; T3: the chisels"}]

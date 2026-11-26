@@ -14,6 +14,9 @@ Built on the first pass's screen (analytic.py, which PR #2's pipeline keeps), wi
   corner lands on it.
 * Box limits per finger: the top band (15 N, x50 stiffness over its top 4 mm), the empty panel
   (10 N, interpolated across the fill line) and the bed (25 kPa, only below the fill line).
+* The shake's pitching moment goes to the friction couple first, so the bed's pressure carries only
+  the excess, m_pad = max(0, m_dem - m_fric) / 2 per pad. A grip face under 20 mm gets pitch from its
+  pressure couple only up to that couple's stiffness times the rotation limit (SIM, round 9).
 * At a sheet's 20 mm pinch, "pads bottom out" is reported for MuJoCo, not as a verdict.
 
 Symmetric jaws only: an asymmetric jaw (S4) runs in MuJoCo alone.
@@ -41,6 +44,7 @@ TABLE_CLEARANCE = 2.0  # mm
 MAX_PAD_STRAIN = 0.85  # MuJoCo's compression stop
 K_RIGID = 1.7e9 / 2e-3  # Pa/m: a PA12 face (E 1.7 GPa) over 2 mm
 STOP_TOP = 3.0  # mm: body contact this close to the box top is a depth stop
+SHORT_PAD = 20.0  # mm: a grip face this short gets pitch only from its pressure couple's stiffness within the rotation limit
 
 
 @dataclass
@@ -118,6 +122,7 @@ class _Side:
     names: list[str]
     grip_np: list[np.ndarray]  # finger-local polygons: pads and the strips under marked faces
     body_np: list[np.ndarray]  # the rest of the body, unmarked bare faces included
+    face_len: np.ndarray = field(default_factory=lambda: np.zeros(0))  # mm, per grip face
 
 
 def _geometry(js: JawSide) -> tuple[list[np.ndarray], list[np.ndarray]]:
@@ -136,7 +141,7 @@ def _geometry(js: JawSide) -> tuple[list[np.ndarray], list[np.ndarray]]:
 
 def _side(js: JawSide, obj: GraspObject, friction_scale: float = 1.0) -> _Side:
     P, Nn, D, W, K, T, M, R, F = [], [], [], [], [], [], [], [], []
-    names = []
+    names, lens = [], []
     for i, f in enumerate(js.grip_faces):
         pad = f.pad
         n = max(N_MIN, min(241, int(pad.length / SAMPLE_PITCH) + 1))
@@ -153,12 +158,14 @@ def _side(js: JawSide, obj: GraspObject, friction_scale: float = 1.0) -> _Side:
         P.append(pts), Nn.append(nrm), D.append(ds * 1e-3), W.append(w), K.append(k), T.append(th)
         M.append(np.full(n, mu * friction_scale)), R.append(np.full(n, f.rigid)), F.append(np.full(n, i))
         names.append(f.name)
+        lens.append(float(pad.length))
     grip, body = _geometry(js)
     cat = np.concatenate
     if not P:
         z = np.zeros(0)
         return _Side(np.zeros((0, 2)), np.zeros((0, 2)), z, z, z, z, z, z.astype(bool), z.astype(int), names, grip, body)
-    return _Side(cat(P), cat(Nn), cat(D), cat(W), cat(K), cat(T), cat(M), cat(R).astype(bool), cat(F).astype(int), names, grip, body)
+    return _Side(cat(P), cat(Nn), cat(D), cat(W), cat(K), cat(T), cat(M), cat(R).astype(bool), cat(F).astype(int), names, grip, body,
+                 np.array(lens))
 
 
 def _band_min(polys: list[np.ndarray], z_lo: float, z_hi: float) -> tuple[float, float]:
@@ -391,12 +398,19 @@ def solve(jaw: Jaw, obj: GraspObject, sc: Scenario, lim: Limits, depth: float, S
     e_max = contact_len / 3
     m_fric = max(0.0, 2 * mu_bar * n_dem - m * (G + a_z)) * x_face * 1e-3
     m_norm = 2 * n_dem * e_max
+    short = bool(len(S.face_len)) and float(S.face_len[np.unique(S.face[loaded])].max()) < SHORT_PAD
+    if short:
+        # A short pad's pressure couple is far softer than the friction couple, so within the rotation limit it
+        # gives only its own stiffness times that angle (SIM, round 9).
+        k_rot = float(np.sum((_series(S.k_pad, ld["k_o"]) * S.w * S.ds * ((ld["z"] - cop_z) * 1e-3) ** 2)[loaded]))
+        m_norm = min(m_norm, 2 * k_rot * sc.max_rotation)
     m_cap = m_norm + m_fric
     margins["pitch"] = m_cap / (sc.pitch_sf * m_dem) if m_dem > 1e-12 else math.inf
     demand["pitch"] = sc.pitch_sf * m_dem
     b = float(S.w[loaded].min())
-    share = m_norm / m_cap if m_cap > 0 else 1.0
-    m_pad = min(share * m_dem, m_cap) / 2
+    # Until a pad slips, the couples share the moment by stiffness, and the friction couple is hundreds of times
+    # stiffer than the pressure couple: the bed takes only what friction can't.
+    m_pad = max(0.0, m_dem - m_fric) / 2
     p_dem = p_i * scale + 6 * m_pad / (b * contact_len ** 2) * loaded
     if box:
         # Each zone takes its own limit: the top band its force, the empty panel above the fill line
@@ -404,6 +418,8 @@ def solve(jaw: Jaw, obj: GraspObject, sc: Scenario, lim: Limits, depth: float, S
         in_band = ld["z"] >= z_top - lim.band_mm
         fill_line = z_top - obj.headspace * 1e3
         bed = loaded & ~in_band & (ld["z"] <= fill_line)
+        on_pad = loaded & ~S.rigid
+        info["pad_below_fill"] = bool((ld["z"][on_pad if on_pad.any() else loaded] <= fill_line).all())
         p_out = float(p_dem[bed].max()) if bed.any() else 0.0
         if p_out > 0:
             margins["pressure"] = lim.bed_pressure / (sc.pressure_sf * p_out)
@@ -437,14 +453,15 @@ def solve(jaw: Jaw, obj: GraspObject, sc: Scenario, lim: Limits, depth: float, S
         "contact_length_mm": contact_len * 1e3, "cop_below_top_mm": z_top - cop_z, "faces": ",".join(S.names[i] for i in used),
         "bare_share": float(N_i[S.rigid].sum() / N), "face_tilt_deg": tilt, "max_pad_strain": float(strain.max()),
         "peak_pressure_kPa": float(p_dem.max()) / 1e3, "mu_mean": mu_bar,
-        "drive_Nm_per_gripper": 2 * tau,
+        "drive_Nm_per_gripper": 2 * tau, "moment_Nm": m_dem, "friction_couple_Nm": m_fric,
+        "pressure_couple_Nm": m_norm, "bed_moment_Nm": m_pad, "short_pads": short,
     })
     return Grip(obj.id, True, "", {k: float(min(v, 99.0)) for k, v in margins.items()}, demand, info)
 
 
 def insertion_cap(jaw: Jaw, obj: GraspObject, sc: Scenario) -> tuple[float, str]:
     pres = sc.for_kind("box")
-    caps = [(pres.max_insertion * 1e3, "the 110 mm insertion cap")]
+    caps = [(pres.max_insertion * 1e3, f"the {pres.max_insertion * 1e3:g} mm insertion cap")]
     caps.append((obj.height * 1e3 - 2 * TABLE_CLEARANCE, "the table"))
     if sc.keep_out is not None:
         top = sc.keep_out.max_object_top(-obj.thickness * 500, obj.thickness * 500)
@@ -465,6 +482,7 @@ class BoxScan:
     grid: dict[float, Grip]
     stop_mm: float = math.nan  # the depth stop, where one ended the scan
     cap_mm: float = math.nan
+    deep: tuple[float, Grip] | None = None  # the best grip with the pad all below the fill line
 
     @property
     def passed(self) -> bool:
@@ -475,6 +493,10 @@ class BoxScan:
         out = {"object": self.obj, "depth_mm": self.depth, "robust": self.robust, "passed": self.passed,
                "scan_from_mm": self.scanned[0], "scan_to_mm": self.scanned[1], "scan_ended": self.ended,
                "stop_mm": self.stop_mm, "cap_mm": self.cap_mm}
+        dd, dg = self.deep if self.deep is not None else (math.nan, None)
+        out.update(deep_depth_mm=dd, deep_score=dg.score if dg is not None else math.nan,
+                   deep_limiting=dg.limiting if dg is not None else "",
+                   deep_bed_kPa=dg.info.get("bed_pressure_kPa", math.nan) if dg is not None else math.nan)
         if g is not None:
             out.update(score=g.score, limiting=g.limiting, reason=g.reason)
             out.update({f"m_{k}": v for k, v in g.margins.items()})
@@ -556,7 +578,10 @@ def scan_box(jaw: Jaw, obj: GraspObject, sc: Scenario, lim: Limits, tau: float |
         g = grid.get(round(x + dx, 3))
         if g is not None:
             corners[tag] = g
-    return BoxScan(obj.id, grid[x], x, rob, corners, (first, last), ended, grid, stop_at, cap)
+    # The best grip with the pad's contact all below the fill line, on the wall the cereal backs (VAL R9.4).
+    bed = [(grid[d].score, d) for d in depths if d <= deepest + 1e-6 and grid[d].ok and grid[d].info.get("pad_below_fill")]
+    deep = (max(bed)[1], grid[max(bed)[1]]) if bed else None
+    return BoxScan(obj.id, grid[x], x, rob, corners, (first, last), ended, grid, stop_at, cap, deep)
 
 
 def solve_sheet(jaw: Jaw, obj: GraspObject, sc: Scenario, lim: Limits, pinch: float, tau: float | None = None) -> Grip:

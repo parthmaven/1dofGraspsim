@@ -20,7 +20,7 @@ presentation:
     insertion_scan: 5
     clearance_mm: 5
     insertion_depth_mm: 70    # fixed mode: box top this far above the fingertip line
-    max_insertion_mm: 110     # never deeper than this
+    max_insertion_mm: 121     # never deeper than this; the hub keep-out caps 170 mm fingers at 120.5 (VAL R9.4)
     lateral_offset_mm: 0
   sheet:
     # Sheet held edge-up in a holder; the jaw pinches near the free top edge,
@@ -226,6 +226,12 @@ batch1:
     squeeze_s: 0.4
     deck_friction: 0.4            # case on deck
     stop_g: 1.0                   # one horizontal stop along W, as from 2 m/s, after the shake
+    final_hold_s: 1.5             # after the shake: 0.5 s to settle, then the last 1 s gives the sustained hub force
+    # rev 2.21, each gripper's hub force: sustained, the mean over the final hold's last 1 s; peak, the largest
+    # 5 ms average from the stop (with no stop, the power cut) to 5 s after it
+    hub_sustained_s: 1.0
+    hub_peak_avg_s: 0.005
+    hub_peak_window_s: 5.0
     max_tilt_deg: 10.0
     thumb_limit_kPa: 105.0        # C-flute; every case also reports the thumb against the 25 kPa bed limit
     bed_limit_kPa: 25.0

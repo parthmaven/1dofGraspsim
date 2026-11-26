@@ -623,6 +623,33 @@ def test_batch1_screen_bed_and_depth_stop(batch1):
     assert r.depth <= r.stop_mm - lim.placement + 1e-6
 
 
+def test_batch1_screen_moment_goes_to_friction_first(batch1):
+    from graspsim2d.screen1 import Limits, scan_box, solve
+
+    c = batch1.ctx()
+    lim = Limits.from_config(c["b1"], "T1")
+    j = batch1.get_jaw("S2", 45.0)
+    # SIM round 9: on S2's 8 mm tooth pad, 100 mm deep at loose fill, MuJoCo's bed pressure matches the screen with no
+    # moment term (21.8 - 23.4 kPa at 1.75 N m, 32.9 - 34.4 at 3), since the friction couple carries the moment.
+    for tau, lo, hi in ((1.75, 21.5, 23.7), (3.0, 32.6, 34.7)):
+        for box in ("gm_021908455587", "gm_016000275492", "gm_016000222083"):
+            g = solve(j, batch1.get_obj(box, "loose"), c["sc"], lim, 100.0, tau=tau)
+            i = g.info
+            assert g.ok and i["faces"] == "tooth" and i["short_pads"] and lo < i["bed_pressure_kPa"] < hi
+            assert i["bed_moment_Nm"] == pytest.approx(max(0.0, i["moment_Nm"] - i["friction_couple_Nm"]) / 2)
+            # Within 10 deg the short pad's pressure couple gives about 0.035 N m, not 2 N L / 3.
+            assert i["pressure_couple_Nm"] < 0.04 < 2 * i["grip_loaded_N"] * i["contact_length_mm"] * 1e-3 / 3
+    # A long pad keeps its whole pressure couple.
+    g = solve(batch1.get_jaw("r2-09", 45.0), batch1.get_obj("gm_016000275492", "catalog"), c["sc"], lim, 60.0)
+    assert g.ok and not g.info["short_pads"]
+    assert g.info["pressure_couple_Nm"] == pytest.approx(2 * g.info["grip_loaded_N"] * g.info["contact_length_mm"] * 1e-3 / 3)
+    # VAL R9.4: S2's dam top is a contact face, and each row reports its best grip with the pad below the fill line.
+    assert [f for f in j.right.grip_faces if f.rigid and 1.0 < f.pad.length < 3.0
+            and 128.0 < float(f.pad.face_samples(2)[0][0, 0]) < 136.0]
+    row = scan_box(j, batch1.get_obj("gm_021908455587", "loose"), c["sc"], lim).row()
+    assert row["deep_depth_mm"] >= row["depth_mm"] and row["deep_score"] > 0.0 and row["deep_bed_kPa"] > 0.0
+
+
 def test_batch1_brake_holds_the_power_cut(batch1):
     from graspsim2d import mj1
 
@@ -764,6 +791,10 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
     assert r["A_thumb_peak_N"] >= r["A_thumb_N_hold"] > 0.0 and r["A_thumb_peak_at"]
     # The stop along W drives the case outward onto A's hub; the run's peak covers the stop's.
     assert r["A_hub_peak_N"] >= r["A_hub_stop_peak_N"] > 0.0 and r["A_hub_stop_out_N"] > 0.0 and r["A_hub_peak_phase"]
+    # Revision 2.21: sustained over the final hold's last 1 s, peak the largest 5 ms average after the stop.
+    assert r["hub_peak_from"] == "stop" and 0.0 <= r["A_hub_peak_5ms_after_s"] <= 5.0
+    assert r["A_hub_stop_peak_N"] >= r["A_hub_peak_5ms_N"] >= r["A_hub_sustained_N"] > 0.0 and r["A_hub_peak_5ms_out_N"] > 0.0
+    assert r["B_hub_sustained_N"] > 0.0
 
 
 def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
@@ -787,6 +818,8 @@ def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
         assert r[f"{g}_thumb_N_hold"] > 0.0 and r[f"{g}_thumb_contact_mm"] >= 0.0
     # The arm lifts the case onto the cradle before it squeezes, so the case doesn't move on the fingers in the lift.
     assert r["print_slip_mm"] < 1.0
+    # With no stop, the hub's peak is read from the power cut.
+    assert r["hub_peak_from"] == "power cut" and r["A_hub_sustained_N"] < 1.0
 
     jobs = batch1.block_t5()
     assert len(jobs) == len({batch1._job_key(x) for x in jobs}) == 312 and all(x["hub_contact"] for x in jobs)

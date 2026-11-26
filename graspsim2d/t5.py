@@ -118,13 +118,14 @@ class T5Timeline:
     the power cut, which comes after the stop or, for the mid-move cut, before it."""
 
     def __init__(self, sc: Scenario, t0: float, shake_g: float, shake_hz: tuple[float, float], shake_s: float,
-                 stop_g: float | None, power_s: float, cut_before_stop: bool = False, stop_sign: float = 1.0):
+                 stop_g: float | None, power_s: float, cut_before_stop: bool = False, stop_sign: float = 1.0,
+                 final_s: float | None = None):
         self.sc = sc
         self.t_settle = t0 + sc.settle_time
         self.t_lift = self.t_settle + sc.lift_time
         self.t_hold = self.t_lift + max(sc.hold_time, 0.5)
         self.t_shake = self.t_hold + shake_s
-        self.t_final = self.t_shake + sc.final_hold_time
+        self.t_final = self.t_shake + (sc.final_hold_time if final_s is None else final_s)
         self.shake_s = shake_s
         self.ramp = float(sc.raw.get("sequence", {}).get("shake", {}).get("ramp_s", 0.5))
         self.wx, self.wz = 2 * math.pi * shake_hz[0], 2 * math.pi * shake_hz[1]
@@ -342,6 +343,27 @@ def _geom_points(model, data, i: int) -> np.ndarray:
         c, h = model.geom_aabb[i][:3], model.geom_aabb[i][3:]
         v = np.array([c + h * np.array([sx, sy, sz]) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
     return data.geom_xpos[i] + v @ R.T
+
+
+def _hub_readings(g: str, sustained: list[float], t: list[float], forces: list[np.ndarray], start: tuple[str, float],
+                  sample_s: float, avg_s: float) -> dict[str, Any]:
+    """Revision 2.21's hub force for one gripper: sustained, the mean over the final hold's last 1 s; peak, the
+    largest `avg_s` average from the stop (or, with no stop, the power cut) to 5 s after it, with that window's
+    mean push outward along W and down, and its start after the event."""
+    out = {f"{g}_hub_sustained_N": float(np.mean(sustained)) if sustained else math.nan,
+           f"{g}_hub_peak_5ms_N": math.nan, f"{g}_hub_peak_5ms_out_N": math.nan, f"{g}_hub_peak_5ms_down_N": math.nan,
+           f"{g}_hub_peak_5ms_after_s": math.nan, "hub_peak_from": start[0]}
+    n = max(1, int(round(avg_s / sample_s)))
+    if len(forces) < n:
+        return out
+    F = np.asarray(forces)
+    kern = np.ones(n) / n
+    avg = np.convolve(np.linalg.norm(F, axis=1), kern, "valid")
+    k = int(np.argmax(avg))
+    sgn = 1.0 if g == "A" else -1.0
+    out.update({f"{g}_hub_peak_5ms_N": float(avg[k]), f"{g}_hub_peak_5ms_out_N": sgn * float(F[k:k + n, 0].mean()),
+                f"{g}_hub_peak_5ms_down_N": -float(F[k:k + n, 2].mean()), f"{g}_hub_peak_5ms_after_s": t[k] - start[1]})
+    return out
 
 
 def _start_shift(model, preset: float, W: float, app: float, under: float) -> tuple[float, float]:
@@ -595,6 +617,10 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     z_base = 0.0
     i = -1
     t_end = math.inf
+    hub_win = hub_peak_win = (math.inf, -math.inf)
+    hub_from = ("", math.nan)
+    hub_sus = {g: [] for g in G_}
+    hub_pk = {"t": [], **{g: [] for g in G_}}
 
     def start_squeeze(t):
         """The jaw has closed or seated: the arms go over to force control, the tips-only path releases the hub,
@@ -721,8 +747,13 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                     data.ctrl[a_pos[g]] = float(data.qpos[q_arm[g]])
                 phase, t_sq_end = "timeline", t
                 tl = T5Timeline(sc, t, shake_g, (sc.shake_lateral_hz, sc.shake_vertical_hz), float(b1.get("shake_s", 3.0)),
-                                stop_g, power_s, cut_before_stop)
+                                stop_g, power_s, cut_before_stop, final_s=cfg.get("final_hold_s"))
                 t_end = tl.t_end
+                # Revision 2.21's hub readings: sustained over the final hold's last 1 s; peak from the stop (or,
+                # with no stop, the power cut) to 5 s after it.
+                hub_win = (tl.t_final - float(cfg.get("hub_sustained_s", 1.0)), tl.t_final)
+                hub_from = ("stop", tl.stop[0]) if tl.stop is not None else ("power cut", tl.t_power)
+                hub_peak_win = (hub_from[1], hub_from[1] + float(cfg.get("hub_peak_window_s", 5.0)))
             continue
         ph = tl.phase(t)
         tau_g = {g: -(float(data.actuator_force[a_drive[fingers[g]["out"]]]) + float(data.actuator_force[a_drive[fingers[g]["thumb"]]]))
@@ -733,6 +764,13 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             rec["MAo"].append(ms["M"][fingers["A"]["out"]]), rec["MAt"].append(ms["M"][fingers["A"]["thumb"]])
             rec["MBo"].append(ms["M"][fingers["B"]["out"]]), rec["MBt"].append(ms["M"][fingers["B"]["thumb"]])
             rec["hubA"].append(float(np.linalg.norm(ms["hub"]["A"]))), rec["hubB"].append(float(np.linalg.norm(ms["hub"]["B"])))
+        if hub_win[0] <= t <= hub_win[1]:
+            for g in G_:
+                hub_sus[g].append(float(np.linalg.norm(ms["hub"][g])))
+        if hub_peak_win[0] <= t <= hub_peak_win[1]:
+            hub_pk["t"].append(t)
+            for g in G_:
+                hub_pk[g].append(ms["hub"][g].copy())
         rel = np.array([data.qpos[q_cx] - data.qpos[qadr("kx")], data.qpos[q_cz] - data.qpos[qadr("kz")]])
         if ref_print is None:
             ref_print = rel.copy()
@@ -875,6 +913,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             f"{g}_brake_stop_Nm": stats["brake_stop"][g], f"{g}_brake_saturated": stats["brake_sat"][g],
             f"{g}_out_peak_N": stats["peak_N"][f_o], f"{g}_thumb_peak_N": stats["peak_N"][f_t],
         })
+        res.update(_hub_readings(g, hub_sus[g], hub_pk["t"], hub_pk[g], hub_from, every * dt,
+                                 float(cfg.get("hub_peak_avg_s", 0.005))))
         n_hub = res[f"{g}_hub_hold_N"]
         n_all = n_hub + res[f"{g}_out_N_hold"] + res[f"{g}_thumb_N_hold"]
         res[f"{g}_hub_share"] = n_hub / n_all if n_all > 1e-9 else math.nan
