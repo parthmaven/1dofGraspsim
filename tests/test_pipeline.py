@@ -925,6 +925,26 @@ def test_t3_tips_enter_the_gap_and_hold(batch1):
     assert rows[1]["verdict"] is False and rows[1]["verdict_basis"] == "rated rows fail: gap 0 mm"
 
 
+def test_t4b_s4_seats_both_lips_on_the_tote(batch1):
+    from graspsim2d.t4 import simulate_t4, t4_lip, t4b_pose
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("S4", 45.0)
+    lip = t4_lip(c["b1"])
+    p = t4b_pose(j, lip)
+    # The wall fits between S4's fingers with the outside finger's undercut under the lip, within its 30 mm of free
+    # wall, and the inside finger stays above the contents 50 mm down.
+    assert p["ok"] and 0.0 <= p["seat_gap_mm"] < 1.0 and p["inside_gap_mm"] > 0.0
+    assert p["outside_below_lip_mm"] <= lip["free_wall_mm"] and p["inside_below_rim_mm"] <= 50.0
+    r = simulate_t4(j, c["sc"], {**c["b1"], "shake_s": 0.0}, "t4b", "tote", tau=8.0, stop_g=0.0, power_s=0.2)
+    assert r["ok"] and not r["reset_flag"] and r["finger_torque_Nm"] == 8.0
+    # Each gripper's outside finger seats its own lip, A's right on the +x lip and B's left (the mirrored jaw's
+    # outside finger) on the -x lip, each carrying half the 15 kg.
+    for g in "AB":
+        assert r[f"{g}_seated"] and r[f"{g}_seat_N"] == pytest.approx(15.0 * 9.81 / 2, rel=0.1)
+    assert r["passed"] and r["slip_mm"] < 2.0 and r["power_cut_held"]
+
+
 def test_batch1_t5_cut_block_runs_revision_2_18(batch1):
     jobs = batch1.block_t5_cut()
     assert len(jobs) == len({batch1._job_key(j) for j in jobs}) == 40
