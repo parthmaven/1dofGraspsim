@@ -144,11 +144,17 @@ def _report(result: dict, run, log) -> None:
     log("\nBest design per object:")
     for o, p in result["per_object"].items():
         log(f"  {o:18s} {p['design']} ({p['concept']})  {'PASS' if p['passed'] else 'FAIL'}  score {p['score']:.2f}  {p['reason']}")
+    for name in result.get("references", []):
+        ref = result["designs"][name]
+        log(f"\nReference {name} ({ref['why'][0]}): passes {ref['sim_pass']}/{len(ids)} in the dynamic check")
+        for o in ids:
+            r = ref["results"][o]
+            log(f"  {o:18s} {'PASS' if r['passed'] else 'FAIL'}  score {r['score']:.2f}  {r['reason']}")
 
 
 def make_figures(out: Path, paths: dict[str, str], log=print) -> list[Path]:
     from .mjsim import simulate
-    from .plots import fig_best_designs, fig_bounds, fig_concepts, fig_iteration, fig_objects, fig_pass_matrix, fig_traces
+    from .plots import fig_best_designs, fig_bounds, fig_concepts, fig_design_on_objects, fig_iteration, fig_objects, fig_pass_matrix, fig_traces
 
     result = json.loads((out / "results.json").read_text())
     archive = json.loads((out / "archive.json").read_text()) if (out / "archive.json").exists() else []
@@ -161,6 +167,10 @@ def make_figures(out: Path, paths: dict[str, str], log=print) -> list[Path]:
     made = []
     fig_best_designs(fdir / "first-pass-best-designs.png", result, lib, sc)
     made.append(fdir / "first-pass-best-designs.png")
+    for name in result.get("references", []):
+        p = fdir / ("baseline-as-drawn.png" if name == "baseline" else f"{name}-as-drawn.png")
+        fig_design_on_objects(p, result, name, lib, sc)
+        made.append(p)
     fig_concepts(fdir / "concepts-nominal.png", concepts, space, lib, sc)
     made.append(fdir / "concepts-nominal.png")
     best = {c: GripperDesign.from_dict(result["designs"][n]["design"]) for c, n in result["best_by_concept"].items()}

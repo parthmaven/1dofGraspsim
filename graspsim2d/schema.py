@@ -258,6 +258,7 @@ class Concept:
     narrow: Mapping[str, tuple[float, float]] = field(default_factory=dict)
     idea: str = ""
     nominal: Mapping[str, float] = field(default_factory=dict)
+    reference: bool = False  # its nominal design always gets the dynamic check, as a reference
 
     def bounds(self, space: DesignSpace) -> list[tuple[float, float]]:
         out = []
@@ -320,6 +321,7 @@ def load_concepts(path: str | Path, space: DesignSpace) -> list[Concept]:
                 narrow=narrow,
                 idea=str(e.get("idea", "")).strip(),
                 nominal={k: float(v) for k, v in (e.get("nominal") or {}).items()},
+                reference=bool(e.get("reference", False)),
             )
         )
     if not concepts:

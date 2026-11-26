@@ -235,11 +235,13 @@ class SearchRun:
             pts = lo + sampler.random(self.cfg.n_lhs) * (hi - lo)
             nominal = c.to_vector(c.make(self.space))
             pts = np.vstack([nominal[None, :], pts])
-            if c.name in seeds and len(seeds[c.name]):
+            n_seed = len(seeds.get(c.name, []))
+            if n_seed:
                 pts = np.vstack([seeds[c.name], pts])
             evals = list(pool.map(_evaluate, [(c.name, tuple(p), None) for p in pts], chunksize=8))
             for e in evals:
                 e["stage"] = f"r{rnd}-lhs"
+            nominal_eval = evals[n_seed]
             evals.sort(key=lambda e: -e["J"])
             n_pop = max(self.cfg.de_popsize * dim, 10)
             init = np.array([e["x"] for e in evals[:n_pop]])
@@ -270,6 +272,7 @@ class SearchRun:
             out[c.name] = {
                 "best": allv[0],
                 "top": top,
+                "nominal": nominal_eval,
                 "n_evals": len(evals) + int(res.nfev) + len(final),
                 "de_nit": int(res.nit),
                 "lhs_best_J": evals[0]["J"],
@@ -335,7 +338,7 @@ class SearchRun:
         checked: dict[tuple, str] = getattr(self, "_checked", {})
         self._carried: dict[str, list[str]] = {}
 
-        def add(e: dict[str, Any], why: str) -> None:
+        def add(e: dict[str, Any], why: str, name: str | None = None) -> None:
             key = tuple(np.round(e["x"], 4)) + (e["concept"],)
             if key in checked:
                 self._carried.setdefault(checked[key], []).append(why)
@@ -348,10 +351,14 @@ class SearchRun:
             seen.add(key)
             g = dict(e)
             g["why"] = [why]
-            g["name"] = f"r{rnd}-{len(fin) + 1:02d}"
+            g["name"] = name or f"r{rnd}-{len(fin) + 1:02d}"
             g["design"] = dict(e["design"], label=g["name"])
             fin.append(g)
 
+        if rnd == 1:
+            refs = [c for c in self.concepts if c.reference]
+            for c in refs:
+                add(screen[c.name]["nominal"], f"{c.label} as drawn (reference)", "baseline" if len(refs) == 1 else f"ref-{c.name}")
         for cname, s in screen.items():
             for i, e in enumerate(s["top"]):
                 add(e, f"{cname} top {i + 1}")
@@ -467,6 +474,7 @@ class SearchRun:
             best_by_concept.setdefault(d["concept"], d["name"])
         return {
             "objects": ids,
+            "references": [d["name"] for d in all_designs if any(w.endswith("(reference)") for w in d["why"])],
             "all_rounder": best["name"],
             "per_object": per_object,
             "best_by_concept": best_by_concept,

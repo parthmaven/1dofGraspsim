@@ -143,10 +143,41 @@ def fig_best_designs(path: Path, result: dict[str, Any], lib: ObjectLibrary, sc:
     fig.suptitle(
         "First pass: best all-rounder (rows 1, 3) and best design per object (rows 2, 4), closed on each object\n"
         "dynamic check result under each panel; dashed line = settled fill level (panel above it is unsupported); "
-        f"sheets drawn at least {MIN_SHEET_DRAW_MM} mm thick",
+        f"sheets drawn at least {MIN_SHEET_DRAW_MM} mm thick\n{KEEP_OUT_NOTE}",
         fontsize=11,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.965))
+    fig.tight_layout(rect=(0, 0, 1, 0.955))
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
+
+
+KEEP_OUT_NOTE = "hatched circle = FT Dynamic bracket (top) keep-out; each finger is cut to clear it over its whole stroke"
+
+
+def fig_design_on_objects(path: Path, result: dict[str, Any], name: str, lib: ObjectLibrary, sc: Scenario) -> None:
+    """One design (e.g. the baseline as drawn) closed on every object, with its dynamic check results."""
+    d = result["designs"][name]
+    gd = GripperDesign.from_dict(d["design"])
+    boxes = [o for o in lib.objects if o.kind == "box"]
+    sheets = [o for o in lib.objects if o.kind == "sheet"]
+    ncol = max(len(boxes), len(sheets))
+    fig, axes = plt.subplots(2, ncol, figsize=(2.6 * ncol, 3.4 * 2 + 1.0))
+    for row, objs in enumerate((boxes, sheets)):
+        for j in range(ncol):
+            ax = axes[row, j]
+            if j >= len(objs):
+                ax.axis("off")
+                continue
+            o = objs[j]
+            sim = d["results"].get(o.id)
+            draw_grasp(ax, gd, o, sc, sim=sim, title=o.label, depth_mm=(sim or {}).get("insertion_mm"))
+    fig.suptitle(
+        f"{d['why'][0].replace(' (reference)', '')} ({name}), closed on each object; "
+        f"passes {d['sim_pass']}/{len(lib.objects)} in the dynamic check\n"
+        f"dynamic check result under each panel; dashed line = settled fill level; {KEEP_OUT_NOTE}",
+        fontsize=11,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(path, dpi=110)
     plt.close(fig)
 
@@ -178,10 +209,10 @@ def fig_concepts(path: Path, concepts: list[Concept], space: DesignSpace, lib: O
         for row, o in ((1, box), (2, sheet)):
             sim = ((sims or {}).get(c.name) or {}).get(o.id)
             draw_grasp(axes[row, j], d, o, sc, sim=sim, title=o.label, depth_mm=(sim or {}).get("insertion_mm"))
-    which = "best first-pass design" if designs else "nominal design"
+    which = "best first-pass design" if designs else "nominal design; C1 is the baseline as drawn"
     source = "MuJoCo result" if sims else "analytic screen result"
-    fig.suptitle(f"Finger concepts ({which} of each); {source} under each closed panel", fontsize=12)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.suptitle(f"Finger concepts ({which} of each); {source} under each closed panel\n{KEEP_OUT_NOTE}", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(path, dpi=110)
     plt.close(fig)
 
@@ -196,7 +227,7 @@ def _wrap(text: str, width: int) -> str:
             cur = (cur + " " + w).strip()
     if cur:
         lines.append(cur)
-    return "\n".join(lines[:6])
+    return "\n".join(lines[:7])
 
 
 def fig_objects(path: Path, lib: ObjectLibrary) -> None:

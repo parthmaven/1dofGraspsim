@@ -16,11 +16,11 @@ concepts:
   baseline_paddle:
     label: "C1 baseline: Parth's paddle finger"
     pad_style: paddle
+    reference: true           # the design as drawn always gets the dynamic check
     idea: >
-      Parth's CAD finger. Straight finger, flat face parallel to the other
-      finger's when closed; a wide paddle, then a narrow tab carrying the
-      same face to the tip, and a cutout clearing the bracket. The search
-      varies its proportions and pad angle around the CAD values.
+      Parth's CAD finger: straight, faces parallel when closed, a wide
+      paddle then a narrow tab to the tip, cut to clear the bracket. The
+      search varies its proportions and pad angle.
     active: [pivot_spacing, finger_reach, finger_thickness, pad_length, pad_thickness,
              pad_angle, pad_tip_margin, pad_width, tab_width, pad_shore, finger_torque]
     fixed: {crank_offset: 0, pad_crown_curvature: 0}
