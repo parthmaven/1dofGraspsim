@@ -385,10 +385,10 @@ Each round:
    screen's friction hold margin is corrected with the share of the available
    friction the pads use in MuJoCo instead. Sheet bending is the clearest case
    for corrections: with the default shake, 1.5 mm chipboard (first bending
-   mode near 2 to 3 Hz) sees about 3 times the rigid-sheet crease moment (2.9
-   to 4.1 across the simulated designs), 0.5 mm chipboard about 0.3 times, and
-   corrugated sheets about 1.0 to 1.3 times (medians; more on some pad
-   layouts).
+   mode near 2 to 3 Hz) sees about 3 times the rigid-sheet crease moment
+   (interquartile range 2.7 to 4.4 across the simulated designs), 0.5 mm
+   chipboard about 0.3 times, and corrugated sheets about 1.1 to 1.3 times
+   (medians; more on some pad layouts).
 
 The best all-rounder is the finalist that passes the most objects in the
 dynamic check (ties go to the higher dynamic J). The best design per object is
