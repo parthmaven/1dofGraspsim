@@ -636,6 +636,34 @@ def test_batch1_comb_layers_keep_their_widths(batch1):
         assert w == pytest.approx(80.0 if u < 78 else 48.5 if u < 82.8 else 97.0 if u < 90 else 60.0), u
 
 
+def test_batch1_wedged_pads_sit_in_their_drawn_pockets(batch1):
+    from shapely.geometry import Point
+    # SR round 17: a wedged flat pad fills its drawn pocket, the face shifted its thickness along v with its ends square
+    # to the finger, so no block corner overhangs the pocket and no pocket wall is left bare.
+    cases = [("S2", None, "tooth", 4.0, 2.0 / 8.0), ("S2", {"tooth_wedge": 3.0}, "tooth", 4.0, 3.0 / 8.0),
+             ("S5", None, "crank_face", 4.0, 10.0 / 35.0)]
+    for d, values, name, t, slope in cases:
+        j = batch1.get_jaw(d, 45.0, values)
+        for side in (1, -1):
+            js = j.sides[side]
+            pad = next(f.pad for f in js.faces if f.pad.name == name)
+            assert pad.drawn_seat and math.tan(pad.angle) == pytest.approx(slope)
+            face, _, _, th = pad.face_samples(9)
+            assert th == pytest.approx(t * math.cos(pad.angle))
+            back = pad.outline()[-2:]
+            assert back[0] == pytest.approx(face[-1] - [0.0, t]) and back[1] == pytest.approx(face[0] - [0.0, t])
+            u0 = face[0][0]
+            assert js.outline.contains(Point(u0 + 0.1, face[0][1] - t + 0.25)), (d, values, side)
+            walls = [f for f in js.faces if f.rigid and all(abs(p[0] - u0) < 0.05 for p in f.pad.face_samples(5)[0])
+                     and face[0][1] - t - 0.05 < min(p[1] for p in f.pad.face_samples(5)[0]) < face[0][1]]
+            assert not walls, (d, values, side, [f.name for f in walls])
+    # A flat pad square to the finger is the same block either way.
+    for d, name in (("S1", "box_cartridge"), ("S4", "thumb_face")):
+        pad = next(f.pad for s in (1, -1) for f in batch1.get_jaw(d, 45.0).sides[s].faces if f.pad.name == name)
+        assert pad.normal_thickness == pad.thickness
+        assert pad.outline() == pytest.approx(dataclasses.replace(pad, seat="square").outline())
+
+
 def test_batch1_screen_bed_and_depth_stop(batch1):
     from graspsim2d.screen1 import Limits, scan_box, solve
 

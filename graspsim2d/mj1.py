@@ -193,14 +193,15 @@ class _Builder:
         w_obj = self.obj.width
         if not face.rigid:
             w = min(face.width * 1e-3, w_obj)
-            sh_k = shear_stiffness(pad.shore, pad.thickness * 1e-3) * pad.length * 1e-3 * w
-            pad_mass = PAD_DENSITY * pad.length * pad.thickness * 1e-6 * w
+            t_n = pad.normal_thickness
+            sh_k = shear_stiffness(pad.shore, t_n * 1e-3) * pad.length * 1e-3 * w
+            pad_mass = PAD_DENSITY * pad.length * t_n * 1e-6 * w
             tX, tZ = _d(pad.tangent[0], pad.tangent[1], side)
             sh_arm = self.armature(sh_k, pad_mass)
             sh_damp = 2 * self.zeta * math.sqrt(sh_k * (pad_mass + sh_arm))
             parts.append(f'<body name="{fname}_shear" pos="0 0 0" gravcomp="1">'
                          f'<joint name="{fname}_shear" type="slide" axis="{_fmt((tX, 0, tZ))}" stiffness="{_fmt(sh_k)}" '
-                         f'damping="{_fmt(sh_damp)}" armature="{_fmt(sh_arm)}" range="{_fmt(-pad.thickness * 0.5e-3)} {_fmt(pad.thickness * 0.5e-3)}"/>'
+                         f'damping="{_fmt(sh_damp)}" armature="{_fmt(sh_arm)}" range="{_fmt(-t_n * 0.5e-3)} {_fmt(t_n * 0.5e-3)}"/>'
                          f'<inertial pos="0 0 0" mass="{_fmt(pad_mass * 0.5)}" diaginertia="1e-7 1e-7 1e-7"/>')
             close.append("</body>")
         phi = self.phi_plan[side]

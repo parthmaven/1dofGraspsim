@@ -150,8 +150,7 @@ notes: >
   full-face cradle that can't happen. Model the hub as a collision body before scoring T5.
   How T5's opening is held: by the drive and its brake, at about 34 deg (VAL-Q7). The 45 deg
   stop only catches the case if the brake lets go: the case drops 25.5 mm onto the outside
-  shoulder, with its wall on the hub. A 90 deg version is the same outline without the stop,
-  held the same way, with the same T5 numbers.
+  shoulder, with its wall on the hub.
   G1. Judged with the next phase's metal hinge (fixed_by_spec), S3 rates about 14 kg, set by
   the reference drive's 25 N·m peak during the lift, not by the brake. The strength check
   needs 37 - 41 N·m per gripper at 23 kg, so the peak covers 14.0 kg at the 60/40 share
@@ -180,7 +179,7 @@ tradeoffs:
   - "The top-edge pinch avoids the empty panel but relies on the top band's unmeasured limit (15 N, sensitivity 5 - 40)"
   - "Bare clamp face (the T3 rule): mu 0.3 needs 1.7 times the squeeze of a mu 0.5 pad"
   - "One clamp angle covers the 45 - 99 mm boxes to ±5 deg; tighter needs a second tip"
-  - "The 45 deg stop removes the 90 deg reading but doesn't hold T5: the closed grip sits at 34 deg on the brake, so a 90 deg version without the stop scores the same"
+  - "The 45 deg stop doesn't hold T5: the closed grip sits at 34 deg on the brake, and the stop only catches the case if the brake slips"
   - "Drive- and brake-held T5 rates about 14 kg on the reference drive; 23 kg needs SR's next-phase drive (50 N·m peak) and brake (70 N·m)"
   - "A proud shoulder protects the chisel in T5, pinches sheets and deepens the lip pocket to 13.5 mm (hooks 126 mm spans, against about 54 for a flush 8 mm pocket), but it collides below 1.4 deg"
 

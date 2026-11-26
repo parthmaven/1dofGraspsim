@@ -150,7 +150,8 @@ def _pad_from(e: Mapping[str, Any], v: Mapping[str, float], widths: list[tuple[f
     crown = math.inf if cr in (None, "null") else evaluate(cr, v)
     ang = math.atan2(v1 - v0, u1 - u0)
     return Pad(name=str(e.get("name", "pad")), role=str(e.get("role", "all")), face_u=0.5 * (u0 + u1), face_v=0.5 * (v0 + v1),
-               angle=ang, length=math.hypot(u1 - u0, v1 - v0), thickness=th, width=width, shore=shore, crown_radius=crown)
+               angle=ang, length=math.hypot(u1 - u0, v1 - v0), thickness=th, width=width, shore=shore, crown_radius=crown,
+               seat="drawn")
 
 
 def _ends(p: Pad) -> tuple[np.ndarray, np.ndarray]:
