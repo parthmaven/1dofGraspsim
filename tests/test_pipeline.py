@@ -55,7 +55,7 @@ def test_unknown_variable_is_rejected(tmp_path):
 
 def test_jaw_gap_matches_closed_form(setup):
     space, concepts, _, _ = setup
-    d = concepts["straight_flat"].make(space)
+    d = concepts["baseline_paddle"].make(space)
     f = build_finger(d)
     phi = math.radians(7.0)
     u, v = 120.0, 9.0
@@ -93,7 +93,7 @@ def test_objects_have_sourced_physical_values(setup):
 
 def test_force_balance_of_the_analytic_grip(setup):
     space, concepts, lib, sc = setup
-    d = concepts["straight_flat"].make(space)
+    d = concepts["baseline_paddle"].make(space)
     r = solve_grip(d, lib.by_id("mini_1oz"), sc)
     assert r.ok
     # drive torque = normal force x lever arm about the pivot
@@ -102,12 +102,73 @@ def test_force_balance_of_the_analytic_grip(setup):
 
 def test_diverging_box_and_converging_sheet(setup):
     space, concepts, lib, sc = setup
-    d = concepts["straight_flat"].make(space)
+    d = concepts["baseline_paddle"].make(space)
     box = solve_grip(d, lib.by_id("cheerios_8p9oz"), sc)
     sheet = solve_grip(d, lib.by_id("chipboard_1p5mm"), sc)
     assert box.ok and sheet.ok
     assert box.info["phi_deg"] > 5.0
     assert sheet.info["phi_deg"] < 0.0
+
+
+def test_baseline_matches_parths_cad(setup):
+    space, concepts, _, sc = setup
+    d = concepts["baseline_paddle"].make(space)
+    f = build_finger(d, sc.keep_out, sc.closed_limit)
+    assert f.feasible, f.issues
+    paddle, tab = f.pads
+    assert (paddle.width, tab.width) == (118.0, 21.0)
+    assert paddle.face_u - paddle.length / 2 == pytest.approx(49.0)
+    assert tab.face_u + tab.length / 2 == pytest.approx(d.finger_reach)
+    # CAD: faces parallel and 2.4 mm apart when closed
+    assert d.pivot_spacing - 2 * paddle.face_v == pytest.approx(2.4)
+    assert tab.face_v == pytest.approx(paddle.face_v)
+    assert 5.0 <= f.ligament < d.finger_thickness and f.cut_body
+
+
+def test_keep_out_rejects_pads_in_the_bracket_and_limits_insertion(setup):
+    space, concepts, lib, sc = setup
+    c = concepts["baseline_paddle"]
+    i = c.active.index("pad_length")
+    x = list(c.to_vector(c.make(space)))
+    x[i] = 70.0  # paddle would start 28 mm from the pivot line, inside the bracket lobe
+    f = build_finger(c.make(space, x), sc.keep_out, sc.closed_limit)
+    assert not f.feasible and any("keep-out" in s for s in f.issues)
+    assert build_finger(c.make(space, x)).feasible  # fine without the bracket
+    d = c.make(space)
+    r = solve_grip(d, lib.by_id("mini_1oz"), sc)
+    z_top = -d.finger_reach + r.info["insertion_mm"]
+    assert z_top <= -30.0 - 17.5 + 1e-6
+
+
+def test_contact_width_is_capped_by_the_object(setup):
+    from graspsim2d.analytic import _pad_models
+
+    space, concepts, lib, sc = setup
+    f = build_finger(concepts["baseline_paddle"].make(space), sc.keep_out, sc.closed_limit)
+    mini, cheerios = lib.by_id("mini_1oz"), lib.by_id("cheerios_8p9oz")
+    assert _pad_models(f, mini)[0].w == pytest.approx(mini.width)
+    assert _pad_models(f, cheerios)[0].w == pytest.approx(0.118)
+
+
+def test_fingers_are_geared_one_to_one(setup):
+    import mujoco
+
+    from graspsim2d.mjsim import build_model
+
+    space, concepts, lib, sc = setup
+    d = concepts["baseline_paddle"].make(space)
+    xml, meta = build_model(d, lib.by_id("chipboard_1p5mm"), sc, 0.03)
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    adr = {n: model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)] for n in ("jR", "jL")}
+    for n in adr.values():
+        data.qpos[n] = meta["phi0"]
+    for _ in range(1500):  # drive the right finger only; the gear must carry the left one
+        data.ctrl[2] = -d.finger_torque
+        mujoco.mj_step(model, data)
+    jR, jL = data.qpos[adr["jR"]], data.qpos[adr["jL"]]
+    assert meta["phi0"] - jR > math.radians(2.0)
+    assert jL == pytest.approx(jR, abs=1e-3)
 
 
 def test_dynamic_check_agrees_with_screen_on_static_grip(setup):

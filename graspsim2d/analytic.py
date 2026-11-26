@@ -97,25 +97,37 @@ def registered_depth(f: Finger, obj: GraspObject, sc: Scenario) -> float:
     return (f.design.finger_reach - u_prox) / 1000.0 + pres.clearance
 
 
-def _depth_limits(obj: GraspObject, sc: Scenario) -> float:
+def _depth_limits(f: Finger, obj: GraspObject, sc: Scenario) -> float:
     pres = sc.for_kind(obj.kind)
     hi = pres.max_insertion
     if obj.kind == "box" and pres.fixture == "table":
         hi = min(hi, obj.height - 2 * TABLE_CLEARANCE / 1000.0)
+    if sc.keep_out is not None:
+        off, half = pres.lateral_offset * 1000.0, obj.thickness * 1000.0 / 2
+        top = sc.keep_out.max_object_top(off - half, off + half)
+        if math.isfinite(top):
+            hi = min(hi, (f.design.finger_reach + top) / 1000.0)
     return hi
 
 
 def candidate_depths(f: Finger, obj: GraspObject, sc: Scenario) -> list[float]:
     """Insertion depths (m) tried for this design and object."""
     pres = sc.for_kind(obj.kind)
-    hi = _depth_limits(obj, sc)
+    hi = _depth_limits(f, obj, sc)
     if pres.insertion == "fixed":
         return [max(min(pres.insertion_depth, hi), 0.005)]
     reg = max(min(registered_depth(f, obj, sc), hi), 0.005)
-    if pres.insertion == "pad_registered" or hi - reg < 0.002:
+    if pres.insertion == "pad_registered":
         return [reg]
+    lo = reg
+    if hi - reg < 0.002:
+        # The pad-registered depth is out of reach (keep-out, table, max
+        # insertion): scan shallower instead, down to the object top at mid-pad.
+        lo = max(min(reg, (f.design.finger_reach - f.pad_for(obj.kind).face_u) / 1000.0), 0.005)
+        if hi - lo < 0.002:
+            return [reg]
     n = max(int(sc.raw.get("presentation", {}).get(obj.kind, {}).get("insertion_scan", 5)), 2)
-    return [float(x) for x in np.linspace(reg, hi, n)]
+    return [float(x) for x in np.linspace(lo, hi, n)]
 
 
 def finger_polys(f: Finger, phi: float, pads: tuple[Pad, ...] | None = None, body: bool = True) -> list[np.ndarray]:
@@ -134,6 +146,7 @@ class _PadModel:
     k: np.ndarray  # Pa/m per sample, pad and object in series
     k_pad: np.ndarray  # Pa/m per sample, pad alone
     thick: np.ndarray  # mm
+    w: float  # m, contact width: the pad's width or the object's, whichever is narrower
 
     def rotated(self, theta_view: float) -> "_PadModel":
         """Rotate a pivoting pad by theta (rad, CCW in the gripper plane)."""
@@ -144,17 +157,18 @@ class _PadModel:
         cs, sn = math.cos(psi), math.sin(psi)
         rel = self.pts - pv
         pts = pv + np.stack([cs * rel[:, 0] - sn * rel[:, 1], sn * rel[:, 0] + cs * rel[:, 1]], axis=1)
-        return _PadModel(self.pad.rotated(psi), pts, self.ds, self.k, self.k_pad, self.thick)
+        return _PadModel(self.pad.rotated(psi), pts, self.ds, self.k, self.k_pad, self.thick, self.w)
 
 
-def _pad_models(f: Finger, k_obj: float) -> list[_PadModel]:
+def _pad_models(f: Finger, obj: GraspObject) -> list[_PadModel]:
     out = []
     for pad in f.pads:
+        w = min(pad.width * 1e-3, obj.width)
         pts, _, ds, thick = pad.face_samples(N_FACE)
-        lut = {t: foundation_stiffness(pad.shore, pad.length * 1e-3, pad.width * 1e-3, t * 1e-3) for t in np.unique(thick)}
+        lut = {t: foundation_stiffness(pad.shore, pad.length * 1e-3, w, t * 1e-3) for t in np.unique(thick)}
         k_pad = np.array([lut[t] for t in thick])
-        k = np.array([series(kp, k_obj) for kp in k_pad])
-        out.append(_PadModel(pad, pts, ds * 1e-3, k, k_pad, thick))
+        k = np.array([series(kp, obj.material.k_surface) for kp in k_pad])
+        out.append(_PadModel(pad, pts, ds * 1e-3, k, k_pad, thick, w))
     return out
 
 
@@ -176,7 +190,7 @@ class _Load:
         return float(np.sum(-self.z * 1e-3 * self.fx))
 
 
-def _load_at(f: Finger, models: list[_PadModel], phi: float, x_face: float, z_lo: float, z_hi: float, b: float) -> _Load:
+def _load_at(f: Finger, models: list[_PadModel], phi: float, x_face: float, z_lo: float, z_hi: float) -> _Load:
     zs, ps, fs, own, st = [], [], [], [], []
     for i, m in enumerate(models):
         v = to_view(m.pts, phi, f.pivot_x)
@@ -185,18 +199,18 @@ def _load_at(f: Finger, models: list[_PadModel], phi: float, x_face: float, z_lo
         p = m.k * delta
         zs.append(v[:, 1])
         ps.append(p)
-        fs.append(p * b * m.ds)
+        fs.append(p * m.w * m.ds)
         own.append(np.full(len(p), i))
         st.append(p / m.k_pad / (m.thick * 1e-3))
     cat = np.concatenate
     return _Load(phi, models, cat(zs), cat(ps), cat(fs), cat(own), cat(st))
 
 
-def _align_pivoting(f: Finger, base: list[_PadModel], phi: float, x_face: float, z_lo: float, z_hi: float, b: float) -> _Load:
+def _align_pivoting(f: Finger, base: list[_PadModel], phi: float, x_face: float, z_lo: float, z_hi: float) -> _Load:
     """Self-aligning pads turn about their pin until contact moment and spring balance."""
     idx = [i for i, m in enumerate(base) if m.pad.pivot_depth is not None]
     if not idx:
-        return _load_at(f, base, phi, x_face, z_lo, z_hi, b)
+        return _load_at(f, base, phi, x_face, z_lo, z_hi)
     i = idx[0]
     pad = base[i].pad
     pv = to_view(pad.pivot[None, :], phi, f.pivot_x)[0]
@@ -205,7 +219,7 @@ def _align_pivoting(f: Finger, base: list[_PadModel], phi: float, x_face: float,
     def state(theta: float) -> tuple[float, _Load]:
         models = list(base)
         models[i] = base[i].rotated(theta)
-        ld = _load_at(f, models, phi, x_face, z_lo, z_hi, b)
+        ld = _load_at(f, models, phi, x_face, z_lo, z_hi)
         sel = ld.owner == i
         m_contact = float(np.sum(-(ld.z[sel] - pv[1]) * 1e-3 * ld.fx[sel]))
         return m_contact - k * theta, ld
@@ -237,7 +251,7 @@ def _pad_rotation(ld: _Load) -> float:
 def solve_grip(design: GripperDesign, obj: GraspObject, sc: Scenario, torque: float | None = None,
                finger: Finger | None = None, depth: float | None = None) -> GripResult:
     """Best grasp over the scenario's candidate insertion depths (or at `depth`)."""
-    f = finger or build_finger(design)
+    f = finger or build_finger(design, sc.keep_out, sc.closed_limit)
     if not f.feasible:
         return _fail(design, obj, "geometry: " + "; ".join(i for i in f.issues if i.startswith("infeasible")))
     depths = [depth] if depth is not None else candidate_depths(f, obj, sc)
@@ -262,12 +276,15 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
     x_face = obj.thickness * 1000.0 / 2
     z_top = -L + depth * 1000.0
     z_bot = z_top - obj.height * 1000.0
-    b = d.pad_width * 1e-3
     phi_open, phi_lo = math.radians(d.max_opening), sc.closed_limit
     info0 = {"insertion_mm": depth * 1000.0}
 
     if z_top >= -d.finger_thickness / 2:
         return _fail(d, obj, "insertion depth puts the object above the finger pivots", **info0)
+    if sc.keep_out is not None:
+        off = pres.lateral_offset * 1000.0
+        if z_top > sc.keep_out.max_object_top(off - x_face, off + x_face) + 1e-6:
+            return _fail(d, obj, "object top would enter the bracket keep-out", **info0)
     if band_min_x(finger_polys(f, phi_open), z_bot, z_top) < x_face + FIT_CLEARANCE:
         return _fail(d, obj, "does not fit between the open fingers", **info0)
 
@@ -291,13 +308,13 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
     if band_min_x(finger_polys(f, phi_touch), z_top + 1e-6, math.inf) <= 0.0:
         return _fail(d, obj, "fingertips meet above the object before gripping it", phi_touch=math.degrees(phi_touch), **info0)
 
-    models = _pad_models(f, obj.material.k_surface)
+    models = _pad_models(f, obj)
     pivoting = any(m.pad.pivot_depth is not None for m in models)
 
     def load(phi: float) -> _Load:
         if pivoting:
-            return _align_pivoting(f, models, phi, x_face, z_bot, z_top, b)
-        return _load_at(f, models, phi, x_face, z_bot, z_top, b)
+            return _align_pivoting(f, models, phi, x_face, z_bot, z_top)
+        return _load_at(f, models, phi, x_face, z_bot, z_top)
 
     lo, hi = phi_touch - math.radians(25.0), phi_touch
     if load(lo).torque() < tau:
@@ -335,7 +352,9 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
     cop_z = float(np.sum(ld.z * ld.fx) / N)  # mm
     contact_len = max(float(zc.max() - zc.min()), 0.5) * 1e-3  # m
     arm = tau / N
-    used_pads = tuple(ld.models[i].pad for i in sorted(set(ld.owner[loaded].tolist())))
+    used = sorted(set(ld.owner[loaded].tolist()))
+    used_pads = tuple(ld.models[i].pad for i in used)
+    b = min(ld.models[i].w for i in used)  # narrowest loaded contact carries the moment
 
     # Box-corner contact: the pressure peaks at the top edge of the box and the
     # pad face there is tilted, so the reaction follows the pad normal and
@@ -424,5 +443,5 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
 
 
 def screen_design(design: GripperDesign, objects: list[GraspObject], sc: Scenario) -> list[GripResult]:
-    f = build_finger(design)
+    f = build_finger(design, sc.keep_out, sc.closed_limit)
     return [solve_grip(design, o, sc, finger=f) for o in objects]

@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
-from matplotlib.patches import Polygon, Rectangle  # noqa: E402
+from matplotlib.patches import Circle, Polygon, Rectangle  # noqa: E402
 
 from .analytic import solve_grip  # noqa: E402
 from .geometry import build_finger, finger_outline_view  # noqa: E402
@@ -20,6 +20,7 @@ from .scenario import Scenario  # noqa: E402
 from .schema import SCHEMA_BY_NAME, Concept, DesignSpace, GripperDesign  # noqa: E402
 
 CONCEPT_COLORS = {
+    "baseline_paddle": "#4c72b0",
     "straight_flat": "#4c72b0",
     "cranked_flat": "#dd8452",
     "crowned": "#55a868",
@@ -37,8 +38,17 @@ def _color(concept: str) -> str:
     return CONCEPT_COLORS.get(concept, "#777777")
 
 
-def draw_gripper(ax, design: GripperDesign, phi: float, color: str, alpha: float = 1.0, lw: float = 0.8) -> None:
-    f = build_finger(design)
+def draw_keep_out(ax, sc: Scenario | None) -> None:
+    """Bracket footprint the fingers and objects must clear."""
+    if sc is None or sc.keep_out is None:
+        return
+    for x, z, r in sc.keep_out.circles:
+        ax.add_patch(Circle((x, z), r, fc="#f4c7c3", ec="#c0392b", lw=0.6, ls="--", hatch="////", alpha=0.55, zorder=3))
+
+
+def draw_gripper(ax, design: GripperDesign, phi: float, color: str, alpha: float = 1.0, lw: float = 0.8,
+                 sc: Scenario | None = None) -> None:
+    f = build_finger(design, sc.keep_out, sc.closed_limit) if sc is not None else build_finger(design)
     for side in (1, -1):
         parts = finger_outline_view(f, phi, side)
         for P in parts["body"]:
@@ -48,6 +58,7 @@ def draw_gripper(ax, design: GripperDesign, phi: float, color: str, alpha: float
     ax.plot([-design.pivot_spacing / 2, design.pivot_spacing / 2], [0, 0], "o", ms=3, color="k", alpha=alpha)
     hub = Rectangle((-design.pivot_spacing / 2 - 8, -2), design.pivot_spacing + 16, 14, fc="#bbbbbb", ec="k", lw=0.5, alpha=alpha)
     ax.add_patch(hub)
+    draw_keep_out(ax, sc)
 
 
 def draw_object(ax, obj: GraspObject, z_top: float, below: float) -> None:
@@ -74,7 +85,7 @@ def draw_grasp(ax, design: GripperDesign, obj: GraspObject, sc: Scenario, sim: d
     phi = math.radians(an.info["phi_deg"]) if an.ok else math.radians(design.max_opening)
     below = L - d_mm + 70
     draw_object(ax, obj, z_top, below)
-    draw_gripper(ax, design, phi, _color(design.concept))
+    draw_gripper(ax, design, phi, _color(design.concept), sc=sc)
     ax.set_aspect("equal")
     half = max(design.pivot_spacing / 2 + 60, obj.thickness * 500 + 30, 95)
     ax.set_xlim(-half, half)
@@ -141,8 +152,8 @@ def fig_best_designs(path: Path, result: dict[str, Any], lib: ObjectLibrary, sc:
 
 
 def _short(concept: str) -> str:
-    return {"straight_flat": "C1 straight", "cranked_flat": "C2 cranked", "crowned": "C3 crowned", "dual_zone": "C4 dual-zone",
-            "self_aligning": "C5 self-aligning"}.get(concept, concept)
+    return {"baseline_paddle": "C1 baseline", "straight_flat": "C1 straight", "cranked_flat": "C2 cranked", "crowned": "C3 crowned",
+            "dual_zone": "C4 dual-zone", "self_aligning": "C5 self-aligning"}.get(concept, concept)
 
 
 def fig_concepts(path: Path, concepts: list[Concept], space: DesignSpace, lib: ObjectLibrary, sc: Scenario,
@@ -157,7 +168,7 @@ def fig_concepts(path: Path, concepts: list[Concept], space: DesignSpace, lib: O
     for j, c in enumerate(concepts):
         d = (designs or {}).get(c.name) or c.make(space)
         ax = axes[0, j]
-        draw_gripper(ax, d, math.radians(d.max_opening), _color(c.name))
+        draw_gripper(ax, d, math.radians(d.max_opening), _color(c.name), sc=sc)
         ax.set_aspect("equal")
         ax.set_xlim(-130, 130)
         ax.set_ylim(-d.finger_reach - 30, 25)

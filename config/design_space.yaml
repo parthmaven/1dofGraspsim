@@ -1,9 +1,13 @@
 # Bounding box of design variables for the 2D 1-DoF two-finger gripper.
 #
-# PLACEHOLDER RANGES. They bracket the nominal gripper (finger pivots 38 mm
-# apart, fingertip 150 mm forward of the pivots) until Parth sends his own
-# variables and ranges. To use his bounding box, edit the ranges below and
-# rerun; nothing else changes.
+# PLACEHOLDER RANGES, centred on the baseline: Parth's finger
+# (UMI6_paddles_paralel_pockets_V01.stp). Its two pivots are 38 mm apart and
+# geared 1:1, the tip is 150 mm from the pivot line, and the flat face is
+# parallel to the other finger's when closed (2.4 mm gap): a paddle from 49 to
+# 98 mm (about 118 mm wide out of plane), then a 21 mm wide tab to the tip.
+# Variables the CAD does not set (pad thickness and hardness, drive torque,
+# opening) keep generic ranges. To use Parth's own bounding box, edit the
+# ranges below and rerun; nothing else changes.
 #
 # Per variable:
 #   range: [lower, upper]   searched interval (set lower == upper, or use
@@ -17,19 +21,22 @@
 variables:
   pivot_spacing:      {range: [30, 46],   unit: mm,      nominal: 38,   placeholder: true}
   finger_reach:       {range: [130, 170], unit: mm,      nominal: 150,  placeholder: true}
-  finger_thickness:   {range: [8, 18],    unit: mm,      nominal: 12,   placeholder: true}
+  finger_thickness:   {range: [12, 32],   unit: mm,      nominal: 21.6, placeholder: true,
+                        note: "baseline 21.6 puts the face 17.8 mm inboard of the pivot with a 6 mm pad"}
   crank_offset:       {range: [0, 24],    unit: mm,      nominal: 0,    placeholder: true}
   crank_position:     {range: [0.25, 0.6], unit: "1",    nominal: 0.45, placeholder: true}
-  pad_length:         {range: [15, 70],   unit: mm,      nominal: 40,   placeholder: true}
+  pad_length:         {range: [20, 78],   unit: mm,      nominal: 49,   placeholder: true}
   pad_thickness:      {range: [2, 12],    unit: mm,      nominal: 6,    placeholder: true}
   pad_angle:          {range: [-15, 15],  unit: deg,     nominal: 0,    placeholder: true}
-  pad_tip_margin:     {range: [0, 30],    unit: mm,      nominal: 5,    placeholder: true}
-  pad_width:          {range: [20, 80],   unit: mm,      nominal: 40,   placeholder: true}
+  pad_tip_margin:     {range: [0, 104],   unit: mm,      nominal: 52,   placeholder: true,
+                        note: "baseline: 50 mm tab plus a 2 mm gap; single-pad concepts narrow this to 0-30"}
+  pad_width:          {range: [60, 176],  unit: mm,      nominal: 118,  placeholder: true}
+  tab_width:          {range: [10, 32],   unit: mm,      nominal: 21,   placeholder: true}
   pad_shore:          {range: [30, 70],   unit: shoreA,  nominal: 40,   placeholder: true}
   pad_crown_curvature: {range: [0, 33],   unit: 1/m,     nominal: 0,    placeholder: true,
                         note: "0 = flat face; 33 1/m = 30 mm crown radius"}
   finger_torque:      {range: [1, 12],    unit: N*m,     nominal: 5,    placeholder: true,
-                        note: "per finger, at the pivot; a 1-DoF drive with one torque limit for every object"}
+                        note: "at each finger pivot; the 1:1 gears give both fingers the same torque, one limit for every object"}
   max_opening:        {value: 35,         unit: deg,     placeholder: true,
                         note: "fixed: the search has no cost for a longer stroke"}
   pad2_offset:        {range: [35, 75],   unit: mm,      nominal: 55,   placeholder: true}

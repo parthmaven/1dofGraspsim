@@ -5,9 +5,11 @@ The gripper plane is the MuJoCo x-z plane (y out of plane, gravity -z).
 * Gripper base: x and z slide joints driven by stiff position servos along
   the lift-and-shake trajectory; gripper bodies are gravity-compensated so the
   servos only carry the object.
-* Fingers: hinges at the pivots, synced by a joint equality, each driven by a
-  constant torque (the 1-DoF drive) with damping that sets the free closing
-  speed. The drive is backdrivable: nothing but the torque holds the jaw shut.
+* Fingers: hinges at the pivots, geared 1:1 (a joint equality makes the two
+  opening angles equal, i.e. equal and opposite rotation in the plane), each
+  driven by a constant torque (together, the 1-DoF drive) with damping that
+  sets the free closing speed. The drive is backdrivable: nothing but the
+  torque holds the jaw shut.
 * Pads: each face is split into short box elements on spring slide joints
   along the face normal (a discretised Winkler foundation, pad and object
   surface in series), all riding on one shear slide joint per pad (elastomer
@@ -92,7 +94,7 @@ class _Builder:
         self.elements: list[_Element] = []
         self.k_obj = obj.material.k_surface
         self.mu = obj.material.friction * sc.friction_scale
-        self.b = f.design.pad_width * 1e-3
+        self.b = max(p.width for p in f.pads) * 1e-3  # finger body width
 
     # finger-local (u, v) in mm -> finger body frame (X, Z) in m
     def p(self, u: float, v: float, side: int) -> tuple[float, float]:
@@ -135,7 +137,7 @@ class _Builder:
                 return ""  # the pin sits in the finger beam, which carries it
             X, Z = self.p(pv[0], (lo + hi) / 2, side)
             dX, dZ = self.d(1.0, 0.0, side)
-            size = (w / 2 * 1e-3, self.b / 2, (hi - lo) / 2 * 1e-3)
+            size = (w / 2 * 1e-3, pad.width * 0.5e-3, (hi - lo) / 2 * 1e-3)
         else:
             t, n = pad.tangent, pad.normal
             back = pad.centre - pad.thickness * n
@@ -144,7 +146,7 @@ class _Builder:
             c = back - (depth / 2) * n
             X, Z = self.p(c[0], c[1], side)
             dX, dZ = self.d(t[0], t[1], side)
-            size = (pad.length / 2 * 1e-3, self.b / 2, depth / 2 * 1e-3)
+            size = (pad.length / 2 * 1e-3, pad.width * 0.5e-3, depth / 2 * 1e-3)
         return (
             f'<geom name="{name}_mount_{pad.name}" type="box" pos="{_fmt((X, 0, Z))}" euler="0 {_fmt(_beta(dX, dZ))} 0" '
             f'size="{_fmt(size)}" density="{ALU_DENSITY}" friction="{FINGER_FRICTION} 0.005 0.0001" priority="1" '
@@ -163,9 +165,10 @@ class _Builder:
             seg = np.full(n_el, float(np.sum(ds)) / n_el)
         e_h = 0.4  # mm, half-thickness of an element geom
         pname = f"{name}_{pad.name}"
+        w = min(pad.width * 1e-3, self.obj.width)  # contact width
         # Shear joint (and pivot) frame: rotation-free child of the finger.
-        sh_k = shear_stiffness(pad.shore, pad.thickness * 1e-3) * pad.length * 1e-3 * self.b
-        pad_mass = PAD_DENSITY * pad.length * pad.thickness * 1e-6 * self.b
+        sh_k = shear_stiffness(pad.shore, pad.thickness * 1e-3) * pad.length * 1e-3 * w
+        pad_mass = PAD_DENSITY * pad.length * pad.thickness * 1e-6 * w
         tX, tZ = self.d(pad.tangent[0], pad.tangent[1], side)
         parts = []
         open_tags = []
@@ -179,7 +182,7 @@ class _Builder:
             parts.append(
                 f'<body name="{pname}_pivot" pos="{_fmt((X, 0, Z))}" gravcomp="1">'
                 f'<joint name="{pname}_pivot" type="hinge" axis="0 {-side} 0" stiffness="{_fmt(pad.pivot_stiffness)}" '
-                f'damping="{_fmt(damp)}" armature="{_fmt(arm)}" range="{_fmt(-r)} {_fmt(r)}"/>'
+                f'damping="{_fmt(damp)}" armature="{_fmt(arm)}" range="{_fmt(-r)} {_fmt(r)}" solreflimit="{_fmt(4 * self.dt)} 1"/>'
                 f'<inertial pos="0 0 0" mass="{_fmt(pad_mass)}" diaginertia="{_fmt((I, I, I))}"/>'
             )
             open_tags.append("</body>")
@@ -199,8 +202,8 @@ class _Builder:
         for j in range(n_el):
             cu, cv = centres[j]
             nu, nv = nrm[j]
-            k_area = series(foundation_stiffness(pad.shore, pad.length * 1e-3, self.b, th[j] * 1e-3), self.k_obj)
-            area = self.b * seg[j] * 1e-3
+            k_area = series(foundation_stiffness(pad.shore, pad.length * 1e-3, w, th[j] * 1e-3), self.k_obj)
+            area = w * seg[j] * 1e-3
             k = k_area * area
             m_el = PAD_DENSITY * area * 2 * e_h * 1e-3
             arm = self.armature(k, m_el)
@@ -216,7 +219,7 @@ class _Builder:
                 f'<body name="{jn}" pos="{_fmt((X, 0, Z))}" gravcomp="1">'
                 f'<joint name="{jn}" type="slide" axis="{_fmt((nX, 0, nZ))}" stiffness="{_fmt(k)}" damping="{_fmt(damp)}" '
                 f'armature="{_fmt(arm)}" range="{_fmt(lo)} 0.0002"/>'
-                f'<geom name="{jn}" type="box" euler="0 {_fmt(_beta(tX_, tZ_))} 0" size="{_fmt((seg[j] / 2 * 1e-3, self.b / 2, e_h * 1e-3))}" '
+                f'<geom name="{jn}" type="box" euler="0 {_fmt(_beta(tX_, tZ_))} 0" size="{_fmt((seg[j] / 2 * 1e-3, w / 2, e_h * 1e-3))}" '
                 f'mass="{_fmt(m_el)}" friction="{_fmt(self.mu)} 0.005 0.0001" priority="2" contype="{GRIP}" conaffinity="{OBJ | TABLE}" '
                 f'solref="{_fmt(self.contact_tc)} 1" rgba="0.15 0.15 0.15 1"/>'
                 f"</body>"
@@ -227,7 +230,7 @@ class _Builder:
 
 def build_model(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float, finger: Finger | None = None) -> tuple[str, dict[str, Any]]:
     """MJCF text for one design/object pair, plus bookkeeping for the run."""
-    f = finger or build_finger(design)
+    f = finger or build_finger(design, sc.keep_out, sc.closed_limit)
     b = _Builder(f, obj, sc, depth)
     d = design
     L = d.finger_reach * 1e-3
@@ -349,7 +352,8 @@ def build_model(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: fl
     {obj_xml}
   </worldbody>
   <equality>
-    <joint name="sync" joint1="jL" joint2="jR" polycoef="0 1 0 0 0" solref="{_fmt(4 * b.dt)} 1"/>
+    <!-- 1:1 gear pair: the hinge axes are mirrored, so equal joint angles are equal and opposite rotations -->
+    <joint name="gear" joint1="jL" joint2="jR" polycoef="0 1 0 0 0" solref="{_fmt(4 * b.dt)} 1"/>
     {equality_obj}
   </equality>
   <actuator>
@@ -461,7 +465,7 @@ def _friction_use(data: mujoco.MjData, geom_side: np.ndarray, is_obj: np.ndarray
 def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float | None = None,
              finger: Finger | None = None, record: bool = True) -> SimResult:
     """Close, settle, release (sheets), lift, hold, shake, hold; then score."""
-    f = finger or build_finger(design)
+    f = finger or build_finger(design, sc.keep_out, sc.closed_limit)
     if not f.feasible:
         return SimResult(design, obj.id, False, "infeasible geometry")
     if depth is None:
@@ -483,6 +487,9 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     el_k = np.array([e.k for e in els])
     el_area = np.array([e.area for e in els])
     el_right = np.array([e.finger > 0 for e in els])
+    pad_w = {p.name: min(p.width * 1e-3, obj.width) for p in f.pads}
+    el_w = np.array([pad_w[e.pad] for e in els])
+    b_used = min(pad_w.values())
     el_body = np.array([mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, e.joint) for e in els])
     body_side = dict(zip(el_body.tolist(), (1 if e.finger > 0 else -1 for e in els)))
     geom_side = np.array([body_side.get(int(b), 0) for b in model.geom_bodyid], dtype=int)
@@ -543,6 +550,8 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
             p_impact = max(p_impact, float((force / el_area).max()))
         if ref is None and data.time >= traj.t_settle - 0.02:
             loaded = force > 1e-3
+            if loaded.any():
+                b_used = float(el_w[loaded].min())
             zs = data.xpos[el_body[loaded], 2] if loaded.any() else np.array([meta["z_top"] - 0.01])
             zg = float(np.average(zs, weights=force[loaded])) if loaded.any() else float(zs[0])
             R = data.xmat[top].reshape(3, 3)
@@ -598,7 +607,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     if obj.kind == "box" and math.isfinite(obj.unsupported_force) and panel_peak > 0:
         margins["panel"] = obj.unsupported_force / panel_peak
     if obj.kind == "sheet":
-        b_eff = design.pad_width * 1e-3 if sc.crease_width == "pad" else obj.width
+        b_eff = b_used if sc.crease_width == "pad" else obj.width  # narrowest loaded pad
         cap = obj.material.bending_strength * b_eff
         margins["crease"] = cap / (sc.crease_safety_factor * max(crease_peak, 1e-9))
     dropped = slip_peak > DROP_DISTANCE

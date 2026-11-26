@@ -19,11 +19,44 @@ import math
 from dataclasses import dataclass, field, replace
 
 import numpy as np
+from shapely.geometry import LineString, MultiPolygon
+from shapely.geometry import Polygon as SPolygon
+from shapely.ops import unary_union
 
 from .schema import GripperDesign
 
 MOUNT_MIN = 1.0  # mm of rigid mount left under the thinnest point of a pad
 PAD_MIN_THICKNESS = 1.0  # mm of elastomer left at the ends of a crowned pad
+TAB_GAP = 2.0  # mm between the paddle and its tip tab (paddle style)
+
+
+@dataclass(frozen=True)
+class KeepOut:
+    """Region of the gripper plane that fingers and objects must stay out of,
+    such as the footprint of a bracket above the jaw. Circles are (x, z, r) in
+    mm in gripper coordinates (origin midway between the pivots, z = 0 on the
+    pivot line, fingertips at negative z). Each finger gets a cutout that
+    clears the circles over its whole stroke, from fully closed to fully open."""
+
+    circles: tuple[tuple[float, float, float], ...]
+    clearance: float = 0.0  # mm added to every radius
+    min_ligament: float = 5.0  # mm of finger material that must remain beside the cutout
+    blocks_objects: bool = True  # objects may not enter the region either
+    note: str = ""
+
+    def radii(self) -> list[tuple[float, float, float]]:
+        return [(x, z, r + self.clearance) for x, z, r in self.circles]
+
+    def max_object_top(self, x_lo: float, x_hi: float) -> float:
+        """Highest z (mm) the top of an object spanning x_lo..x_hi may reach."""
+        top = math.inf
+        if not self.blocks_objects:
+            return top
+        for x, z, r in self.radii():
+            dx = 0.0 if x_lo <= x <= x_hi else min(abs(x - x_lo), abs(x - x_hi))
+            if dx < r:
+                top = min(top, z - math.sqrt(r * r - dx * dx))
+        return top
 
 
 def rect_polygon(cu: float, cv: float, angle: float, hl: float, ht: float) -> np.ndarray:
@@ -145,6 +178,10 @@ class Finger:
     body: tuple[BodyPiece, ...]
     pads: tuple[Pad, ...]
     issues: tuple[str, ...] = field(default_factory=tuple)
+    # Body outline after the keep-out cutout (finger-local polygons, for drawing),
+    # and the least finger material left beside the cutout (mm).
+    cut_body: tuple[np.ndarray, ...] = field(default_factory=tuple)
+    ligament: float = math.inf
 
     @property
     def pivot_x(self) -> float:
@@ -196,9 +233,17 @@ def _mount_polygon(pad: Pad, finger_face_v: float, extra_angle: float = 0.0) -> 
     return np.array([[b_prox[0], base], [b_dist[0], base], b_dist, b_prox])
 
 
-def build_finger(d: GripperDesign) -> Finger:
-    """Build the right finger for a design. Geometric conflicts are reported in
-    `issues`; entries starting with 'infeasible' make the design unusable."""
+def build_finger(d: GripperDesign, keep_out: KeepOut | None = None, closed_limit: float = math.radians(-25.0)) -> Finger:
+    """Build the right finger for a design, with the cutout a keep-out region
+    needs. Geometric conflicts are reported in `issues`; entries starting with
+    'infeasible' make the design unusable."""
+    f = _build_finger(d)
+    if keep_out is None or not keep_out.circles:
+        return f
+    return apply_keep_out(f, keep_out, closed_limit)
+
+
+def _build_finger(d: GripperDesign) -> Finger:
     issues: list[str] = []
     L, h, c = d.finger_reach, d.finger_thickness, max(d.crank_offset, 0.0)
     uc = d.crank_position * L
@@ -261,6 +306,20 @@ def build_finger(d: GripperDesign) -> Finger:
             pivot = {"pivot_depth": depth, "pivot_stiffness": d.pivot_stiffness, "pivot_range": math.radians(d.pivot_range)}
             extra = math.radians(d.pivot_range)
         pads.append(place("pad", "all", u_end, d.pad_length, alpha, extra=extra, crown=crown, pivot=pivot))
+    elif d.pad_style == "paddle":
+        # Paddle plus a narrower tab that continues the same face to the fingertip,
+        # both on one mount sized for the whole face line.
+        has_tab = d.tab_width > 1e-6 and d.pad_tip_margin > TAB_GAP + 2.0
+        cos_a = max(math.cos(alpha), 1e-6)
+        span = d.pad_length + ((L - u_end) / cos_a if has_tab else 0.0)
+        line = place("paddle", "all", L if has_tab else u_end, span, alpha)
+        p0 = np.array([line.face_u, line.face_v]) - (span / 2) * line.tangent
+        pc = p0 + (d.pad_length / 2) * line.tangent
+        pads.append(replace(line, face_u=float(pc[0]), face_v=float(pc[1]), length=d.pad_length))
+        if has_tab:
+            s0 = d.pad_length + TAB_GAP
+            tc = p0 + (s0 + (span - s0) / 2) * line.tangent
+            pads.append(Pad("tab", "all", float(tc[0]), float(tc[1]), alpha, span - s0, t_p, d.tab_width, d.pad_shore))
     elif d.pad_style == "dual":
         tip = place("tip", "sheet", u_end, d.pad_length, alpha)
         pads.append(tip)
@@ -287,5 +346,87 @@ def build_finger(d: GripperDesign) -> Finger:
 
 def finger_outline_view(f: Finger, phi: float, side: int = 1) -> dict[str, list[np.ndarray]]:
     """Polygons of one finger in the gripper plane, for drawing."""
-    out = {"body": [to_view(p.poly, phi, f.pivot_x, side) for p in f.body], "pads": [to_view(p.outline(), phi, f.pivot_x, side) for p in f.pads]}
+    body = f.cut_body if f.cut_body else tuple(p.poly for p in f.body)
+    out = {"body": [to_view(P, phi, f.pivot_x, side) for P in body], "pads": [to_view(p.outline(), phi, f.pivot_x, side) for p in f.pads]}
     return out
+
+
+def to_local(pts: np.ndarray, phi: float, pivot_x: float) -> np.ndarray:
+    """Gripper-plane (x, z) points to the right finger's local (u, v), mm."""
+    pts = np.atleast_2d(pts)
+    dx, z = pts[:, 0] - pivot_x, pts[:, 1]
+    s, c = math.sin(phi), math.cos(phi)
+    return np.stack([dx * s - z * c, -dx * c - z * s], axis=1)
+
+
+def closed_angle(f: Finger, lower: float) -> float:
+    """Opening angle at which the closing fingers meet on the centreline (or `lower`)."""
+    polys = [p.outline() for p in f.pads] + [b.poly for b in f.body]
+
+    def min_x(phi: float) -> float:
+        return min(float(to_view(P, phi, f.pivot_x)[:, 0].min()) for P in polys)
+
+    hi = math.radians(f.design.max_opening)
+    if min_x(lower) >= 0.0:
+        return lower
+    if min_x(hi) <= 0.0:
+        return hi
+    lo = lower
+    for _ in range(30):
+        mid = 0.5 * (lo + hi)
+        if min_x(mid) > 0.0:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def swept_keep_out(f: Finger, ko: KeepOut, phi_lo: float, phi_hi: float, n: int = 48):
+    """Keep-out region seen from the right finger over its stroke (finger-local shapely geometry).
+    The left finger is the mirror image, so mirrored circles are included."""
+    phis = np.linspace(phi_lo, phi_hi, n)
+    parts = []
+    for x, z, r in ko.radii():
+        for xm in {x, -x}:
+            pts = np.vstack([to_local(np.array([[xm, z]]), ph, f.pivot_x) for ph in phis])
+            parts.append(LineString(pts).buffer(r, quad_segs=24))
+    return unary_union(parts)
+
+
+def apply_keep_out(f: Finger, ko: KeepOut, closed_limit: float) -> Finger:
+    """Cut the finger body clear of the keep-out over the full stroke. Pads and
+    pad mounts may not be cut; the beam must keep `min_ligament` of material."""
+    issues = list(f.issues)
+    phi_lo = closed_angle(f, closed_limit)
+    swept = swept_keep_out(f, ko, phi_lo, math.radians(f.design.max_opening))
+    for pad in f.pads:
+        if SPolygon(pad.outline()).intersects(swept):
+            issues.append(f"infeasible: the {pad.name} pad enters the bracket keep-out during the stroke")
+    rects = [p for p in f.body if p.rect is not None]
+    for p in f.body:
+        if p.rect is None and SPolygon(p.poly).intersects(swept):
+            issues.append(f"infeasible: the {p.name} block enters the bracket keep-out during the stroke")
+    body_union = unary_union([SPolygon(p.poly) for p in rects])
+    ligament = math.inf
+    for p in rects:
+        cu, cv, ang, hl, ht = p.rect
+        t = np.array([math.cos(ang), math.sin(ang)])
+        nrm = np.array([-math.sin(ang), math.cos(ang)])
+        for s in np.linspace(-hl, hl, max(int(2 * hl), 8)):
+            c = np.array([cu, cv]) + s * t
+            seg = LineString([c - 1.5 * ht * nrm, c + 1.5 * ht * nrm])
+            if not seg.intersects(swept):
+                continue
+            material = seg.intersection(body_union)
+            if material.is_empty:
+                continue
+            ligament = min(ligament, material.difference(swept).length)
+    if ligament < ko.min_ligament:
+        issues.append(f"infeasible: the cutout around the bracket leaves {ligament:.1f} mm of finger (minimum {ko.min_ligament:.1f} mm)")
+    cut = []
+    for p in f.body:
+        g = SPolygon(p.poly).difference(swept) if p.rect is not None else SPolygon(p.poly)
+        for poly in (g.geoms if isinstance(g, MultiPolygon) else [g]):
+            if not poly.is_empty and poly.area > 1e-6:
+                cut.append(np.asarray(poly.exterior.coords)[:-1])
+    return replace(f, issues=tuple(issues), cut_body=tuple(cut), ligament=ligament)

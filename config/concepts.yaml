@@ -1,20 +1,28 @@
 # Distinct finger-shape concepts. Each one is a topology (pad style and finger
 # form) plus the subset of design variables it searches. Ranges come from
-# design_space.yaml; `narrow` can only tighten them.
+# design_space.yaml; `narrow` can only tighten them. `nominal` sets the
+# concept's starting design where the baseline's values do not suit it.
+#
+# Every concept shares the 1:1 geared pivots and must clear the FT Dynamic
+# bracket keep-out (scenario.yaml): the finger gets a cutout around it, and
+# designs whose pads would need cutting, or whose cutout leaves too little
+# finger, are rejected.
 #
 # Shared problem: an angular jaw closes about 15 degrees further on a thin
 # sheet than on a 60 mm cereal box, so one flat pad cannot lie flat on both.
 # Each concept answers that differently.
 
 concepts:
-  straight_flat:
-    label: "C1 straight finger, flat angled pad"
-    pad_style: flat
+  baseline_paddle:
+    label: "C1 baseline: Parth's paddle finger"
+    pad_style: paddle
     idea: >
-      Baseline. One flat elastomer pad on a straight finger; the pad angle is
-      a single compromise between box and sheet closing angles.
+      Parth's CAD finger. Straight finger, flat face parallel to the other
+      finger's when closed; a wide paddle, then a narrow tab carrying the
+      same face to the tip, and a cutout clearing the bracket. The search
+      varies its proportions and pad angle around the CAD values.
     active: [pivot_spacing, finger_reach, finger_thickness, pad_length, pad_thickness,
-             pad_angle, pad_tip_margin, pad_width, pad_shore, finger_torque]
+             pad_angle, pad_tip_margin, pad_width, tab_width, pad_shore, finger_torque]
     fixed: {crank_offset: 0, pad_crown_curvature: 0}
 
   cranked_flat:
@@ -26,8 +34,9 @@ concepts:
     active: [pivot_spacing, finger_reach, finger_thickness, crank_offset, crank_position,
              pad_length, pad_thickness, pad_angle, pad_tip_margin, pad_width, pad_shore,
              finger_torque]
-    fixed: {pad_crown_curvature: 0}
-    narrow: {crank_offset: [6, 24]}
+    fixed: {pad_crown_curvature: 0, tab_width: 0}
+    narrow: {crank_offset: [6, 24], pad_tip_margin: [0, 30]}
+    nominal: {pad_length: 40, pad_tip_margin: 5}
 
   crowned:
     label: "C3 crowned (convex) pad"
@@ -39,7 +48,9 @@ concepts:
     active: [pivot_spacing, finger_reach, finger_thickness, crank_offset, crank_position,
              pad_length, pad_thickness, pad_angle, pad_tip_margin, pad_width, pad_shore,
              pad_crown_curvature, finger_torque]
-    narrow: {pad_crown_curvature: [2.5, 33]}
+    fixed: {tab_width: 0}
+    narrow: {pad_crown_curvature: [2.5, 33], pad_tip_margin: [0, 30]}
+    nominal: {pad_length: 40, pad_tip_margin: 5}
 
   dual_zone:
     label: "C4 dual-zone finger (tip pad + box pad)"
@@ -52,8 +63,9 @@ concepts:
     active: [pivot_spacing, finger_reach, finger_thickness, crank_offset, crank_position,
              pad_length, pad_thickness, pad_angle, pad_tip_margin, pad_width, pad_shore,
              finger_torque, pad2_offset, pad2_length, pad2_angle, pad2_protrusion]
-    fixed: {pad_crown_curvature: 0}
-    narrow: {pad_length: [10, 30], pad_tip_margin: [0, 10]}
+    fixed: {pad_crown_curvature: 0, tab_width: 0}
+    narrow: {pad_length: [20, 30], pad_tip_margin: [0, 10]}
+    nominal: {pad_tip_margin: 5}
 
   self_aligning:
     label: "C5 sprung self-aligning pad"
@@ -66,4 +78,6 @@ concepts:
     active: [pivot_spacing, finger_reach, finger_thickness, crank_offset, crank_position,
              pad_length, pad_thickness, pad_angle, pad_tip_margin, pad_width, pad_shore,
              finger_torque, pivot_depth, pivot_stiffness, pivot_range]
-    fixed: {pad_crown_curvature: 0}
+    fixed: {pad_crown_curvature: 0, tab_width: 0}
+    narrow: {pad_tip_margin: [0, 30]}
+    nominal: {pad_length: 40, pad_tip_margin: 5}

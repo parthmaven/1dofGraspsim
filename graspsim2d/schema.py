@@ -49,20 +49,24 @@ class VariableDef:
     description: str
 
 
-# Every variable the geometry generator reads. Nominals describe the nominal
-# gripper: pivots 38 mm apart, tip 150 mm forward of the pivots, straight
-# fingers with a flat 40 mm pad.
+# Every variable the geometry generator reads. Nominals describe the baseline,
+# Parth's CAD finger (UMI6 paddles, parallel when closed): pivots 38 mm apart
+# and geared 1:1, tip 150 mm forward of the pivots, a flat face parallel to the
+# finger and 17.8 mm inboard of its pivot (2.4 mm gap when closed), wide from
+# 49 to 98 mm forward of the pivot line (about 118 mm mean projected width),
+# then a 21 mm tab carrying the same face to the tip.
 SCHEMA: tuple[VariableDef, ...] = (
     VariableDef("pivot_spacing", "mm", 38.0, "Distance between the two finger pivot axes."),
     VariableDef("finger_reach", "mm", 150.0, "Fingertip distance forward of the pivot line, fingers parallel."),
-    VariableDef("finger_thickness", "mm", 12.0, "In-plane depth of the finger beam."),
+    VariableDef("finger_thickness", "mm", 21.6, "In-plane depth of the finger beam."),
     VariableDef("crank_offset", "mm", 0.0, "Inward offset of the distal finger section (0 = straight finger)."),
     VariableDef("crank_position", "1", 0.45, "Where the crank starts, as a fraction of the reach from the pivot."),
-    VariableDef("pad_length", "mm", 40.0, "Length of the (distal) pad face along the finger."),
+    VariableDef("pad_length", "mm", 49.0, "Length of the (distal) pad face along the finger; the paddle for the paddle style."),
     VariableDef("pad_thickness", "mm", 6.0, "Elastomer pad thickness (at the crown apex for crowned pads)."),
     VariableDef("pad_angle", "deg", 0.0, "Pad face angle to the finger axis; + makes the distal end stand further inward."),
-    VariableDef("pad_tip_margin", "mm", 5.0, "Distance from the fingertip to the distal end of the pad."),
-    VariableDef("pad_width", "mm", 40.0, "Out-of-plane width of pad and finger (the 2D extrusion width)."),
+    VariableDef("pad_tip_margin", "mm", 52.0, "Distance from the fingertip to the distal end of the pad (paddle style: tab length plus a 2 mm gap)."),
+    VariableDef("pad_width", "mm", 118.0, "Out-of-plane width of the pad and finger (the 2D extrusion width); contact is capped at the object's width."),
+    VariableDef("tab_width", "mm", 21.0, "Paddle style only: out-of-plane width of the tab that carries the paddle face on to the fingertip (0 = no tab)."),
     VariableDef("pad_shore", "shoreA", 40.0, "Pad hardness; sets the elastomer modulus (Gent 1958)."),
     VariableDef("pad_crown_curvature", "1/m", 0.0, "Pad face curvature 1/R (0 = flat; 10 = 100 mm radius)."),
     VariableDef("finger_torque", "N*m", 5.0, "Drive torque at each finger pivot (torque-limited, backdrivable)."),
@@ -77,7 +81,9 @@ SCHEMA: tuple[VariableDef, ...] = (
 )
 
 SCHEMA_BY_NAME: dict[str, VariableDef] = {v.name: v for v in SCHEMA}
-PAD_STYLES = ("flat", "crowned", "dual", "pivoting")
+PAD_STYLES = ("flat", "crowned", "dual", "pivoting", "paddle")
+# Values for variables added after a design was saved, so older results still load.
+_LEGACY_DEFAULTS: dict[str, float] = {"tab_width": 0.0}
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,7 @@ class GripperDesign:
     pad_angle: float
     pad_tip_margin: float
     pad_width: float
+    tab_width: float
     pad_shore: float
     pad_crown_curvature: float
     finger_torque: float
@@ -119,10 +126,10 @@ class GripperDesign:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "GripperDesign":
-        missing = [v.name for v in SCHEMA if v.name not in d]
+        missing = [v.name for v in SCHEMA if v.name not in d and v.name not in _LEGACY_DEFAULTS]
         if missing:
             raise ValueError(f"design is missing variables: {missing}")
-        kwargs = {v.name: float(d[v.name]) for v in SCHEMA}
+        kwargs = {v.name: float(d.get(v.name, _LEGACY_DEFAULTS.get(v.name, 0.0))) for v in SCHEMA}
         style = d.get("pad_style", "flat")
         if style not in PAD_STYLES:
             raise ValueError(f"pad_style must be one of {PAD_STYLES}, got {style!r}")
@@ -239,7 +246,8 @@ class Concept:
 
     ``active`` variables are searched within the bounding box, optionally
     narrowed by ``narrow`` (never widened). Everything else takes ``fixed``
-    or the bounding-box nominal.
+    or the bounding-box nominal. ``nominal`` overrides the bounding-box
+    nominal for this concept's starting design.
     """
 
     name: str
@@ -249,6 +257,7 @@ class Concept:
     fixed: Mapping[str, float] = field(default_factory=dict)
     narrow: Mapping[str, tuple[float, float]] = field(default_factory=dict)
     idea: str = ""
+    nominal: Mapping[str, float] = field(default_factory=dict)
 
     def bounds(self, space: DesignSpace) -> list[tuple[float, float]]:
         out = []
@@ -267,7 +276,7 @@ class Concept:
 
     def make(self, space: DesignSpace, x: Sequence[float] | None = None, label: str = "") -> GripperDesign:
         vals = space.nominal_values()
-        for name, value in self.fixed.items():
+        for name, value in {**self.nominal, **self.fixed}.items():
             vals[name] = space[name].clip(float(value))
         if x is None:
             x = [vals[n] for n in self.active]
@@ -295,7 +304,7 @@ def load_concepts(path: str | Path, space: DesignSpace) -> list[Concept]:
             raise ValueError(f"concept {name}: pad_style must be one of {PAD_STYLES}")
         active = tuple(e.get("active", []))
         bad = [a for a in active if a not in SCHEMA_BY_NAME]
-        bad += [f for f in (e.get("fixed") or {}) if f not in SCHEMA_BY_NAME]
+        bad += [f for key in ("fixed", "nominal") for f in (e.get(key) or {}) if f not in SCHEMA_BY_NAME]
         if bad:
             raise ValueError(f"concept {name}: unknown variables {bad}")
         # A variable fixed in the bounding box is not searched.
@@ -310,6 +319,7 @@ def load_concepts(path: str | Path, space: DesignSpace) -> list[Concept]:
                 fixed={k: float(v) for k, v in (e.get("fixed") or {}).items()},
                 narrow=narrow,
                 idea=str(e.get("idea", "")).strip(),
+                nominal={k: float(v) for k, v in (e.get("nominal") or {}).items()},
             )
         )
     if not concepts:

@@ -108,7 +108,7 @@ def _evaluate(task: tuple[str, tuple[float, ...], tuple[str, ...] | None]) -> di
     concept_name, x, only = task
     c: Concept = _W["concepts"][concept_name]
     d = c.make(_W["space"], list(x))
-    f = build_finger(d)
+    f = build_finger(d, _W["sc"].keep_out, _W["sc"].closed_limit)
     objs = _W["lib"].objects if only is None else [_W["lib"].by_id(o) for o in only]
     res = [solve_grip(d, o, _W["sc"], finger=f) for o in objs]
     scores = [corrected_score(r, _W["corr"]) for r in res]

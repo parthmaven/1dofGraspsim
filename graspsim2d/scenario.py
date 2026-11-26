@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from .geometry import KeepOut
 from .objects import G
 
 
@@ -47,6 +48,7 @@ class Scenario:
     torque_mode: str  # "fixed": one drive torque for every object
     pressure_sf: float = 1.0
     friction_scale: float = 1.0  # multiplies every material's pad friction (sensitivity runs)
+    keep_out: KeepOut | None = None
     sim: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -110,6 +112,23 @@ def load_scenario(path: str | Path) -> Scenario:
         torque_mode=str(g.get("torque_mode", "fixed")),
         pressure_sf=float(pc.get("pressure_safety_factor", 1.0)),
         friction_scale=float(raw.get("friction_scale", 1.0)),
+        keep_out=_keep_out(g.get("keep_out")),
         sim=dict(raw.get("sim", {}) or {}),
         raw=raw,
+    )
+
+
+def _keep_out(e: Mapping[str, Any] | None) -> KeepOut | None:
+    if not e or not e.get("circles"):
+        return None
+    circles = []
+    for c in e["circles"]:
+        x, z = (float(v) for v in c["center_mm"])
+        circles.append((x, z, float(c["radius_mm"])))
+    return KeepOut(
+        circles=tuple(circles),
+        clearance=float(e.get("clearance_mm", 0.0)),
+        min_ligament=float(e.get("min_ligament_mm", 5.0)),
+        blocks_objects=bool(e.get("blocks_objects", True)),
+        note=str(e.get("note", "")),
     )
