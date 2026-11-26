@@ -4,16 +4,19 @@
 
 This project aims to build a utility that simulates gripper designs (size, shape, and mechanism inputs) against different grasping tasks.
 
+## Current objective
+
+A 2D design search. Given a bounding box of design variables (a range for each), the tool ideates, simulates, and iterates gripper shapes that can grasp a predefined set of objects:
+
+- Filled cereal boxes of various sizes.
+- Sheets of cardboard of various thicknesses.
+
 ## Required capabilities
 
 - Good rigid-body dynamics.
 - A toolset to generate and draw out mechanisms.
 - Friction.
 - Some compliance.
-
-## First task
-
-Grab and rotate a loaded cardboard box without slippage or significant damage to the box.
 
 ## Nominal gripper geometry
 
