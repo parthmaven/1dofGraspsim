@@ -43,6 +43,7 @@ PAD_DENSITY = 1200.0
 FINGER_FRICTION = 0.3
 TABLE_FRICTION = 0.4
 DROP_DISTANCE = 0.02  # m of slip counted as a drop
+BODY_CONTACT_LIMIT = 1.0  # N: load the bare finger body and pad mounts may put on the object
 
 
 @dataclass
@@ -462,6 +463,19 @@ def _friction_use(data: mujoco.MjData, geom_side: np.ndarray, is_obj: np.ndarray
     return worst
 
 
+def _body_contact(data: mujoco.MjData, is_body: np.ndarray, is_obj: np.ndarray) -> float:
+    """Total normal force the rigid finger parts (body and pad mounts, not the pads) put on the object."""
+    n = data.ncon
+    if n == 0:
+        return 0.0
+    con = data.contact
+    g1, g2 = con.geom1[:n], con.geom2[:n]
+    sel = ((is_body[g1] & is_obj[g2]) | (is_body[g2] & is_obj[g1])) & (con.efc_address[:n] >= 0)
+    if not sel.any():
+        return 0.0
+    return float(data.efc_force[con.efc_address[:n][sel]].sum())
+
+
 def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float | None = None,
              finger: Finger | None = None, record: bool = True) -> SimResult:
     """Close, settle, release (sheets), lift, hold, shake, hold; then score."""
@@ -494,6 +508,8 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     body_side = dict(zip(el_body.tolist(), (1 if e.finger > 0 else -1 for e in els)))
     geom_side = np.array([body_side.get(int(b), 0) for b in model.geom_bodyid], dtype=int)
     is_obj = (model.geom_contype & OBJ) > 0
+    el_geoms = {mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, e.joint) for e in els}
+    is_body = np.array([(model.geom_contype[g] & GRIP) > 0 and g not in el_geoms for g in range(model.ngeom)])
     hinge_adr = np.array([qadr(h) for h in meta["hinges"]], dtype=int)
     hinge_k = np.array(meta["hinge_k"])
     a_ox, a_oz, a_oth = qadr("ox"), qadr("oz"), qadr("oth")
@@ -518,6 +534,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     crease_peak = 0.0
     slip_peak = 0.0
     rot_peak = 0.0
+    body_peak = 0.0
     grip_settle = 0.0
     released = False
     unstable = False
@@ -572,6 +589,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
                 crease_peak = max(crease_peak, float(np.max(np.abs(hinge_k * data.qpos[hinge_adr]))))
             if i % 10 == 0:
                 fric_peak = max(fric_peak, _friction_use(data, geom_side, is_obj))
+                body_peak = max(body_peak, _body_contact(data, is_body, is_obj))
             if slip_peak > DROP_DISTANCE:
                 break
         if record and i % rec_every == 0:
@@ -606,6 +624,8 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     }
     if obj.kind == "box" and math.isfinite(obj.unsupported_force) and panel_peak > 0:
         margins["panel"] = obj.unsupported_force / panel_peak
+    if body_peak > 0.1 * BODY_CONTACT_LIMIT:
+        margins["body"] = BODY_CONTACT_LIMIT / body_peak
     if obj.kind == "sheet":
         b_eff = b_used if sc.crease_width == "pad" else obj.width  # narrowest loaded pad
         cap = obj.material.bending_strength * b_eff
@@ -618,6 +638,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
         "closing_impact_pressure_kPa": p_impact / 1e3,
         "panel_force_N": panel_peak,
         "crease_moment_Nm": crease_peak,
+        "body_contact_N": body_peak,
         "grip_N": grip_settle,
         "friction_use": fric_peak,
         "friction_margin": float(min(1.0 / max(fric_peak, 1e-9), 99.0)),

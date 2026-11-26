@@ -34,7 +34,7 @@ N_FACE = 41
 CORNER_ZONE = 2.0  # mm below the box top treated as the corner contact
 FIT_CLEARANCE = 1.0  # mm
 TABLE_CLEARANCE = 2.0  # mm
-BODY_TOLERANCE = 0.5  # mm of finger-body interference ignored (surface texture, box bulge)
+BODY_TOLERANCE = 0.0  # mm of finger-body interference ignored; the dynamic check treats any overlap as rigid contact
 MAX_PAD_STRAIN = 0.8
 
 

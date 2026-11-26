@@ -517,6 +517,7 @@ def _slim(r: dict[str, Any] | None) -> dict[str, Any] | None:
         "peak_pressure_kPa": m.get("peak_pressure_kPa"),
         "panel_force_N": m.get("panel_force_N"),
         "crease_moment_Nm": m.get("crease_moment_Nm"),
+        "body_contact_N": m.get("body_contact_N"),
         "grip_N": m.get("grip_N"),
         "friction_use": m.get("friction_use"),
         "closing_impact_pressure_kPa": m.get("closing_impact_pressure_kPa"),
