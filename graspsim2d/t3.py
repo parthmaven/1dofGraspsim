@@ -445,10 +445,13 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
     kv_drive = tau / 0.2
     kp, kv = float(model.actuator_gainprm[0, 0]), float(-model.actuator_biasprm[0, 2])
     dt = model.opt.timestep
-    every = 4 * b.substeps
+    # Every physics step is read, for the descent's stall and the first touch and for every 5 ms average (SIM round
+    # 18): the model's first impacts last about 0.25 ms. The rated single-sample peaks (the band, the panel, the bed and
+    # the body) keep one step in `every`, as they were rated; their every-step maxima are kept beside them.
+    every = max(1, int(round(float(cfg.get("peak_sample_s", 4 * b.substeps * dt)) / dt)))
     # Rev 2.34: the wrist sensor over the whole jaw. T3's whole window runs from the descent, since the entry is its
     # load case, to the power cut; the final hold's mean is over the hold's last 1 s before the cut.
-    wrench = Wrench(model, b1, "base", b.geom_depth, every * dt)
+    wrench = Wrench(model, b1, "base", b.geom_depth, dt)
     hold_s = float(sensor_config(b1).get("hold_s", 1.0))
 
     def phase_at(t: float) -> str:
@@ -513,12 +516,13 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
         return out
 
     pk = {k: 0.0 for k in ("band", "panel", "bed", "body", "i_band", "i_panel", "i_bed", "i_body", "slip", "rot")}
+    pk_step = {k: 0.0 for k in ("band", "panel", "bed", "body", "i_band", "i_panel", "i_bed", "i_body")}
     push = {s: 0.0 for s in (1, -1)}
     push_entry = {s: 0.0 for s in (1, -1)}
     push_n = {s: 0.0 for s in (1, -1)}
     push_raw = {s: 0.0 for s in (1, -1)}
-    n_avg = max(1, int(round(float(cfg.get("push_average_s", 0.005)) / (every * dt))))
-    n_avg10 = max(1, int(round(float(cfg.get("push_check_average_s", 0.010)) / (every * dt))))
+    n_avg = max(1, int(round(float(cfg.get("push_average_s", 0.005)) / dt)))
+    n_avg10 = max(1, int(round(float(cfg.get("push_check_average_s", 0.010)) / dt)))
     pf_buf = {s: collections.deque(maxlen=n_avg) for s in (1, -1)}
     pf_buf10 = {s: collections.deque(maxlen=n_avg10) for s in (1, -1)}
     push_n10 = {s: 0.0 for s in (1, -1)}
@@ -579,8 +583,7 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
                 or not np.isfinite(data.qacc).all() or abs(data.qpos[a_jR]) > 3.0):
             unstable, unstable_s = True, t_step
             break
-        if i % every:
-            continue
+        keep = i % every == 0
         t = data.time
         F, pf, body = measure()
         wrench.sample(model, data, t, phase_at(t), t < t_cut, t_cut - hold_s <= t < t_cut)
@@ -605,7 +608,7 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
             wall_mm = max(wall_mm, wall_side * float(data.qpos[wall_q]) * 1e3)
         if not math.isfinite(first_touch) and F.sum() + body[1] + body[-1] > 1e-3:
             first_touch = float(data.qpos[a_jR])
-        if record:
+        if record and keep:
             trace["t"].append(t), trace["phi"].append(float(data.qpos[a_jR])), trace["z"].append(float(data.qpos[a_bz]))
             trace["push_R"].append(push[1]), trace["push_L"].append(push[-1]), trace["F_R"].append(pf[1])
             trace["F_L"].append(pf[-1])
@@ -613,11 +616,12 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
             for s in (1, -1):
                 push_entry[s], push_n_entry[s] = push[s], push_n[s]
             if t >= t_close0:
-                for sd in (1, -1):
-                    pk["i_band"] = max(pk["i_band"], zn[sd][0])
-                    pk["i_panel"] = max(pk["i_panel"], zn[sd][1])
-                    pk["i_bed"] = max(pk["i_bed"], zn[sd][2])
-                    pk["i_body"] = max(pk["i_body"], body[sd])
+                for p in (pk_step, pk) if keep else (pk_step,):
+                    for sd in (1, -1):
+                        p["i_band"] = max(p["i_band"], zn[sd][0])
+                        p["i_panel"] = max(p["i_panel"], zn[sd][1])
+                        p["i_bed"] = max(p["i_bed"], zn[sd][2])
+                        p["i_body"] = max(p["i_body"], body[sd])
             continue
         if ref is None:
             loaded = F > 1e-3
@@ -632,7 +636,7 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
         if ref is None:
             ref = rel.copy()
         slip = float(np.hypot(*(rel - ref)))
-        if record:
+        if record and keep:
             trace["slip"].append(slip)
         if t >= t_cut:
             if power_ref is None:
@@ -650,11 +654,12 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
             continue
         pk["slip"] = max(pk["slip"], slip)
         pk["rot"] = max(pk["rot"], abs(float(data.qpos[a_oth]) - ref_th))
-        for sd in (1, -1):
-            pk["band"] = max(pk["band"], zn[sd][0])
-            pk["panel"] = max(pk["panel"], zn[sd][1])
-            pk["bed"] = max(pk["bed"], zn[sd][2])
-            pk["body"] = max(pk["body"], body[sd])
+        for p in (pk_step, pk) if keep else (pk_step,):
+            for sd in (1, -1):
+                p["band"] = max(p["band"], zn[sd][0])
+                p["panel"] = max(p["panel"], zn[sd][1])
+                p["bed"] = max(p["bed"], zn[sd][2])
+                p["body"] = max(p["body"], body[sd])
         if slip > DROP:
             dropped = "lift" if t < t_lift else "hold"
             break
@@ -734,6 +739,12 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
         "slip_mm": pk["slip"] * 1e3, "rotation_deg": math.degrees(pk["rot"]), "grip_N": grip_n,
         "band_N": pk["band"], "panel_N": pk["panel"], "bed_kPa": pk["bed"] / 1e3, "body_N": pk["body"],
         "impact_band_N": pk["i_band"], "impact_body_N": pk["i_body"],
+        "sample_s": dt, "push_average_s": n_avg * dt, "peak_sample_s": every * dt,
+        # the rated single-sample peaks' every-step maxima, not rated
+        "band_step_N": pk_step["band"], "panel_step_N": pk_step["panel"], "bed_step_kPa": pk_step["bed"] / 1e3,
+        "body_step_N": pk_step["body"], "impact_band_step_N": pk_step["i_band"],
+        "impact_panel_step_N": pk_step["i_panel"], "impact_bed_step_kPa": pk_step["i_bed"] / 1e3,
+        "impact_body_step_N": pk_step["i_body"],
         "mu_drag": mu_drag,
         "mu_bare": box.material.bare_friction * lim.friction_scale,
         "power_cut_held": bool(dropped == "" and power_ref is not None and power_slip <= sc.max_slip),

@@ -942,6 +942,12 @@ def test_t3_tips_enter_the_gap_and_hold(batch1):
     assert r["edge_sensitive"] == (max(r["push_R_N"], r["push_L_N"]) > 4.0)
     assert r["passed"] and r["pass_rule"].startswith("entry depth, then push") and r["slip_mm"] < 0.5
     assert r["band_N"] > 10.0 and r["power_cut_held"] and 0.0 <= r["brake_use_Nm"] <= 30.0
+    # SIM round 18: the stall, the first touch and the 5 ms averages read every physics step (100 steps to 5 ms); the
+    # rated single-sample peaks keep their 0.4 ms samples, and their every-step maxima cover them.
+    assert r["sample_s"] < 1e-4 and r["push_average_s"] == pytest.approx(0.005) and r["peak_sample_s"] == pytest.approx(4e-4)
+    for k in ("band_N", "panel_N", "body_N", "impact_band_N", "impact_body_N"):
+        assert r[k.replace("_N", "_step_N")] >= r[k] - 1e-9
+    assert r["bed_step_kPa"] >= r["bed_kPa"] - 1e-9
 
     jobs = batch1.block_t3()
     assert len(jobs) == len({batch1._job_key(x) for x in jobs})
@@ -971,6 +977,7 @@ def test_t4b_s4_seats_both_lips_on_the_tote(batch1):
     assert p["outside_below_lip_mm"] <= lip["free_wall_mm"] and p["inside_below_rim_mm"] <= 50.0
     r = simulate_t4(j, c["sc"], {**c["b1"], "shake_s": 0.0}, "t4b", "tote", tau=8.0, stop_g=0.0, power_s=0.2)
     assert r["ok"] and not r["reset_flag"] and r["finger_torque_Nm"] == 8.0
+    assert r["sample_s"] < 1e-4 and r["seat_average_s"] == pytest.approx(0.005)
     # Each gripper's outside finger seats its own lip, A's right on the +x lip and B's left (the mirrored jaw's
     # outside finger) on the -x lip, each carrying half the 15 kg.
     for g in "AB":

@@ -20,6 +20,7 @@ revision 2.34, PA12 on the baseline), and pads a pad's.
 
 from __future__ import annotations
 
+import collections
 import math
 from typing import Any
 
@@ -448,10 +449,12 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
     kp_c, kv_c = float(model.actuator_gainprm[a_kx, 0]), float(-model.actuator_biasprm[a_kx, 2])
     nf = 2 * len(gs)
     f6 = np.zeros(6)
-    n_avg = max(1, int(round(0.005 / (every * model.opt.timestep))))
+    # Every physics step is read, for every 5 ms average and the peaks (SIM round 18): the model's first impacts last
+    # about 0.25 ms. The trace keeps one step in `every`.
+    dt = model.opt.timestep
+    n_avg = max(1, int(round(0.005 / dt)))
     # Rev 2.34: each gripper's wrist sensor; its whole window runs from the end of the close to the power cut.
-    wrench = {g: Wrench(model, b1, f"grip{g}", builders[g].geom_depth, every * model.opt.timestep, mirror=g == "B")
-              for g in gs}
+    wrench = {g: Wrench(model, b1, f"grip{g}", builders[g].geom_depth, dt, mirror=g == "B") for g in gs}
     hold_s = float(sensor_config(b1).get("hold_s", 1.0))
 
     def phase_at(t: float) -> str:
@@ -491,7 +494,7 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
     seat_t: list[float] = []
     seat_min = {f: math.inf for f in hook}
     seat_pk = {f: 0.0 for f in hook}
-    seat_buf = {f: [] for f in hook}
+    seat_buf = {f: collections.deque(maxlen=n_avg) for f in hook}
     cam = {g: 0.0 for g in gs}
     phi_lock = {}
     brake_on = None
@@ -547,8 +550,7 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
         if (data.time < t_step or any(data.warning[w].number for w in BAD_STATE) or not np.isfinite(data.qacc).all()):
             unstable, unstable_s = True, t_step
             break
-        if i % every:
-            continue
+        keep = i % every == 0
         t_now = data.time
         for g in gs:
             wrench[g].sample(model, data, t_now, phase_at(t_now), t_close <= t_now < tl.t_power,
@@ -564,8 +566,6 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
         for f, (pr, _) in hook.items():
             fz = float(Fc[f, pr, 1])
             seat_buf[f].append(fz)
-            if len(seat_buf[f]) > n_avg:
-                seat_buf[f].pop(0)
             if t >= tl.t_lift and t < tl.t_power:
                 seat_min[f] = min(seat_min[f], sum(seat_buf[f]) / len(seat_buf[f]))
                 seat_pk[f] = max(seat_pk[f], sum(seat_buf[f]) / len(seat_buf[f]))
@@ -574,7 +574,7 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
             seat_t.append(t)
             for g in gs:
                 cam[g] = max(cam[g], float(data.qpos[q_j[g][0]]) - phi_lock.get(g, float(data.qpos[q_j[g][0]])))
-        if record:
+        if record and keep:
             trace["t"].append(t), trace["phi"].append(float(data.qpos[q_j[gs[0]][0]])), trace["slip"].append(slip)
             trace["seatA"].append(float(Fc[0, hook[0][0], 1])), trace["kz"].append(float(data.qpos[qadr("kz")]))
             trace["seatB"].append(float(Fc[f_b, hook[f_b][0], 1])), trace["cx"].append(float(data.qpos[q_cx]))
@@ -595,7 +595,8 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
         row.update(wrench[g].readings(f"{g}_"))
     row.update(worst(row, "".join(gs)))
     row.update(close_state)
-    row.update({"ok": not unstable and ref is not None, "reset_flag": bool(unstable)})
+    row.update({"ok": not unstable and ref is not None, "reset_flag": bool(unstable), "sample_s": dt,
+                "seat_average_s": n_avg * dt})
     if unstable:
         row.update(reason=f"simulation went unstable at {unstable_s:.4f} s; flagged, not scored", unstable_s=unstable_s,
                    passed=None, score=None, limiting=None)
