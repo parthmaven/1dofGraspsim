@@ -198,13 +198,31 @@ batch1:
   short_face_mm: 20.0             # pads and bare faces shorter than this run at fine_pitch_mm
   fine_pitch_mm: 1.5
   bare_travel_mm: 1.5             # bare-face elements travel this far before the body behind them
+  # SIM's corner fix (the model change before T4): an element at a convex corner gets a second slide along the next
+  # face's normal, at that face's stiffness over the 0.8 mm its end presents there. Face ends within gap_mm meet; a
+  # corner counts where the normals turn by min_turn_deg or more. `corner_slide: false` builds the model without it.
+  corner_slide: {gap_mm: 0.6, min_turn_deg: 30.0}
   # Rev 2.34 (Parth: the fingers will be metal): the finger's material sets its bare friction on each object and its
   # density. Stainless is selected and PA12, the printed finger, runs as the baseline. A key ending in _pa12, here and
   # in objects.yaml, gives the PA12 baseline's value of the key without it; the selected material reads the key itself.
+  # Rev 2.39, the allowables: static against K_t x the nominal stress, at the ceiling load; fatigue against K_t x the
+  # working stress, as an amplitude at R = 0 or as a peak. Every row on a material with an edge_note carries it.
   finger_material: stainless      # or pa12
   finger_materials:
-    stainless: {density_kg_m3: 8000.0}   # 304 assumed (GM, SR); bare friction from VAL's handbook ranges (round 16)
-    pa12: {density_kg_m3: 1010.0}
+    stainless:                    # 304 assumed (GM, SR); bare friction from VAL's handbook ranges (round 16)
+      density_kg_m3: 8000.0
+      # SR, 304 or 316 annealed: 205 MPa minimum yield / 3 on nominal stress; 0.4 x 515 MPa at 1e7 cycles, x 0.86
+      # machined, x 0.96 size, Goodman to R = 0, / 3, with K_t 2 on top (57 MPa amplitude where a load reverses).
+      # No creep line at 40 deg C. Finish, grade and washdown sensitivities are reported, not run.
+      allowables: {static_MPa: 68.0, static_kt: 1.0, fatigue_amplitude_MPa: 43.0, fatigue_amplitude_reversed_MPa: 57.0,
+                   fatigue_kt: 2.0, creep_MPa: null}
+      edge_note: "edge break (rev 2.39, a drawing rule; the model's corners are square): R >= 0.5 mm on every
+        board-bearing metal edge; a chisel tip may instead be a full round, R = land / 2 >= 0.4 mm"
+    pa12:
+      density_kg_m3: 1010.0
+      # GM-A10's 48 / 3 at the ceiling load; 10 MPa peak to 1e6 - 1e7 cycles; 8 MPa creep at 40 deg C; K_t 2 at the
+      # hub notch, the crank, the undercut root and pad pockets (SR memo F2).
+      allowables: {static_MPa: 16.0, static_kt: 2.0, fatigue_peak_MPa: 10.0, fatigue_kt: 2.0, creep_MPa: 8.0}
   # Rev 2.34: the wrist F/T sensor. The finger assembly, the drive and brake, and the hub shell ride on its moving side,
   # so it reads every external contact on the jaw assembly and the pinch cancels. Its axis is the hub's, square to the
   # jaw plane.
@@ -254,6 +272,17 @@ batch1:
     max_tilt_deg: 10.0
     thumb_limit_kPa: 105.0        # C-flute; every case also reports the thumb against the 25 kPa bed limit
     bed_limit_kPa: 25.0
+    # SIM round 12: the jaw drive is capped at its peak (drive_Nm_per_gripper) and the brake at 30 N m; a run that
+    # needs more back-drives. The hold's mean torque is read against the drive's continuous rating.
+    cap_drive: true
+    # Rev 2.39: the root's fatigue margin is on the hold's working stress x 1.5 (read at 12 kg), beside the static
+    # check on the 5 ms peak (read at 23 kg).
+    root_fatigue_factor: 1.5
+    # SIM round 12's footprint rule, read in the sim on each finger's 5 ms window: flush where tilt x length is at
+    # most flush_mm; an edge reads force per width against the pressure limit x the flute pitch (0.84 N/mm on
+    # C-flute, 0.20 on the shipper).
+    flush_mm: 0.25
+    edge_pitch_mm: 8.0
     # rev 2.18: S1, S2, S3 and S6, on the brake, cut power mid-move and then make the 1 g stop, at the rated mass on
     # the 2 ft case; the bare printed finger on corrugated at 0.35 and 0.28 (x0.8), and 0.24 as a sensitivity.
     # Rev 2.34: stainless on corrugated is 0.30, so the sensitivity is 0.8 x 0.30, the same 0.24.

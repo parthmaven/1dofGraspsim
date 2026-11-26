@@ -24,7 +24,8 @@ import numpy as np
 from shapely.ops import unary_union
 
 from .jaw import Jaw, convex_pieces
-from .mj1 import BAD_STATE, DROP, GRIP, OBJ, RETURN_G, STOP_SPEED, TABLE, _Builder, _envelope, _fmt, _min_jerk, _p
+from .mj1 import (BAD_STATE, DROP, GRIP, OBJ, RETURN_G, STOP_SPEED, TABLE, _Builder, _envelope, _fmt, _min_jerk, _p,
+                  body_mass, element_springs, spring_loads)
 from .objects import G, GraspObject, Material
 from .scenario import Scenario
 from .sensor import Rolling, Wrench, hub_depth, layer_depth, worst
@@ -50,6 +51,52 @@ def case_object(cfg: dict[str, Any], key: str, materials: dict[str, Material], m
                        mass=m, com_below_top=H / 2, inertia=m * (W * W + H * H) / 12.0, material=mat)
 
 
+def root_margins(b1: dict[str, Any], static_MPa: float, hold_MPa: float, factor: float) -> dict[str, float]:
+    """Revision 2.39: the root against the finger material's allowables. Static on the 5 ms peak (the strength
+    check reads it at 23 kg); fatigue on the hold's working stress x `factor` (the duty reads it at 12 kg), as an
+    amplitude at R = 0 or as a peak, whichever the material's allowable is."""
+    al = ((b1.get("finger_materials") or {}).get(b1.get("finger_material", "pa12")) or {}).get("allowables") or {}
+
+    def margin(allow: float, demand: float) -> float:
+        if not math.isfinite(demand):
+            return math.nan
+        return allow / demand if demand > 1e-9 else 99.0
+
+    out = {"root_static_margin": math.nan, "root_fatigue_margin": math.nan}
+    if al.get("static_MPa"):
+        out["root_static_margin"] = margin(float(al["static_MPa"]), float(al.get("static_kt", 1.0)) * static_MPa)
+    peak = float(al.get("fatigue_kt", 1.0)) * factor * hold_MPa
+    if al.get("fatigue_amplitude_MPa"):
+        out["root_fatigue_margin"] = margin(float(al["fatigue_amplitude_MPa"]), peak / 2.0)
+    elif al.get("fatigue_peak_MPa"):
+        out["root_fatigue_margin"] = margin(float(al["fatigue_peak_MPa"]), peak)
+    return out
+
+
+def footprint(best: dict[str, Any], allow_kPa: float, humid_kPa: float, pitch_mm: float, flush_mm: float) -> dict[str, Any]:
+    """SIM round 12's footprint rule on a 5 ms window's loaded face, with the contact's whole normal force: a flush
+    face (tilt x length at most `flush_mm`) is read over its whole area when the resultant lies in its middle third,
+    else over three times the resultant's distance from the loaded end at twice the mean; anything else is an edge,
+    read as force per width against the pressure limit x the board's flute pitch."""
+    out: dict[str, Any] = {"footprint": "", "footprint_mm2": math.nan, "rated": math.nan, "rated_unit": "",
+                           "rated_margin": math.nan, "rated_margin_humid": math.nan}
+    N, L, w = float(best.get("N", 0.0)), best.get("face_len_mm", math.nan), best.get("face_w_mm", math.nan)
+    if not best.get("face") or not (math.isfinite(L) and math.isfinite(w) and w > 0):
+        return out
+    tilt, frac, e = best.get("face_tilt_deg", math.nan), best.get("face_res_frac", math.nan), best.get("face_res_end_mm", 0.0)
+    if math.isfinite(tilt) and math.radians(tilt) * L <= flush_mm:
+        whole = 1.0 / 3.0 <= frac <= 2.0 / 3.0
+        area = L * w if whole else 3.0 * max(e, 1e-6) * w
+        p = (1.0 if whole else 2.0) * N / area * 1e3
+        out.update(footprint="flush" if whole else "flush, off its middle third", footprint_mm2=area, rated=p,
+                   rated_unit="kPa", rated_margin=allow_kPa / max(p, 1e-9), rated_margin_humid=humid_kPa / max(p, 1e-9))
+    else:
+        q = N / w
+        out.update(footprint="edge", rated=q, rated_unit="N/mm", rated_margin=allow_kPa * pitch_mm / 1e3 / max(q, 1e-9),
+                   rated_margin_humid=humid_kPa * pitch_mm / 1e3 / max(q, 1e-9))
+    return out
+
+
 def mirrored(jaw: Jaw) -> Jaw:
     """The jaw seen from the other side: each finger's geometry on the other side of the centreline."""
     sides = {s: replace(jaw.sides[-s], side=s, faces=[replace(f, side=s) for f in jaw.sides[-s].faces]) for s in (1, -1)}
@@ -67,7 +114,6 @@ class _GripperBuilder(_Builder):
         js = self.jaw.sides[side]
         tag = self.prefix + ("R" if side > 0 else "L")
         out = []
-        mass, mom = 0.0, 0.0
         k = 0
         for poly in js.body_mj:
             for piece in convex_pieces(poly):
@@ -84,10 +130,8 @@ class _GripperBuilder(_Builder):
                            f'priority="1" contype="{GRIP}" conaffinity="{OBJ | TABLE}" rgba="0.55 0.6 0.68 1"/>')
                 self.body_geoms[gname] = side
                 self.geom_depth[gname] = layer_depth(self.b1, js, float(c.x), float(c.y), w)
-                m = self.density * piece.area * 1e-6 * w * 1e-3
-                mass += m
-                mom += m * ((c.x * 1e-3) ** 2 + (c.y * 1e-3) ** 2)
                 k += 1
+        mass, mom = body_mass(js, self.density)
         for face in js.faces:
             out.append(self.face_xml(face, side, tag))
         return "".join(out), mass, mom
@@ -466,10 +510,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     el_gp = np.array([gi * 2 + p for gi, p, _, _ in els], dtype=int)
     el_area = np.array([e.area for _, _, e, _ in els])
     el_grip = np.array([e.kind != "bare" for _, _, e, _ in els])
-    el_qadr = np.array([qadr(e.joint) for _, _, e, _ in els], dtype=int)
-    el_lo = np.array([model.jnt_range[jid(e.joint), 0] for _, _, e, _ in els])
-    el_k = np.array([model.jnt_stiffness[jid(e.joint)] for _, _, e, _ in els])
-    el_q0 = np.array([model.qpos_spring[qadr(e.joint)] for _, _, e, _ in els])
+    el_sp = element_springs(model, [e for _, _, e, _ in els])
     body_of = {f: name(mujoco.mjtObj.mjOBJ_BODY, f"finger{f}") for g in G_ for f in fingers[g].values()}
     axis_y = {f: (-1.0 if f.endswith("R") else 1.0) for f in body_of}
     q_f = {f: qadr(f"j{f}") for f in body_of}
@@ -495,6 +536,15 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     # servo's, so it doesn't change.
     tau_close = float(cfg.get("close_torque_Nm") or tau)
     brake_floor = -tau_close if cfg.get("close_brakes", True) else 0.0
+    # SIM round 12: rated runs cap the jaw drive at its peak, both finger motors together, and the brake at 30 N m; a
+    # run that needs more back-drives and is scored as it falls. `cap_drive: false` leaves the hold servo uncapped.
+    drv = b1.get("drive_Nm_per_gripper") or {}
+    u_cap = float(drv.get("peak", 25.0)) / 2.0 if cfg.get("cap_drive", True) else math.inf
+    continuous = [float(x) for x in (drv.get("continuous") or [7.0, 10.0])]
+    fatigue_factor = float(cfg.get("root_fatigue_factor", 1.5))
+    allow_kPa = case.material.allow_pressure / 1e3
+    humid_kPa = allow_kPa * float(b1.get("humid_factor", 0.6)) if allow_kPa > float(cfg.get("bed_limit_kPa", 25.0)) else allow_kPa
+    pitch_mm, flush_mm = float(cfg.get("edge_pitch_mm", 8.0)), float(cfg.get("flush_mm", 0.25))
     v_app = float(cfg.get("approach_m_s", 0.1))
     app = float(cfg.get("approach_mm", 30.0)) * 1e-3
     sq_s = float(cfg.get("squeeze_s", 0.4))
@@ -609,8 +659,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                             zz = pos[s][live, 2] - z_bottom
                             out["zc"][f] = float(np.average(zz, weights=wts[live]))
                             out["zmin"][f], out["zmax"][f] = float(zz.min()), float(zz.max())
-        q = data.qpos[el_qadr]
-        spring = np.where(el_grip & (q > el_lo + 2e-5), el_k * np.maximum(el_q0 - q, 0.0), np.nan)
+        spring = spring_loads(data, el_sp, el_grip)
         Fe = np.where(np.isnan(spring), Fc, spring)
         out["Fe"], out["Fc"] = Fe, Fc
         return out
@@ -649,6 +698,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     w_tau = {g: (0.0, "") for g in G_}
     w_tau_buf = {g: collections.deque(maxlen=n5) for g in G_}
     w_tau5 = {g: (0.0, "") for g in G_}
+    w_M_buf = {f: collections.deque(maxlen=n5) for f in body_of}
+    w_M5 = {f: (0.0, "") for f in body_of}
     # Rev 2.34: every contact's 5 ms peak in each phase, the cut included.
     roll = {(g, part): Rolling(n5) for g in G_ for part in ("out", "thumb", "hub")}
     # Rev 2.35's close window: each contact's 5 ms peak from the run's first finger or hub contact through the
@@ -690,6 +741,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             fF = np.array([Fc[ix].sum() for ix in groups])
             fM = np.array([(Fc[ix] * el_s[ix]).sum() for ix in groups])
             N, r = ms["N"][f], ms["r"][f]
+            w_M_buf[f].append(abs(ms["M"][f]))
+            if len(w_M_buf[f]) == n5 and sum(w_M_buf[f]) / n5 > w_M5[f][0]:
+                w_M5[f] = (sum(w_M_buf[f]) / n5, ph)
             if N > w_one[f][0]:
                 w_one[f] = (N, ph)
             buf = w_buf[f]
@@ -889,6 +943,10 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     })
     for k in ("span", "zc", "zmin", "zmax", "stop_load"):
         stats["hold"][k] = {f: [] for f in body_of}
+    capped = {g: False for g in G_}
+    cap_s = {g: 0.0 for g in G_}
+    cap_phase = {g: "" for g in G_}
+    backdrive = {g: 0.0 for g in G_}
     ref_power = None
     ref_stop = None
     ref_print = None
@@ -936,6 +994,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 data.ctrl[a_pos[g]] = inward[g] * v_app * t
         # Jaws.
         for g in G_:
+            capped[g] = False
             for f in fingers[g].values():
                 phi = float(data.qpos[q_f[f]])
                 om = float(data.qvel[v_f[f]])
@@ -947,6 +1006,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                     u = -min(max(kv_drive * (w_close + om), brake_floor), tau_close)
                 else:
                     u = kp_j * (preset - phi) - kv_j * om
+                if abs(u) > u_cap:
+                    u = math.copysign(u_cap, u)
+                    capped[g] = True
                 data.ctrl[a_drive[f]] = u
         if tl is not None:
             x, z, vx, vz = tl(t)
@@ -964,6 +1026,12 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         t = data.time
         ms = measure()
         ph_now = phase if tl is None else tl.phase(t)
+        for g in G_:
+            if capped[g]:
+                cap_s[g] += dt
+                cap_phase[g] = cap_phase[g] or ph_now
+            if jaw_hold[g] is not None and brake_on is None:
+                backdrive[g] = max(backdrive[g], float(data.qpos[q_f[fingers[g]["out"]]]) - jaw_hold[g])
         load = {g: ms["N"][fingers[g]["out"]] + ms["N"][fingers[g]["thumb"]] + float(np.linalg.norm(ms["hub"][g])) for g in G_}
         if not math.isfinite(t_first) and max(load.values()) > CONTACT_N:
             t_first = t
@@ -1227,8 +1295,11 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                            "deck_off_longest_s": deck_off["longest_s"], "deck_off_total_s": deck_off["total_s"],
                            "deck_min_before_squeeze_N": deck_off["min_N"] if math.isfinite(deck_off["min_N"]) else math.nan,
                            "drive_cap_Nm": drive_cap, "drive_over_cap": any(drive_over.values()),
+                           "drive_capped_at_Nm": 2.0 * u_cap if math.isfinite(u_cap) else math.nan,
+                           "drive_capped_any": any(cap_s[g] > 0.0 for g in G_), "drive_continuous_Nm": continuous,
                            "close_rad_s": w_close, "close_brakes": brake_floor < 0.0, "close_torque_Nm": tau_close,
-                           "close_gear_friction_Nm": close_friction}
+                           "close_gear_friction_Nm": close_friction, "root_fatigue_factor": fatigue_factor,
+                           "edge_pitch_mm": pitch_mm, "flush_mm": flush_mm}
 
     def close_fields(g: str) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -1309,6 +1380,16 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             res[f"{g}_{part}_stop_load_hold_Nm"] = mean(stats["hold"]["stop_load"][f])
             res[f"{g}_{part}_root_MPa"] = root_bound(stats["peak_M"][f], f)
             res[f"{g}_{part}_root_hold_MPa"] = root_bound(res[f"{g}_{part}_M_hold_Nm"], f)
+            res[f"{g}_{part}_M_5ms_Nm"], res[f"{g}_{part}_M_5ms_phase"] = w_M5[f]
+            res[f"{g}_{part}_root_5ms_MPa"] = root_bound(w_M5[f][0], f)
+            res.update({f"{g}_{part}_{k}": v for k, v in root_margins(
+                b1, res[f"{g}_{part}_root_5ms_MPa"], res[f"{g}_{part}_root_hold_MPa"], fatigue_factor).items()})
+            res.update({f"{g}_{part}_5ms_{k}": v for k, v in footprint(wb, allow_kPa, humid_kPa, pitch_mm, flush_mm).items()})
+        res[f"{g}_drive_capped_s"], res[f"{g}_drive_capped_phase"] = cap_s[g], cap_phase[g]
+        res[f"{g}_backdrive_deg"] = math.degrees(backdrive[g])
+        h = abs(res[f"{g}_hold_Nm"])
+        for k, c_Nm in (("lo", continuous[0]), ("hi", continuous[-1])):
+            res[f"{g}_hold_continuous_margin_{k}"] = math.nan if not math.isfinite(h) else c_Nm / h if h > 1e-9 else 99.0
         res[f"{g}_thumb_height_mm"] = mean(stats["hold"]["zc"][f_t]) * 1e3
         lo, hi = mean(stats["hold"]["zmin"][f_t]) * 1e3, mean(stats["hold"]["zmax"][f_t]) * 1e3
         res[f"{g}_thumb_zmin_mm"], res[f"{g}_thumb_zmax_mm"] = lo, hi

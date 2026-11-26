@@ -38,7 +38,7 @@ import shapely.geometry
 
 from .geometry import to_view
 from .jaw import Jaw
-from .mj1 import BAD_STATE, DROP, GRIP, OBJ, TABLE, _Builder, _fmt, _min_jerk, _p
+from .mj1 import BAD_STATE, DROP, GRIP, OBJ, TABLE, _Builder, _fmt, _min_jerk, _p, element_springs, spring_loads
 from .objects import G, GraspObject
 from .scenario import Scenario
 from .screen1 import Limits, _band_min, _geometry, _view
@@ -407,10 +407,7 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
     el_grip = np.array([e.kind != "bare" for e in els])
     el_area = np.array([e.area for e in els])
     el_ext = np.array([e.ext for e in els]) * 1e-3
-    el_qadr = np.array([qadr(e.joint) for e in els], dtype=int)
-    el_lo = np.array([model.jnt_range[jid(e.joint), 0] for e in els])
-    el_k = np.array([model.jnt_stiffness[jid(e.joint)] for e in els])
-    el_q0 = np.array([model.qpos_spring[qadr(e.joint)] for e in els])
+    el_sp = element_springs(model, els)
     finger_side = np.zeros(model.ngeom, dtype=int)
     for gname, s in b.body_geoms.items():
         finger_side[gid(gname)] = s
@@ -480,8 +477,7 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
         Fc = np.zeros(n_el)
         push_f = {1: 0.0, -1: 0.0}
         body = {1: 0.0, -1: 0.0}
-        q = data.qpos[el_qadr]
-        spring = np.where(el_grip & (q > el_lo + 2e-5), el_k * np.maximum(el_q0 - q, 0.0), np.nan)
+        spring = spring_loads(data, el_sp, el_grip)
         if n == 0:
             return np.where(np.isnan(spring), 0.0, spring), push_f, body
         con = data.contact

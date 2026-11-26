@@ -664,6 +664,64 @@ def test_batch1_wedged_pads_sit_in_their_drawn_pockets(batch1):
         assert pad.outline() == pytest.approx(dataclasses.replace(pad, seat="square").outline())
 
 
+def test_batch1_convex_corners_get_a_second_slide(batch1):
+    import re
+
+    from shapely.geometry import box
+    from shapely.ops import unary_union
+
+    from graspsim2d.jaw import convex_corners
+    from graspsim2d.mj1 import E_H, _Builder, _d, body_mass
+    from graspsim2d.t5 import case_object
+
+    # SIM round 12: an element at a convex corner gets a second slide along the next face's normal.
+    j4, j5 = batch1.get_jaw("S4", 45.0), batch1.get_jaw("S5", 45.0)
+    out = convex_corners(j4.sides[1])
+    # S4's outside finger: the tip's three faces, both ends of the land and the floor's drop into the recess; not the
+    # recess's concave corners, nor the floor's end at the heel, where no face meets it.
+    assert set(out) == {("bare1", 0), ("bare2", -1), ("bare2", 0), ("bare3", -1), ("bare4", 0), ("bare5", -1),
+                        ("bare5", 0), ("bare6", -1), ("bare8", 0), ("bare9", -1)}
+    assert out[("bare6", -1)][0].name == "bare5" and out[("bare5", 0)][0].name == "bare6"
+    assert tuple(out[("bare6", -1)][3]) == pytest.approx((132.0, 17.75))
+    assert {k for k in convex_corners(j4.sides[-1]) if k[0] == "bare2"} == {("bare2", 0), ("bare2", -1)}
+    # S5's crank corner turns 15.95 deg, short of the 30 it takes.
+    assert not any("crank_face" in (k[0], v[0].name) for k, v in convex_corners(j5.sides[1]).items())
+    assert ("crank_face", -1) in convex_corners(j5.sides[1], min_turn_deg=10.0)
+
+    c = batch1.ctx()
+    case = case_object(c["b1"]["t5"], "2ft", c["lib"].materials)
+
+    def build(b1):
+        b = _Builder(j4, case, c["sc"], b1, 0.0, {1: 0.5, -1: 0.5}, 1.0, 1.0, 0.0)
+        return b, b.finger_xml(1)[0]
+
+    def joint(xml, name):
+        m = re.search(rf'<joint name="{name}" type="slide" axis="([^"]+)" stiffness="([^"]+)"[^>]* range="([^"]+)"/>', xml)
+        return [float(x) for x in m.group(1).split()], float(m.group(2)), [float(x) for x in m.group(3).split()]
+
+    b, xml = build(c["b1"])
+    el = next(e for e in b.elements if e.face == "bare6" and e.joint2)
+    assert el.adj == "bare5" and el.joint2 == el.joint + "_c"
+    assert {(e.face, e.adj) for e in b.elements if e.joint2} == {(f, v[0].name) for (f, _), v in out.items()}
+    axis, k1, _ = joint(xml, el.joint)
+    axis2, k2, rng2 = joint(xml, el.joint2)
+    # Along the land's normal, at the land's stiffness over the 0.8 mm the element's end presents to it, and with the
+    # land's bare travel.
+    X, Z = _d(0.0, 1.0, 1)
+    assert axis2 == pytest.approx([X, 0.0, Z], abs=1e-6) and axis != pytest.approx(axis2, abs=0.1)
+    assert k2 == pytest.approx(k1 * 2 * E_H / el.seg, rel=1e-4) and rng2 == pytest.approx([-1.5e-3, 2e-4])
+    b, xml = build({**c["b1"], "corner_slide": False})
+    assert not any(e.joint2 for e in b.elements) and "_c\"" not in xml
+
+    # MuJoCo's body is cut back past each bare face's ends too: S4's floor face starts 0.3 mm short of the heel, and
+    # the rigid sliver there took the case's load once its corner gave.
+    js = j4.sides[1]
+    heel = box(49.0, 16.2, 50.0, 17.8)
+    assert unary_union(js.body_mj).intersection(heel).area < 1e-6 < 0.3 < unary_union(js.mass_mj).intersection(heel).area
+    m_flat = body_mass(dataclasses.replace(js, body_mj=js.mass_mj, mass_mj=None), 8000.0)
+    assert body_mass(js, 8000.0) == m_flat != body_mass(dataclasses.replace(js, mass_mj=None), 8000.0)
+
+
 def test_batch1_screen_bed_and_depth_stop(batch1):
     from graspsim2d.screen1 import Limits, scan_box, solve
 
@@ -935,6 +993,23 @@ def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
     assert r["print_slip_mm"] < 1.0
     # With no stop, the hub's peak window ends 5 s after the power cut.
     assert r["hub_peak_event"] == "power cut" and r["A_hub_sustained_N"] < 1.0
+    # SIM round 12's corner fix: the floor and the thumb's step face are flush and share their loads, where a riser's
+    # or the land's corner element held the case before, so each 5 ms reading is a flush face's by the footprint rule.
+    for part, face in (("out", "bare9"), ("thumb", "bare2")):
+        p = f"A_{part}_5ms_"
+        assert r[p + "face"] == face and r[p + "face_N"] >= 0.9 * r[p + "N"] > 0.0
+        assert r[p + "footprint"].startswith("flush") and r[p + "rated_unit"] == "kPa"
+        whole = r[p + "footprint"] == "flush"
+        area = r[p + "face_w_mm"] * (r[p + "face_len_mm"] if whole else 3 * r[p + "face_res_end_mm"])
+        assert r[p + "footprint_mm2"] == pytest.approx(area)
+        assert r[p + "rated"] == pytest.approx((1 if whole else 2) * r[p + "N"] / area * 1e3)
+    # The drive's 25 N*m peak caps each gripper, 12.5 N*m a finger motor; the root is rated against PA12's allowables.
+    assert r["drive_capped_at_Nm"] == pytest.approx(25.0) and r["root_fatigue_factor"] == pytest.approx(1.5)
+    for g in "AB":
+        assert r[f"{g}_drive_capped_s"] >= 0.0 and math.isfinite(r[f"{g}_backdrive_deg"])
+        for part in ("out", "thumb"):
+            assert r[f"{g}_{part}_M_5ms_Nm"] > 0.0 and r[f"{g}_{part}_root_5ms_MPa"] > 0.0
+            assert r[f"{g}_{part}_root_static_margin"] > 0.0 and r[f"{g}_{part}_root_fatigue_margin"] > 0.0
 
     jobs = batch1.block_t5()
     assert len(jobs) == len({batch1._job_key(x) for x in jobs}) == 312 and all(x["hub_contact"] for x in jobs)
@@ -1031,6 +1106,18 @@ def test_t4b_s4_seats_both_lips_on_the_tote(batch1):
         # Each wrist sensor reads its half of the crate: the pinch on the wall cancels between the two fingers.
         assert r[f"{g}_sensor_F_N_hold"] == pytest.approx(15.0 * 9.81 / 2, rel=0.1)
     assert r["passed"] and r["slip_mm"] < 2.0 and r["power_cut_held"]
+    # Revision 2.25: T4 reads each finger's contact by the footprint rule from the start, on its largest 5 ms average.
+    # The outside fingers' land and hook face share the lip at the corner between them, off the land's middle third;
+    # the inside fingers bear on the wall's inner face with an edge.
+    for nm in ("AR", "AL", "BR", "BL"):
+        assert r[f"{nm}_5ms_N"] > 0.0 and r[f"{nm}_5ms_face"] in r[f"{nm}_5ms_faces"]
+        assert r[f"{nm}_5ms_rated_unit"] == ("N/mm" if r[f"{nm}_5ms_footprint"] == "edge" else "kPa")
+    for nm in ("AR", "BL"):
+        assert set(r[f"{nm}_5ms_faces"]) == {"bare5", "bare6"} and r[f"{nm}_5ms_face"] == "bare5"
+        assert r[f"{nm}_5ms_footprint"] == "flush, off its middle third"
+    for nm in ("AL", "BR"):
+        assert r[f"{nm}_5ms_footprint"] == "edge"
+        assert r[f"{nm}_5ms_rated"] == pytest.approx(r[f"{nm}_5ms_N"] / r[f"{nm}_5ms_face_w_mm"])
 
 
 def test_sensor_sums_the_external_contacts():
@@ -1085,8 +1172,41 @@ def test_batch1_finger_material_switch(batch1):
             pass
     # A job names its finger material, and its row records the one it ran on.
     job = {"block": "t", "design": "S2", "reading": 45.0, "job": "sheet_screen", "object": "c_flute_4mm", "depth_mm": 30.0}
-    assert batch1.run_job({**job, "finger": "stainless"})["finger_material"] == "stainless"
-    assert batch1.run_job(job)["finger_material"] == "pa12" and batch1.finger() == "pa12"
+    row = batch1.run_job({**job, "finger": "stainless"})
+    assert row["finger_material"] == "stainless"
+    # Revision 2.39: every stainless row carries the edge-break rule, which the model's square corners don't.
+    assert row["edge_note"].startswith("edge break (rev 2.39") and "R = land / 2 >= 0.4 mm" in row["edge_note"]
+    row = batch1.run_job(job)
+    assert row["finger_material"] == "pa12" and batch1.finger() == "pa12" and "edge_note" not in row
+
+
+def test_t5_root_margins_and_footprint_rule(batch1):
+    from graspsim2d.t5 import footprint, root_margins
+
+    # Revision 2.39: stainless at 68 MPa static on the nominal stress, and 43 MPa amplitude at R = 0 with K_t 2 on
+    # the working stress x 1.5; PA12 at 16 MPa static and 10 MPa peak, both with K_t 2.
+    st, pa = batch1.ctx("stainless")["b1"], batch1.ctx()["b1"]
+    m = root_margins(st, 34.0, 10.0, 1.5)
+    assert m["root_static_margin"] == pytest.approx(2.0) and m["root_fatigue_margin"] == pytest.approx(43.0 / 15.0)
+    m = root_margins(pa, 4.0, 2.0, 1.5)
+    assert m["root_static_margin"] == pytest.approx(2.0) and m["root_fatigue_margin"] == pytest.approx(10.0 / 6.0)
+    assert math.isnan(root_margins(st, math.nan, 10.0, 1.5)["root_static_margin"])
+    # SIM round 12's footprint: a flush face read over its whole area with the resultant in its middle third ...
+    best = {"N": 27.2, "face": "bare2", "face_len_mm": 25.9, "face_w_mm": 70.0, "face_res_frac": 0.49,
+            "face_res_end_mm": 12.7, "face_tilt_deg": 0.0}
+    fp = footprint(best, 105.0, 63.0, 8.0, 0.25)
+    assert fp["footprint"] == "flush" and fp["footprint_mm2"] == pytest.approx(1813.0)
+    assert fp["rated"] == pytest.approx(27.2 / 1813.0 * 1e3) and fp["rated_margin"] == pytest.approx(105.0 / fp["rated"])
+    assert fp["rated_margin_humid"] == pytest.approx(63.0 / fp["rated"])
+    # ... else over three times the resultant's distance from the loaded end at twice the mean ...
+    fp = footprint({**best, "face_res_frac": 0.2, "face_res_end_mm": 5.18}, 105.0, 63.0, 8.0, 0.25)
+    assert fp["footprint"] == "flush, off its middle third" and fp["footprint_mm2"] == pytest.approx(3 * 5.18 * 70.0)
+    assert fp["rated"] == pytest.approx(2 * 27.2 / (3 * 5.18 * 70.0) * 1e3)
+    # ... and a face tilted more than 0.25 mm over its length is an edge, against the limit over one 8 mm pitch.
+    fp = footprint({**best, "face_tilt_deg": 1.0}, 105.0, 63.0, 8.0, 0.25)
+    assert fp["footprint"] == "edge" and fp["rated_unit"] == "N/mm" and fp["rated"] == pytest.approx(27.2 / 70.0)
+    assert fp["rated_margin"] == pytest.approx(0.84 / (27.2 / 70.0))
+    assert footprint({"N": 0.0}, 105.0, 63.0, 8.0, 0.25)["footprint"] == ""
 
 
 def test_t5_on_stainless_keeps_the_printed_hub(batch1):

@@ -79,12 +79,13 @@ class Face:
 class JawSide:
     side: int
     faces: list[Face]
-    body_mj: list[SPolygon]  # finger-local printed body, cut back under every bare face (MuJoCo)
+    body_mj: list[SPolygon]  # finger-local printed body, cut back under and past the ends of every bare face (MuJoCo)
     body_screen: list[SPolygon]  # cut back under the marked faces only (the screen's body test)
     outline: Any  # shapely: body plus pads, for drawing and table/hub checks
     widths: list[tuple[float, float]] | None
     default_width: float
     parts: list | None = None  # the spec's comb parts (outline.LayerPart), finger-local
+    mass_mj: list[SPolygon] | None = None  # the body MuJoCo's mass and inertia are summed over, if not body_mj
 
     def width_at(self, u: float) -> float:
         return width_at(self.widths, u) if self.widths else self.default_width
@@ -194,15 +195,15 @@ def convex_pieces(poly, min_area: float = 0.3, tol: float = 0.2) -> list[SPolygo
     return out
 
 
-def _strip(face: Pad, depth: float):
+def _strip(face: Pad, depth: float, cap: str = "flat"):
     pts = face.face_samples(max(9, 2 * len(face.profile or ())))[0]
-    return LineString(pts).buffer(depth, cap_style="flat", join_style="mitre")
+    return LineString(pts).buffer(depth, cap_style=cap, join_style="mitre")
 
 
-def _cut_back(body_polys: list[SPolygon], faces: list[Face], depth: float = BARE_INSET) -> list[SPolygon]:
+def _cut_back(body_polys: list[SPolygon], faces: list[Face], depth: float = BARE_INSET, cap: str = "flat") -> list[SPolygon]:
     if not faces:
         return [p for p in body_polys if p.area > 0.3]
-    cut = unary_union([_strip(f.pad, depth) for f in faces])
+    cut = unary_union([_strip(f.pad, depth, cap) for f in faces])
     out = []
     for p in body_polys:
         out += [g for g in _polys(p.difference(cut)) if g.area > 0.3]
@@ -286,8 +287,12 @@ def jaw_from_spec(g: SpecGripper, marks: Mapping[str, Any] | None = None, torque
         bare_all = [f for f in faces if f.rigid]
         bare_marked = [f for f in faces if f.kind == "marked"]
         outline = unary_union([sf.body] + [SPolygon(p.outline()) for p in sf.pads])
-        sides[side] = JawSide(side, faces, _cut_back(body, bare_all), _cut_back(body, bare_marked), outline,
-                              list(sf.widths) if sf.widths else None, sf.width_at(60.0), list(sf.parts))
+        # MuJoCo's body is also cut back for the inset past each bare face's ends, where the outline can run on in
+        # the face's plane: a rigid sliver there would take the load the face's sprung elements should share. The
+        # mass stays on the body cut square at the ends.
+        sides[side] = JawSide(side, faces, _cut_back(body, bare_all, cap="square"), _cut_back(body, bare_marked), outline,
+                              list(sf.widths) if sf.widths else None, sf.width_at(60.0), list(sf.parts),
+                              _cut_back(body, bare_all))
     tau = float(v.get("finger_torque", 3.0)) if torque is None else torque
     brakes = tuple(sorted({REFERENCE_BRAKE, *[float(b) for b in spec.brake_ratings()]}))
     notes = list(dict.fromkeys(g.right.merged + g.left.merged))
@@ -328,3 +333,32 @@ def element_layout(face: Face, pitch: float, fine_pitch: float, short: float = S
         seg = np.full(n, float(np.sum(ds)) / n)
     widths = np.array([face.width_at(float(c[0])) for c in centres])
     return {"c": centres, "n": normals, "seg": seg, "th": th, "w": widths}
+
+
+def convex_corners(js: JawSide, gap: float = 0.6, min_turn_deg: float = 30.0) -> dict[tuple[str, int], tuple]:
+    """Each face end that meets another face's end at a convex corner of the finger, keyed (face name, 0 for its
+    first sample or -1 for its last), to (the other face, its end, its outward normal there, the corner point).
+
+    Ends within `gap` mm meet (a pad's face is masked 0.25 mm off the bare faces beside it). The corner is convex
+    where each face runs away from the other's outward normal, and counts where the normals turn by `min_turn_deg`
+    or more: an element on a shallower corner still gives along the other face's normal."""
+    ends = []
+    for f in js.faces:
+        pts, nrm, _, _ = f.pad.face_samples(9)
+        ends.append((f, 0, pts[0], nrm[0], pts[1] - pts[0]))
+        ends.append((f, -1, pts[-1], nrm[-1], pts[-2] - pts[-1]))
+    cos_max = math.cos(math.radians(min_turn_deg))
+    out: dict[tuple[str, int], tuple] = {}
+    for fa, ea, pa, na, da in ends:
+        best = None
+        for fb, eb, pb, nb, db in ends:
+            g = float(np.hypot(*(pa - pb)))
+            if fb is fa or g > gap or float(na @ nb) > cos_max:
+                continue
+            if float(na @ db) >= 0.0 or float(nb @ da) >= 0.0:
+                continue
+            if best is None or g < best[0]:
+                best = (g, fb, eb, nb, 0.5 * (pa + pb))
+        if best is not None:
+            out[(fa.name, ea)] = best[1:]
+    return out

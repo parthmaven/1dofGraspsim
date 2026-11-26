@@ -336,16 +336,23 @@ def job_t3(job: dict[str, Any]) -> dict[str, Any]:
     return {**out, **_torque_flag(j)}
 
 
+def edge_note(material: str | None = None) -> dict[str, str]:
+    """Revision 2.39: the material's edge-break note, which every row on it carries."""
+    mats = _shared()["sc"].raw["batch1"].get("finger_materials") or {}
+    note = (mats.get(material or finger()) or {}).get("edge_note")
+    return {"edge_note": " ".join(str(note).split())} if note else {}
+
+
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
     """One job, on the finger material its `finger` names (the config's selection without one)."""
     try:
         f = {"scan": job_scan, "sheet_screen": job_sheet_screen, "mj": job_mj, "t5": job_t5, "t3": job_t3}[job["job"]]
         with finger_material(job.get("finger")):
-            return _clean({**f(job), "finger_material": finger()})
+            return _clean({**f(job), "finger_material": finger(), **edge_note()})
     except Exception as e:  # noqa: BLE001 - a failed job is a row, not a dead batch
         import traceback
         row = {**job, "kind": "error", "reason": f"{type(e).__name__}: {e}", "traceback": traceback.format_exc()[-2000:],
-               "finger_material": job.get("finger") or finger()}
+               "finger_material": job.get("finger") or finger(), **edge_note(job.get("finger"))}
         try:
             row.update(_torque_flag(get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))))
         except Exception:  # noqa: BLE001 - the jaw itself may be what failed

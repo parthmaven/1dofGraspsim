@@ -32,7 +32,7 @@ import mujoco
 import numpy as np
 
 from .geometry import to_view
-from .jaw import Jaw, JawSide, convex_pieces, element_layout
+from .jaw import Jaw, JawSide, convex_corners, convex_pieces, element_layout
 from .objects import G, GraspObject
 from .pads import foundation_stiffness, series, shear_stiffness
 from .scenario import Scenario
@@ -118,6 +118,56 @@ class _El:
     w: float  # m
     ext: float  # mm, vertical extent at the planned grip
     depth: float = 0.0  # mm along the sensor's axis below the top datum, from the element's layer
+    joint2: str = ""  # a convex-corner element's second slide, along the adjacent face's normal
+    adj: str = ""  # the face beyond that corner
+
+
+def body_mass(js: JawSide, density: float) -> tuple[float, float]:
+    """A finger body's mass (kg) and its second moment about the pivot (kg m^2), summed over convex pieces."""
+    mass = mom = 0.0
+    for poly in js.mass_mj if js.mass_mj is not None else js.body_mj:
+        for piece in convex_pieces(poly):
+            c = piece.centroid
+            m = density * piece.area * 1e-6 * js.width_at(float(c.x)) * 1e-3
+            mass += m
+            mom += m * ((c.x * 1e-3) ** 2 + (c.y * 1e-3) ** 2)
+    return mass, mom
+
+
+def element_springs(model, els) -> dict[str, np.ndarray]:
+    """Per element: its slide's qpos address, lower stop, stiffness and rest; the same for a convex-corner element's
+    second slide (stiffness 0 on the rest), and the cosine between the two slides' axes."""
+    jid = lambda n: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)
+    j1 = np.array([jid(e.joint) for e in els], dtype=int)
+    two = np.array([bool(e.joint2) for e in els], dtype=bool)
+    j2 = np.array([jid(e.joint2) if e.joint2 else jid(e.joint) for e in els], dtype=int)
+    q1, q2 = model.jnt_qposadr[j1], model.jnt_qposadr[j2]
+    return {"q": q1, "lo": model.jnt_range[j1, 0], "k": model.jnt_stiffness[j1], "q0": model.qpos_spring[q1],
+            "two": two, "q2": q2, "lo2": model.jnt_range[j2, 0], "k2": np.where(two, model.jnt_stiffness[j2], 0.0),
+            "q02": model.qpos_spring[q2], "c": np.where(two, np.sum(model.jnt_axis[j1] * model.jnt_axis[j2], axis=1), 0.0)}
+
+
+def spring_loads(data, sp: dict[str, np.ndarray], grip: np.ndarray) -> np.ndarray:
+    """Each element's load from its springs; nan on unmarked faces and at a slide's stop, where the contact force is
+    read instead. A convex-corner element's two slides give the size of the force they hold between them."""
+    q = data.qpos[sp["q"]]
+    s1 = sp["k"] * (sp["q0"] - q)
+    ok = grip & (q > sp["lo"] + 2e-5)
+    out = np.maximum(s1, 0.0)
+    if sp["two"].any():
+        q2 = data.qpos[sp["q2"]]
+        s2 = sp["k2"] * (sp["q02"] - q2)
+        c = sp["c"]
+        both = np.sqrt(np.maximum(s1 * s1 - 2 * c * s1 * s2 + s2 * s2, 0.0) / np.maximum(1.0 - c * c, 1e-6))
+        out = np.where(sp["two"], np.where((s1 > 0) | (s2 > 0), both, 0.0), out)
+        ok &= ~sp["two"] | (q2 > sp["lo2"] + 2e-5)
+    return np.where(ok, out, np.nan)
+
+
+def at_stops(data, sp: dict[str, np.ndarray]) -> np.ndarray:
+    """Elements at a slide's compression stop."""
+    stop = data.qpos[sp["q"]] <= sp["lo"] + 2e-5
+    return stop | (sp["two"] & (data.qpos[sp["q2"]] <= sp["lo2"] + 2e-5))
 
 
 class _Builder:
@@ -148,6 +198,10 @@ class _Builder:
         self.body_geoms: dict[str, int] = {}
         self.density = finger_density(b1)
         self.geom_depth: dict[str, float] = {}  # every finger geom, for the sensor's bending
+        cs = b1.get("corner_slide", {"gap_mm": 0.6, "min_turn_deg": 30.0})
+        self.corner_cfg = None if not cs else {"gap": float(cs.get("gap_mm", 0.6)),
+                                               "min_turn_deg": float(cs.get("min_turn_deg", 30.0))}
+        self.corners: dict[int, dict] = {}
 
     def armature(self, k: float, mass: float) -> float:
         w = 2 * math.pi * self.f_el
@@ -157,7 +211,6 @@ class _Builder:
         js = self.jaw.sides[side]
         tag = "R" if side > 0 else "L"
         out = []
-        mass, mom = 0.0, 0.0
         k = 0
         for poly in js.body_mj:
             for piece in convex_pieces(poly):
@@ -175,10 +228,8 @@ class _Builder:
                            f'priority="1" contype="{GRIP}" conaffinity="{OBJ | TABLE}" rgba="0.55 0.6 0.68 1"/>')
                 self.body_geoms[gname] = side
                 self.geom_depth[gname] = layer_depth(self.b1, js, float(c.x), float(c.y), w)
-                m = self.density * piece.area * 1e-6 * w * 1e-3
-                mass += m
-                mom += m * ((c.x * 1e-3) ** 2 + (c.y * 1e-3) ** 2)
                 k += 1
+        mass, mom = body_mass(js, self.density)
         for face in js.faces:
             out.append(self.face_xml(face, side, tag))
         return "".join(out), mass, mom
@@ -205,6 +256,16 @@ class _Builder:
                          f'<inertial pos="0 0 0" mass="{_fmt(pad_mass * 0.5)}" diaginertia="1e-7 1e-7 1e-7"/>')
             close.append("</body>")
         phi = self.phi_plan[side]
+        # SIM's corner fix: an element at a convex corner meets an object bearing on the next face square to its own
+        # slide, so it would hold that object rigidly and the next face's elements would never compress. It gets a
+        # second slide along the next face's normal, at that face's stiffness over the 0.8 mm its end presents there.
+        if side not in self.corners:
+            self.corners[side] = convex_corners(self.jaw.sides[side], **self.corner_cfg) if self.corner_cfg else {}
+        at_corner: dict[int, tuple] = {}
+        for end in (0, -1):
+            hit = self.corners[side].get((pad.name, end))
+            if hit is not None:
+                at_corner.setdefault(int(np.argmin(np.hypot(*(lay["c"] - hit[3]).T))), hit)
         for j in range(n_el):
             cu, cv = lay["c"][j]
             nu, nv = lay["n"][j]
@@ -230,10 +291,23 @@ class _Builder:
             jn = f"{fname}_e{j}"
             lo = -(self.travel if face.rigid else 0.85 * th) * 1e-3
             rgba = "0.15 0.15 0.15 1" if not face.rigid else ("0.75 0.45 0.2 1" if face.kind == "marked" else "0.6 0.6 0.6 1")
+            second, jn2, adj = "", "", ""
+            if j in at_corner:
+                fb, eb, nb, _ = at_corner[j]
+                th_b = float(fb.pad.face_samples(9)[3][eb])
+                k_b = K_RIGID if fb.rigid else foundation_stiffness(fb.pad.shore, fb.pad.length * 1e-3, w, th_b * 1e-3)
+                k2 = series(k_b, k_o) * w * 2 * E_H * 1e-3
+                arm2 = self.armature(k2, m_el)
+                lo2 = -(self.travel if fb.rigid else 0.85 * th_b) * 1e-3
+                jn2, adj = f"{jn}_c", fb.name
+                nX2, nZ2 = _d(float(nb[0]), float(nb[1]), side)
+                second = (f'<joint name="{jn2}" type="slide" axis="{_fmt((nX2, 0, nZ2))}" '
+                          f'stiffness="{_fmt(k2)}" damping="{_fmt(2 * self.zeta * math.sqrt(k2 * (m_el + arm2)))}" '
+                          f'armature="{_fmt(arm2)}" range="{_fmt(lo2)} 0.0002"/>')
             parts.append(
                 f'<body name="{jn}" pos="{_fmt((X, 0, Z))}" gravcomp="1">'
                 f'<joint name="{jn}" type="slide" axis="{_fmt((nX, 0, nZ))}" stiffness="{_fmt(kk)}" damping="{_fmt(damp)}" '
-                f'armature="{_fmt(arm)}" range="{_fmt(lo)} 0.0002"/>'
+                f'armature="{_fmt(arm)}" range="{_fmt(lo)} 0.0002"/>{second}'
                 f'<inertial pos="0 0 0" mass="{_fmt(m_el)}" diaginertia="1e-9 1e-9 1e-9"/>'
                 f'<geom name="{jn}" type="box" euler="0 {_fmt(_beta(tX_, tZ_))} 0" size="{_fmt((seg / 2 * 1e-3, w / 2, E_H * 1e-3))}" '
                 f'mass="0" friction="{_fmt(mu)} 0.005 0.0001" priority="2" contype="{GRIP}" conaffinity="{OBJ | TABLE}" '
@@ -241,7 +315,7 @@ class _Builder:
             tz_view = abs(float(np.cos(phi) * nv - np.sin(phi) * nu))  # |dz| per unit length along the face
             depth = layer_depth(self.b1, self.jaw.sides[side], float(cu), float(cv), float(lay["w"][j]))
             self.geom_depth[jn] = depth
-            self.elements.append(_El(jn, jn, side, face.kind, pad.name, area, seg, w, seg * max(tz_view, 0.05), depth))
+            self.elements.append(_El(jn, jn, side, face.kind, pad.name, area, seg, w, seg * max(tz_view, 0.05), depth, jn2, adj))
         return "".join(parts) + "".join(close)
 
 
@@ -512,10 +586,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     el_area = np.array([e.area for e in els])
     el_ext = np.array([e.ext for e in els]) * 1e-3
     el_w = np.array([e.w for e in els])
-    el_qadr = np.array([qadr(e.joint) for e in els], dtype=int)
-    el_lo = np.array([model.jnt_range[jid(e.joint), 0] for e in els])
-    el_k = np.array([model.jnt_stiffness[jid(e.joint)] for e in els])
-    el_q0 = np.array([model.qpos_spring[qadr(e.joint)] for e in els])
+    el_sp = element_springs(model, els)
     el_pad = el_kind == "pad"
     body_side = np.zeros(model.ngeom, dtype=int)
     for gname, s in b.body_geoms.items():
@@ -578,8 +649,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         fric = {1: 0.0, -1: 0.0}
         tang = {1: 0.0, -1: 0.0}
         caps = {1: 0.0, -1: 0.0}
-        q = data.qpos[el_qadr]
-        spring = np.where(el_grip & (q > el_lo + 2e-5), el_k * np.maximum(el_q0 - q, 0.0), np.nan)
+        spring = spring_loads(data, el_sp, el_grip)
         if c is None:
             return np.where(np.isnan(spring), 0.0, spring), Fc, body, fric, tang, caps
         con, n, g1, g2, adr, ok, fn = c
@@ -772,7 +842,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
                 diag["press_contact"] = max(diag["press_contact"], float((Fc[gc] / el_area[gc]).max()))
             peaks["slip"] = max(peaks["slip"], slip)
             peaks["rot"] = max(peaks["rot"], rot)
-            at_stop = el_pad & (F > 0.01) & (data.qpos[el_qadr] <= el_lo + 2e-5)
+            at_stop = el_pad & (F > 0.01) & at_stops(data, el_sp)
             if at_stop.any():
                 bottomed = max(bottomed, int(at_stop.sum()))
             if len(hinge_adr):

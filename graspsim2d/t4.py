@@ -36,7 +36,7 @@ from .objects import G, GraspObject, Material
 from .scenario import Scenario
 from .sensor import Wrench, worst
 from .sensor import config as sensor_config
-from .t5 import T5Timeline, _GripperBuilder, mirrored
+from .t5 import T5Timeline, _GripperBuilder, footprint, mirrored
 
 TOL_MM2 = 0.05  # overlap area treated as touching
 TOUCH_N = 0.5  # N on a finger that counts as touching the container
@@ -60,6 +60,13 @@ def _mirror(poly):
 def _crate(W: float, zA: float, lip: dict[str, float]):
     p, h, t = lip["out_mm"], lip["height_mm"], lip["wall_mm"]
     return unary_union([box(W - t, zA - 230.0, W, zA + h), box(W, zA, W + p, zA + h)])
+
+
+def _axis(P: np.ndarray) -> np.ndarray | None:
+    """The principal direction of a face's element centres, or None for a one-element face."""
+    if len(P) < 2:
+        return None
+    return np.linalg.svd(P - P.mean(axis=0), full_matrices=False)[2][0]
 
 
 def _overlap(a, b) -> bool:
@@ -467,23 +474,93 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
             return "close"
         return "squeeze" if t < t0 else tl.phase(t)
 
+    # Revision 2.25: T4 reads its contacts by SIM round 12's footprint rule from the start. Each finger's largest
+    # 5 ms average of its normal force on the container, from the end of the close to the power cut, with the face
+    # that carries it, where on that face its resultant sits and the face's tilt to the container.
+    els = [(2 * gi + (0 if e.side > 0 else 1), e) for gi, g in enumerate(gs) for e in builders[g].elements]
+    el_of = np.full(model.ngeom, -1, dtype=int)
+    for k, (_, e) in enumerate(els):
+        el_of[gid(e.geom)] = k
+    names_f = [f"{g}{s}" for g in gs for s in "RL"]
+    body_f = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"finger{nm}") for nm in names_f]
+    el_s = np.zeros(len(els))
+    faces_of: dict[int, tuple[list[str], list[np.ndarray]]] = {}
+    face_ext: dict[tuple[int, str], tuple[float, float, float]] = {}
+    el_f = np.array([f for f, _ in els], dtype=int)
+    for f in range(nf):
+        idx = np.nonzero(el_f == f)[0]
+        fnames = sorted({els[k][1].face for k in idx})
+        groups = [idx[[els[k][1].face == nm for k in idx]] for nm in fnames]
+        faces_of[f] = (fnames, groups)
+        R = data.xmat[body_f[f]].reshape(3, 3)
+        for nm, ix in zip(fnames, groups):
+            P = np.array([(R.T @ (data.geom_xpos[gid(els[k][1].geom)] - data.xpos[body_f[f]]))[[0, 2]] for k in ix]) * 1e3
+            d = _axis(P)
+            s = (P - P.mean(axis=0)) @ d if d is not None else np.zeros(len(ix))
+            el_s[ix] = s
+            seg = np.array([els[k][1].seg for k in ix])
+            face_ext[(f, nm)] = (float((s - seg / 2).min()), float((s + seg / 2).max()), float(els[ix[0]][1].w * 1e3))
+    flush_mm = float(cfg.get("flush_mm", (b1.get("t5") or {}).get("flush_mm", 0.25)))
+
     def contacts():
-        """World force (N) on each lip and wall from each finger: F[finger, part] = (Fx, Fz)."""
+        """World force (N) on each lip and wall from each finger, F[finger, part] = (Fx, Fz); each finger's normal force
+        on the container; and each element's."""
         F = np.zeros((nf, 4, 2))
+        Fn = np.zeros(nf)
+        Fe = np.zeros(len(els))
         for i in range(data.ncon):
             c = data.contact[i]
             g1, g2 = c.geom1, c.geom2
             if owner[g1] >= 0 and part[g2] >= 0:
-                f, pr, sgn = owner[g1], part[g2], 1.0
+                f, pr, sgn, gf = owner[g1], part[g2], 1.0, g1
             elif owner[g2] >= 0 and part[g1] >= 0:
-                f, pr, sgn = owner[g2], part[g1], -1.0
+                f, pr, sgn, gf = owner[g2], part[g1], -1.0, g2
             else:
                 continue
             mujoco.mj_contactForce(model, data, i, f6)
             fr = np.asarray(c.frame).reshape(3, 3)
             w = sgn * (f6[0] * fr[0] + f6[1] * fr[1] + f6[2] * fr[2])
             F[f, pr] += (w[0], w[2])
-        return F
+            Fn[f] += f6[0]
+            if el_of[gf] >= 0:
+                Fe[el_of[gf]] += f6[0]
+        return F, Fn, Fe
+
+    def face_tilt(f: int, nm: str) -> float:
+        """The face's angle (deg) to the nearer of the container's axes at this instant, or nan for a one-element face."""
+        ix = faces_of[f][1][faces_of[f][0].index(nm)]
+        d = _axis(np.array([data.geom_xpos[gid(els[k][1].geom)][[0, 2]] for k in ix]))
+        if d is None:
+            return math.nan
+        a = math.degrees(math.atan2(d[1], d[0])) - math.degrees(float(data.qpos[q_cth]))
+        a = abs((a + 90.0) % 180.0 - 90.0)
+        return min(a, abs(90.0 - a))
+
+    w_buf = {f: collections.deque(maxlen=n_avg) for f in range(nf)}
+    w_best: dict[int, dict[str, Any]] = {f: {"N": 0.0} for f in range(nf)}
+
+    def window(t: float, ph: str, Fn: np.ndarray, Fe: np.ndarray) -> None:
+        for f in range(nf):
+            fnames, groups = faces_of[f]
+            buf = w_buf[f]
+            buf.append((t, ph, float(Fn[f]), np.array([Fe[ix].sum() for ix in groups]),
+                        np.array([(Fe[ix] * el_s[ix]).sum() for ix in groups])))
+            if len(buf) < n_avg:
+                continue
+            avg = sum(b[2] for b in buf) / n_avg
+            if avg <= w_best[f]["N"]:
+                continue
+            fFa, fMa = sum(b[3] for b in buf) / n_avg, sum(b[4] for b in buf) / n_avg
+            k = int(np.argmax(fFa)) if len(fFa) else -1
+            best = {"N": avg, "t": buf[n_avg // 2][0], "phase": buf[n_avg // 2][1],
+                    "face": fnames[k] if k >= 0 else "", "face_N": float(fFa[k]) if k >= 0 else 0.0,
+                    "faces": {fnames[i]: round(float(fFa[i]), 2) for i in range(len(fnames)) if fFa[i] > 0.5}}
+            if k >= 0 and fFa[k] > 1e-9:
+                lo, hi, w_mm = face_ext[(f, fnames[k])]
+                s = float(fMa[k] / fFa[k])
+                best.update(face_len_mm=hi - lo, face_w_mm=w_mm, face_res_frac=(s - lo) / max(hi - lo, 1e-9),
+                            face_res_end_mm=min(s - lo, hi - s), face_tilt_deg=face_tilt(f, fnames[k]))
+            w_best[f] = best
 
     ref = ref_th = None
     slip = slip_pk = tilt_pk = 0.0
@@ -524,7 +601,7 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
                 model.actuator_gainprm[a, 0], model.actuator_biasprm[a, 1], model.actuator_biasprm[a, 2] = kp0, b1_, b2_
                 data.ctrl[a] = float(data.qpos[q_arm[g]])
             locked = True
-            Fc = contacts()
+            Fc = contacts()[0]
             for gi, g in enumerate(gs):
                 phi_lock[g] = float(data.qpos[q_j[g][0]])
                 for s, k in ((0, "R"), (1, "L")):
@@ -558,6 +635,10 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
         for g in gs:
             wrench[g].sample(model, data, t_now, phase_at(t_now), t_close <= t_now < tl.t_power,
                              tl.t_final - hold_s <= t_now < tl.t_final)
+        if t_now >= t_close:
+            Fc, Fn, Fe = contacts()
+            if t_now < tl.t_power:
+                window(t_now, phase_at(t_now), Fn, Fe)
         if t < tl.t_settle:
             continue
         t = data.time
@@ -565,7 +646,6 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
         if ref is None:
             ref, ref_th = rel.copy(), float(data.qpos[q_cth])
         slip = float(np.hypot(*(rel - ref)))
-        Fc = contacts()
         for f, (pr, _) in hook.items():
             fz = float(Fc[f, pr, 1])
             seat_buf[f].append(fz)
@@ -598,6 +678,14 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
         row.update(wrench[g].readings(f"{g}_"))
     row.update(worst(row, "".join(gs)))
     row.update(close_state)
+    for f, nm in enumerate(names_f):
+        best = w_best[f]
+        row[f"{nm}_5ms_N"], row[f"{nm}_5ms_phase"] = best["N"], best.get("phase", "")
+        row[f"{nm}_5ms_face"], row[f"{nm}_5ms_faces"] = best.get("face", ""), best.get("faces", {})
+        for k in ("face_N", "face_len_mm", "face_w_mm", "face_res_frac", "face_res_end_mm", "face_tilt_deg"):
+            row[f"{nm}_5ms_{k}"] = best.get(k, math.nan)
+        fp = footprint(best, math.nan, math.nan, 8.0, flush_mm)
+        row.update({f"{nm}_5ms_{k}": fp[k] for k in ("footprint", "footprint_mm2", "rated", "rated_unit")})
     row.update({"ok": not unstable and ref is not None, "reset_flag": bool(unstable), "sample_s": dt,
                 "seat_average_s": n_avg * dt, "close_brakes": brake_floor < 0.0})
     if unstable:
