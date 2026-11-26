@@ -192,8 +192,13 @@ def _base(block: str, design: str, reading: float, **kw: Any) -> dict[str, Any]:
     return {"block": block, "design": design, "reading": reading, **kw}
 
 
-def t1_jobs(block: str, design: str, reading: float, boxes: Iterable[str], **kw: Any) -> list[dict[str, Any]]:
-    return [{**_base(block, design, reading, **kw), "job": "scan", "object": b, "fill": f} for b in boxes for f in FILLS]
+def t1_jobs(block: str, design: str, reading: float, boxes: Iterable[str], sens: list | None = None,
+            **kw: Any) -> list[dict[str, Any]]:
+    """`sens`: extra MuJoCo cases at the nominal depth on the catalog fill, as (case, overrides)."""
+    base = _base(block, design, reading, **kw)
+    if sens:
+        base["sens"] = sens
+    return [{**base, "job": "scan", "object": b, "fill": f} for b in boxes for f in FILLS]
 
 
 def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str, Any]]:
@@ -221,6 +226,9 @@ def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str,
     if scan["fill"] == "catalog":
         out.append({**keep, "job": "mj", "test": "T1", "case": "friction x0.8", "depth_mm": d, "lateral_mm": 0.0,
                     "friction_scale": float(c["b1"].get("robust_friction", 0.8)), "power_s": 1.0})
+        for case, over in scan.get("sens") or []:
+            out.append({**keep, "job": "mj", "test": "T1", "case": case, "depth_mm": d, "lateral_mm": 0.0, "power_s": 1.0,
+                        **over})
     return out
 
 
@@ -267,7 +275,30 @@ def block_refs() -> list[dict[str, Any]]:
     return jobs + regression_jobs("refs")
 
 
-BLOCKS = {"refs": block_refs}
+def _boxes_sheets() -> tuple[list[str], list[str]]:
+    lib = ctx()["lib"]
+    return [o.id for o in lib.objects if o.kind == "box"], [o.id for o in lib.objects if o.kind == "sheet"]
+
+
+def block_s5() -> list[dict[str, Any]]:
+    """Block 3: S5 at 160 and 170 mm (the flagged run), boxes, at the 45 deg reading."""
+    boxes, _ = _boxes_sheets()
+    return (t1_jobs("s5", "S5", 45.0, boxes)
+            + t1_jobs("s5", "S5", 45.0, boxes, values={"finger_reach": 170.0}, reach_cap=170.0))
+
+
+def block_s3_sheets_platform() -> list[dict[str, Any]]:
+    """Block 4: S3 at the 15 N top band with its sensitivities, the sheets for S3 and S5 (S1's wait on
+    its revised spec), and the platform as built."""
+    boxes, sheets = _boxes_sheets()
+    sens = [("band x1 stiffness", {"band_factor": 1.0})]
+    jobs = t1_jobs("s3p0", "S3", 45.0, boxes, sens=sens)
+    jobs += t2_jobs("s3p0", "S3", 45.0, sheets) + t2_jobs("s3p0", "S5", 45.0, sheets)
+    jobs += t1_jobs("s3p0", "P0", 45.0, boxes) + t2_jobs("s3p0", "P0", 45.0, sheets)
+    return jobs
+
+
+BLOCKS = {"refs": block_refs, "s5": block_s5, "s3p0": block_s3_sheets_platform}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:
@@ -318,7 +349,7 @@ def write_rows(rows: list[dict[str, Any]], path: Path) -> None:
     keys: list[str] = list(CSV_FIRST)
     for r in rows:
         for k in r:
-            if k not in keys and k not in ("traceback", "job", "b1_over"):
+            if k not in keys and k not in ("traceback", "job", "b1_over", "sens"):
                 keys.append(k)
     with path.open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=keys, extrasaction="ignore")
