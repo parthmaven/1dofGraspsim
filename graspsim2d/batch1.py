@@ -62,6 +62,25 @@ def ctx() -> dict[str, Any]:
     return _CTX
 
 
+def fp_library():
+    """The first pass's 14 objects (config/objects.yaml) with batch 1's bare friction table."""
+    c = ctx()
+    if "lib_fp" not in c:
+        from dataclasses import replace
+        from .objects import load_objects
+        bare = {k: float(v["bare_friction"]) for k, v in yaml.safe_load((B1 / "objects.yaml").read_text())["materials"].items()
+                if "bare_friction" in v}
+        lib = load_objects(CFG / "objects.yaml")
+        lib.objects = [replace(o, material=replace(o.material, bare_friction=bare.get(o.material.name, o.material.bare_friction)))
+                       for o in lib.objects]
+        c["lib_fp"] = lib
+    return c["lib_fp"]
+
+
+def pr2_designs() -> dict[str, dict[str, Any]]:
+    return {k: v for k, v in json.loads((B1 / "pr2-designs.json").read_text()).items() if not k.startswith("_")}
+
+
 def platform_padded():
     """The padded platform stand-in: concept baseline_paddle's nominal (PR #2's baseline as drawn)."""
     from .schema import load_concepts, load_design_space
@@ -75,13 +94,18 @@ def get_jaw(design: str, reading: float, values: dict[str, float] | None = None,
     key = (design, reading, json.dumps(values or {}, sort_keys=True), reach_cap)
     if key in c["jaws"]:
         return c["jaws"][key]
+    from dataclasses import replace
     from .jaw import jaw_from_design, jaw_from_spec
+    from .schema import GripperDesign
+    parametric = None
     if design == "r2-09":
-        from .schema import GripperDesign
-        d = GripperDesign.from_dict(json.loads((B1 / "r2-09.json").read_text()))
-        j = jaw_from_design(d, c["sc"], reading=reading, concept="r2-09")
+        parametric = GripperDesign.from_dict(json.loads((B1 / "r2-09.json").read_text()))
     elif design == "platform-padded":
-        j = jaw_from_design(platform_padded(), c["sc"], reading=reading, concept="platform-padded")
+        parametric = platform_padded()
+    elif design.startswith("pr2 "):
+        parametric = GripperDesign.from_dict(pr2_designs()[design[4:]]["design"])
+    if parametric is not None:
+        j = jaw_from_design(replace(parametric, **(values or {})), c["sc"], reading=reading, concept=design)
     else:
         from .outline import build_gripper
         from .specs import SpecDesign, load_spec
@@ -92,10 +116,10 @@ def get_jaw(design: str, reading: float, values: dict[str, float] | None = None,
     return j
 
 
-def get_obj(oid: str, fill: str = "catalog"):
+def get_obj(oid: str, fill: str = "catalog", library: str = "b1"):
     from .objects import with_fill
     c = ctx()
-    o = c["lib"].by_id(oid)
+    o = (fp_library() if library == "fp" else c["lib"]).by_id(oid)
     if o.kind == "box":
         o = with_fill(o, float(c["b1"]["fills"][fill]), fill)
     return o
@@ -124,7 +148,7 @@ def job_scan(job: dict[str, Any]) -> dict[str, Any]:
     from .screen1 import Limits, insertion_cap, scan_box, TABLE_CLEARANCE
     c = ctx()
     j = get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))
-    o = get_obj(job["object"], job["fill"])
+    o = get_obj(job["object"], job["fill"], job.get("library", "b1"))
     lim = Limits.from_config(c["b1"], "T1")
     r = scan_box(j, o, c["sc"], lim)
     row = {**job, "kind": "screen", "test": "T1", **{k: v for k, v in r.row().items() if k != "object"}}
@@ -146,7 +170,7 @@ def job_sheet_screen(job: dict[str, Any]) -> dict[str, Any]:
     from .screen1 import Limits, solve_sheet
     c = ctx()
     j = get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))
-    o = get_obj(job["object"])
+    o = get_obj(job["object"], library=job.get("library", "b1"))
     g = solve_sheet(j, o, c["sc"], Limits.from_config(c["b1"], "T2"), job["depth_mm"])
     return {**job, "kind": "screen", "test": "T2", "status": g.status, "ok": g.ok, "score": g.score, "limiting": g.limiting,
             "reason": g.reason, **_flat("m_", g.margins), **_flat("d_", g.demand),
@@ -158,7 +182,7 @@ def job_mj(job: dict[str, Any]) -> dict[str, Any]:
     from . import mj1
     c = ctx()
     j = get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))
-    o = get_obj(job["object"], job.get("fill", "catalog"))
+    o = get_obj(job["object"], job.get("fill", "catalog"), job.get("library", "b1"))
     b1 = {**c["b1"], **job.get("b1_over", {})}
     t0 = time.time()
     hz = job.get("shake_hz")
@@ -198,12 +222,13 @@ def _base(block: str, design: str, reading: float, **kw: Any) -> dict[str, Any]:
 
 
 def t1_jobs(block: str, design: str, reading: float, boxes: Iterable[str], sens: list | None = None,
-            **kw: Any) -> list[dict[str, Any]]:
-    """`sens`: extra MuJoCo cases at the nominal depth on the catalog fill, as (case, overrides)."""
+            fills: Iterable[str] = FILLS, **kw: Any) -> list[dict[str, Any]]:
+    """`sens`: extra MuJoCo cases at the nominal depth on the catalog fill, as (case, overrides).
+    `nominal_only=True` in `kw` drops the corners and x0.8; `nobrake=False` the no-brake case."""
     base = _base(block, design, reading, **kw)
     if sens:
         base["sens"] = sens
-    return [{**base, "job": "scan", "object": b, "fill": f} for b in boxes for f in FILLS]
+    return [{**base, "job": "scan", "object": b, "fill": f} for b in boxes for f in fills]
 
 
 def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str, Any]]:
@@ -212,7 +237,7 @@ def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str,
     if not scan.get("simulate"):
         return []
     keep = {k: scan[k] for k in ("block", "design", "reading", "object", "fill") if k in scan}
-    keep.update({k: scan[k] for k in ("values", "reach_cap") if scan.get(k) is not None})
+    keep.update({k: scan[k] for k in ("values", "reach_cap", "library", "stops", "power_s") if scan.get(k) is not None})
     c = ctx()
     place = float(c["b1"].get("placement_mm", 3.0))
     d = float(scan["depth_mm"])
@@ -222,6 +247,8 @@ def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str,
         deep = min(deep, float(scan["stop_mm"]))
     deep = min(deep, table)
     out = [{**keep, "job": "mj", "test": "T1", "case": "nominal", "depth_mm": d, "lateral_mm": 0.0}]
+    if scan.get("nominal_only"):
+        return out
     sides = (place,) if symmetric else (place, -place)
     for s in sides:
         out.append({**keep, "job": "mj", "test": "T1", "case": f"corner deep{'+' if s > 0 else '-'}", "depth_mm": deep,
@@ -237,18 +264,22 @@ def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str,
     return out
 
 
-def t2_jobs(block: str, design: str, reading: float, sheets: Iterable[str], **kw: Any) -> list[dict[str, Any]]:
+def t2_jobs(block: str, design: str, reading: float, sheets: Iterable[str], pinches: Iterable[float] = PINCHES,
+            extras: bool = True, **kw: Any) -> list[dict[str, Any]]:
+    """`extras`: friction x0.8 at 30 mm and, for batch 1's carton blank, the shake sweep."""
     c = ctx()
     hz_sweep = [float(h) for h in c["b1"].get("sheet_shake_hz", [1.5, 2.0, 3.0])]
     base = _base(block, design, reading, **kw)
     out = []
     for s in sheets:
-        for p in PINCHES:
+        for p in pinches:
             out.append({**base, "job": "sheet_screen", "object": s, "depth_mm": p, "case": f"pinch {p:g}"})
             out.append({**base, "job": "mj", "test": "T2", "object": s, "depth_mm": p, "case": f"pinch {p:g}"})
+        if not extras:
+            continue
         out.append({**base, "job": "mj", "test": "T2", "object": s, "depth_mm": 30.0, "case": "friction x0.8",
                     "friction_scale": float(c["b1"].get("robust_friction", 0.8)), "power_s": 1.0})
-        if s in BLANKS:
+        if s in BLANKS and kw.get("library", "b1") == "b1":
             for hz in hz_sweep:
                 if abs(hz - c["sc"].shake_lateral_hz) > 1e-6:
                     out.append({**base, "job": "mj", "test": "T2", "object": s, "depth_mm": 30.0, "case": f"shake {hz:g} Hz",
@@ -318,7 +349,33 @@ def block_s1_s6() -> list[dict[str, Any]]:
     return t1_jobs("s1s6", "S1", 45.0, boxes) + t1_jobs("s1s6", "S6", 45.0, boxes) + t2_jobs("s1s6", "S6", 45.0, sheets)
 
 
-BLOCKS = {"refs": block_refs, "s2": block_s2, "s5": block_s5, "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6}
+TORQUE_BAND = tuple(0.25 * k for k in range(1, 25))
+
+
+def block_pr2() -> list[dict[str, Any]]:
+    """PR #2's four 13-of-14 designs and the platform finger at its 5 N m, rescored with batch-1 scoring on the
+    first pass's 14 objects; then the platform with its torque set per object (0.25 - 6 N m per finger)."""
+    lib = fp_library()
+    boxes = [o.id for o in lib.objects if o.kind == "box"]
+    sheets = [o.id for o in lib.objects if o.kind == "sheet"]
+    kw = {"library": "fp", "nobrake": False, "stops": [], "power_s": 0.5}
+    designs = [(f"pr2 {k}", float(v["reading"])) for k, v in pr2_designs().items()] + [("platform-padded", 45.0)]
+    jobs = []
+    for d, reading in designs:
+        jobs += t1_jobs("pr2", d, reading, boxes, fills=("catalog",), **kw)
+        jobs += t2_jobs("pr2", d, reading, sheets, **kw)
+    nominal = platform_padded().finger_torque
+    for tau in TORQUE_BAND:
+        if abs(tau - nominal) < 1e-9:
+            continue
+        v = {"finger_torque": tau}
+        jobs += t1_jobs("pr2", "platform-padded", 45.0, boxes, fills=("catalog",), values=v, nominal_only=True, **kw)
+        jobs += t2_jobs("pr2", "platform-padded", 45.0, sheets, pinches=(30.0,), extras=False, values=v, **kw)
+    return jobs
+
+
+BLOCKS = {"refs": block_refs, "s2": block_s2, "s5": block_s5, "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6,
+          "pr2": block_pr2}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:
@@ -328,9 +385,12 @@ def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dic
              and r.get("fill") == "catalog" and r.get("simulate")]
     if not cands:
         return []
+    cands = [r for r in cands if r.get("nobrake", True)]
+    if not cands:
+        return []
     best = max(cands, key=lambda r: r.get("robust") or 0.0)
     keep = {k: best[k] for k in ("design", "reading", "object", "fill") if k in best}
-    keep.update({k: best[k] for k in ("values", "reach_cap") if best.get(k) is not None})
+    keep.update({k: best[k] for k in ("values", "reach_cap", "library") if best.get(k) is not None})
     return [{**keep, "block": block, "job": "mj", "test": "T1", "case": "no brake", "depth_mm": best["depth_mm"],
              "brake": float(c["b1"].get("power_cut", {}).get("no_brake_Nm_per_gripper", 1.0)), "stops": []}]
 

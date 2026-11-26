@@ -537,3 +537,17 @@ def test_batch1_brake_holds_the_power_cut(batch1):
     assert held["mount_fatigue_flag"] and held["finger_torque_Nm"] == j.torque
     loose = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5, brake=1.0)
     assert not loose["power_cut_held"]
+
+
+def test_batch1_rescore_uses_the_first_pass_objects(batch1):
+    lib = batch1.fp_library()
+    assert len(lib.objects) == 14 and lib.by_id("b_flute_3mm").material.bare_friction == pytest.approx(0.35)
+    assert lib.by_id("cheerios_8p9oz").material.bare_friction == pytest.approx(0.3)
+    readings = {k: v["reading"] for k, v in batch1.pr2_designs().items()}
+    assert readings == {"r2-13 at 90": 90.0, "r2-07 at 90": 90.0, "r2-14 at 45": 45.0, "r2-08 at 45": 45.0}
+    assert batch1.get_jaw("platform-padded", 45.0, {"finger_torque": 1.25}).torque == pytest.approx(1.25)
+    jobs = batch1.block_pr2()
+    assert all(j["library"] == "fp" and j["nobrake"] is False for j in jobs)
+    scan = {**next(j for j in jobs if j["job"] == "scan" and j.get("nominal_only")), "simulate": True, "depth_mm": 20.0,
+            "table_cap_mm": 200.0, "stop_mm": None}
+    assert [f["case"] for f in batch1.t1_followups(scan)] == ["nominal"]
