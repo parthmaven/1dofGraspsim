@@ -433,6 +433,9 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
     kv_j = 2 * math.sqrt(kp_j * float(cl.get("armature_kgm2", 0.015)))
     u_peak = float(b1.get("drive_Nm_per_gripper", {}).get("peak", 25.0)) / 2
     kv_drive = tau / 0.2
+    # SIM round 19: the close is a speed servo that drives and brakes within its torque, as a geared drive's is;
+    # `closing: {brakes: false}` keeps the push-only governor the rows before block C ran.
+    brake_floor = -tau if cl.get("brakes", True) else 0.0
     v_desc = float(cfg.get("descend_m_s", 0.05))
     t_desc = max(d_up / v_desc, 0.05)
     t_close0 = t_desc + 0.05
@@ -509,7 +512,7 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
             if t < t_close0:
                 u = min(max(kp_j * (phi_d - phi) - kv_j * om, -u_peak), u_peak)
             elif t < t_close:
-                u = -min(max(kv_drive * (w_slow + om), 0.0), tau)
+                u = -min(max(kv_drive * (w_slow + om), brake_floor), tau)
             elif t < tl.t_power:
                 u = -tau
             else:
@@ -596,7 +599,7 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
     row.update(worst(row, "".join(gs)))
     row.update(close_state)
     row.update({"ok": not unstable and ref is not None, "reset_flag": bool(unstable), "sample_s": dt,
-                "seat_average_s": n_avg * dt})
+                "seat_average_s": n_avg * dt, "close_brakes": brake_floor < 0.0})
     if unstable:
         row.update(reason=f"simulation went unstable at {unstable_s:.4f} s; flagged, not scored", unstable_s=unstable_s,
                    passed=None, score=None, limiting=None)

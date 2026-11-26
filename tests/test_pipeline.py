@@ -701,6 +701,24 @@ def test_batch1_brake_holds_the_power_cut(batch1):
     assert loose["passed"] == hold and loose["limiting"] in ("slip", "rotation")
 
 
+def test_batch1_close_brakes_to_the_slow_speed(batch1):
+    from graspsim2d import mj1
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("r2-09", 45.0)
+    o = batch1.get_obj("c_flute_4mm")
+    cl = c["b1"]["closing"]
+    # Opened 7.9 deg, the jaw closes at the fast speed until it is 5 deg out, then the servo brakes it to the slow
+    # speed (SIM round 19). The push-only governor lets it coast in at the fast speed, with no joint damping.
+    b1 = {**c["b1"], "shake_s": 0.5, "approach_clearance_mm": {**c["b1"]["approach_clearance_mm"], "sheet": 20.0}}
+    on, off = (mj1.simulate(j, o, c["sc"], {**b1, "closing": {**cl, "brakes": b}}, "T2", 30.0, stops=[], power_s=0.2)
+               for b in (True, False))
+    assert on["close_brakes"] and not off["close_brakes"]
+    assert on["approach_opening_deg"] - on["touch_plan_deg"] > cl["slow_deg"]
+    assert on["contact_rad_s"] == pytest.approx(cl["slow_rad_s"], rel=0.15)
+    assert off["contact_rad_s"] == pytest.approx(cl["fast_rad_s"], rel=0.1)
+
+
 def test_batch1_blown_up_runs_stop_instead_of_restarting(batch1, monkeypatch):
     from graspsim2d import mj1
 
@@ -932,7 +950,7 @@ def test_t3_tips_enter_the_gap_and_hold(batch1):
     assert r["reason"].startswith("depth stop at 15.") and "elements" not in r
     assert math.isnan(g["depth_stop_R_mm"])
     r = simulate_t3(j, box, c["sc"], c["b1"], friction_scale=0.8, drag_scale=1.2, power_s=0.2)
-    assert r["ok"] and not r["reset_flag"] and not r["stalled"] and not r["target_contact_in_entry"]
+    assert r["ok"] and not r["reset_flag"] and not r["stalled"] and not r["target_contact_in_entry"] and r["close_brakes"]
     assert r["entry_reached_mm"] == pytest.approx(15.0, abs=0.05)
     # The neighbours tip out of the way: the push matches the geometry, under 5 N on the 5 ms average.
     for s in "RL":
@@ -976,7 +994,7 @@ def test_t4b_s4_seats_both_lips_on_the_tote(batch1):
     assert p["ok"] and 0.0 <= p["seat_gap_mm"] < 1.0 and p["inside_gap_mm"] > 0.0
     assert p["outside_below_lip_mm"] <= lip["free_wall_mm"] and p["inside_below_rim_mm"] <= 50.0
     r = simulate_t4(j, c["sc"], {**c["b1"], "shake_s": 0.0}, "t4b", "tote", tau=8.0, stop_g=0.0, power_s=0.2)
-    assert r["ok"] and not r["reset_flag"] and r["finger_torque_Nm"] == 8.0
+    assert r["ok"] and not r["reset_flag"] and r["finger_torque_Nm"] == 8.0 and r["close_brakes"]
     assert r["sample_s"] < 1e-4 and r["seat_average_s"] == pytest.approx(0.005)
     # Each gripper's outside finger seats its own lip, A's right on the +x lip and B's left (the mirrored jaw's
     # outside finger) on the -x lip, each carrying half the 15 kg.

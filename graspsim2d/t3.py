@@ -443,6 +443,9 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
     kv_j = 2 * math.sqrt(kp_j * float(cl.get("armature_kgm2", 0.015)))
     u_peak = float(b1.get("drive_Nm_per_gripper", {}).get("peak", 25.0)) / 2
     kv_drive = tau / 0.2
+    # SIM round 19: the close is a speed servo that drives and brakes within its torque, as a geared drive's is;
+    # `closing: {brakes: false}` keeps the push-only governor the rows before block C ran.
+    brake_floor = -tau if cl.get("brakes", True) else 0.0
     kp, kv = float(model.actuator_gainprm[0, 0]), float(-model.actuator_biasprm[0, 2])
     dt = model.opt.timestep
     # Every physics step is read, for the descent's stall and the first touch and for every 5 ms average (SIM round
@@ -555,7 +558,7 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
                 gripping = True
             if t < t_close:
                 target = w_fast if phi > phi_e + math.radians(float(cl.get("slow_deg", 5.0))) else w_slow
-                u = -min(max(kv_drive * (target + om), 0.0), tau)
+                u = -min(max(kv_drive * (target + om), brake_floor), tau)
             elif t < t_cut:
                 u = -tau
             else:
@@ -666,8 +669,8 @@ def _run(model, data, jaw: Jaw, box: GraspObject, sc: Scenario, b1: dict, cfg: d
 
     row.update(wrench.readings())
     row.update({"ok": not unstable and ref is not None, "elements": n_el, "substeps": b.substeps, "reset_flag": bool(unstable),
-                "close_s": t_close - t_close0, "contact_angle_deg": math.degrees(first_touch - jaw.phi_meet)
-                if math.isfinite(first_touch) else math.nan})
+                "close_s": t_close - t_close0, "close_brakes": brake_floor < 0.0,
+                "contact_angle_deg": math.degrees(first_touch - jaw.phi_meet) if math.isfinite(first_touch) else math.nan})
     if unstable:
         row.update(reason=f"simulation went unstable at {unstable_s:.4f} s; flagged, not scored", unstable_s=unstable_s,
                    passed=None, score=None, limiting=None)

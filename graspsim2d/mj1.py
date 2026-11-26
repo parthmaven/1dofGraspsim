@@ -544,6 +544,9 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     tl = Timeline(sc, t_close, shake_g, hz, shake_s, stops, power_s)
     kp, kv = float(model.actuator_gainprm[0, 0]), float(-model.actuator_biasprm[0, 2])
     kv_drive = tau / 0.2
+    # SIM round 19: the close is a speed servo that drives and brakes within its torque, as a geared drive's is;
+    # `closing: {brakes: false}` keeps the push-only governor the rows before block C ran.
+    brake_floor = -tau if cl.get("brakes", True) else 0.0
     dt = model.opt.timestep
     box_H = obj.height
     fill_rel = -obj.headspace if box else -math.inf
@@ -653,7 +656,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     surf_load = {}
     released = False
     unstable, unstable_s = False, math.nan
-    first_contact = math.nan
+    first_contact = contact_w = math.nan
     grip_settle = 0.0
     torque_hold: list[float] = []
     torque_peak = 0.0
@@ -680,7 +683,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         if t < tl.t_close:
             om = -float(data.qvel[d_jR])
             target = w_fast if phi > slow_from else w_slow
-            u = min(max(kv_drive * (target - om), 0.0), tau)
+            u = min(max(kv_drive * (target - om), brake_floor), tau)
         elif t < tl.t_power:
             u = tau
         else:
@@ -711,7 +714,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         phase = tl.phase(t)
         F, Fc, body, fric, tang, caps = measure()
         if not math.isfinite(first_contact) and Fc.sum() + body[1] + body[-1] > 1e-3:
-            first_contact = float(data.qpos[a_jR])
+            first_contact, contact_w = float(data.qpos[a_jR]), -float(data.qvel[d_jR])
         zn = zones(F)
         if phase == "close":
             for sd in (1, -1):
@@ -824,6 +827,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
                            "approach_opening_deg": math.degrees(phi0 - jaw.phi_meet),
                            "touch_plan_deg": math.degrees(phi_touch - jaw.phi_meet),
                            "contact_angle_deg": math.degrees(first_contact - jaw.phi_meet) if math.isfinite(first_contact) else math.nan,
+                           "contact_rad_s": contact_w, "close_brakes": brake_floor < 0.0,
                            "close_s": tl.t_close, "finger_torque_Nm": tau,
                            "mount_fatigue_flag": bool(tau >= float(b1.get("mount_fatigue_Nm_per_finger", 4.0)) - 1e-9),
                            "substeps": b.substeps, "reset_flag": bool(unstable)}
