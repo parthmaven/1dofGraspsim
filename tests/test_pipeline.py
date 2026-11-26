@@ -808,9 +808,10 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
     assert r["ok"] and r["supported"] and r["power_cut_held"] and r["passed"]
     assert set(r["margins"]) == {"slip", "tilt", "thumb", "power cut"} and r["score"] == min(r["margins"].values())
     for g in "AB":
-        # Test conditions, T5: the tips touch at about 33 deg per finger, about 145 mm from each pivot.
+        # Test conditions, T5: the tips touch at about 33 deg per finger, about 145 mm from each pivot. On the hub
+        # path the outside finger may lift off in the hold, so its bearing is read at its 5 ms peak.
         assert r[f"{g}_close"] == "both fingers touch" and 28.0 < r[f"{g}_touch_deg"] < 38.0
-        assert 125.0 < r[f"{g}_out_bearing_mm"] < 160.0
+        assert 125.0 < r[f"{g}_thumb_bearing_mm"] < 160.0 and 125.0 < r[f"{g}_out_5ms_r_mm"] < 160.0
     assert r["A_hold_Nm"] == pytest.approx(r["B_hold_Nm"], rel=0.1, abs=0.05)
     assert r["mu_bare"] == pytest.approx(0.35)
     # The brake's reading is its friction loss alone, not the gear coupling's or the stroke limits' forces.
@@ -831,7 +832,8 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
     phases = {"squeeze", "settle", "lift", "hold", "shake", "final", "stop", "power"}
     for g in "AB":
         for part in ("out", "thumb"):
-            assert r[f"{g}_{part}_window_peak_N"] >= r[f"{g}_{part}_5ms_N"] >= r[f"{g}_{part}_N_hold"] > 0.0
+            assert r[f"{g}_{part}_window_peak_N"] >= r[f"{g}_{part}_5ms_N"] >= r[f"{g}_{part}_N_hold"] >= 0.0
+            assert r[f"{g}_{part}_5ms_N"] > 0.0
             assert r[f"{g}_{part}_5ms_phase"] in phases and r[f"{g}_{part}_window_peak_phase"] in phases
             assert r[f"{g}_{part}_5ms_face"] and 0.0 < r[f"{g}_{part}_5ms_face_N"] <= r[f"{g}_{part}_5ms_N"] + 1e-6
             assert 0.0 <= r[f"{g}_{part}_5ms_face_res_frac"] <= 1.0
@@ -1064,9 +1066,10 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
     with batch1.finger_material("stainless"):
         c = batch1.ctx()
         short = {"shake_s": 0.0, "t5": {**c["b1"]["t5"], "final_hold_s": 0.3}}
+        fine = {**short, "t5": {**short["t5"], "close_dump_sample_s": 0.0}}
         j = batch1.get_jaw("S2", 45.0)
         case = case_object(c["b1"]["t5"], "1ft", c["lib"].materials)
-        on, off = (simulate_t5(j, case, c["sc"], {**c["b1"], **short}, stop_g=0.0, power_s=0.1, close_dump=d)
+        on, off = (simulate_t5(j, case, c["sc"], {**c["b1"], **fine}, stop_g=0.0, power_s=0.1, close_dump=d)
                    for d in (True, False))
         only = simulate_t5(j, case, c["sc"], c["b1"], close_dump=True, close_only=True)
     d = on.pop("close_dump")
@@ -1074,11 +1077,18 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
     # had a different timeline.
     od = only.pop("close_dump")
     assert only["ok"] and only["close_only"] and only["supported"] is None and only["margins"] == {}
-    assert od["complete"] and od["to_s"] == pytest.approx(only["t_squeeze_end_s"]) and "settle" not in od["samples"]["phase"]
+    assert od["complete"] and "settle" not in od["samples"]["phase"]
+    assert only["t_squeeze_end_s"] - od["sample_s"] < od["to_s"] <= only["t_squeeze_end_s"] + 1e-6
     for k in [k for k in on if k.endswith(("_close_5ms_N", "_close_5ms_phase", "_close_phase_5ms_N"))] + [
-            "t_first_contact_s", "t_close_s", "t_squeeze_end_s"]:
+            "t_first_contact_s", "t_close_s", "t_squeeze_end_s", "sample_s"]:
         assert only[k] == on[k], k
-    assert od["samples"]["AL_N"] == d["samples"]["AL_N"][:len(od["samples"]["t"])]
+    # The record keeps a sample every 0.4 ms by default, the steps an every-step record keeps.
+    assert od["sample_s"] == pytest.approx(4e-4) and on["sample_s"] == d["sample_s"] < 1e-4
+    assert np.allclose(np.diff(od["samples"]["t"]), od["sample_s"], atol=1e-6)
+    at = {t: k for k, t in enumerate(d["samples"]["t"])}
+    kept = [t for t in od["samples"]["t"] if t >= d["samples"]["t"][0]]
+    assert len(kept) > 1000 and all(t in at for t in kept)
+    assert od["samples"]["AL_N"][-len(kept):] == [d["samples"]["AL_N"][at[t]] for t in kept]
     # The record only reads the run.
     assert json.dumps(on, sort_keys=True, default=str) == json.dumps(off, sort_keys=True, default=str)
     s = d["samples"]
@@ -1089,7 +1099,8 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
     assert len(s["t"]) == len(s["AL_N"]) == len(s["A_drive_Nm"]) == len(d["faces"]["AL"]["tooth"])
     assert np.all(np.diff(s["t"]) > 0) and max(s["A_drive_Nm"]) > 0.0
     # Revision 2.35's close window in the row is the dump's largest 5 ms average from the first contact through
-    # the squeeze; the arm's servo releases its lead into the case on the hub path, so the hub's falls in the close.
+    # the squeeze; on the hub path the hub's first impact ends the arm's approach, and its 5 ms average falls in
+    # the close.
     t, n = np.array(s["t"]), round(0.005 / d["sample_s"])
     sel = (t >= d["t_first_contact_s"] - 1e-9) & (t <= d["t_squeeze_end_s"] + 1e-9)
     for col, key in ((d["fingers"]["A"]["out"], "A_out"), (d["fingers"]["A"]["thumb"], "A_thumb"), ("A_hub", "A_hub")):
@@ -1108,10 +1119,11 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
         assert fc[f]["phase"] == "close" and fc[f]["closing_before_m_s"] > 0.0
         assert abs(fc[f]["w_rad_s"]) == pytest.approx(d["close_rad_s"], rel=0.15)
 
-    # Through the batch runner on the stop-seated cradle: the dump goes to its own file, named in the row.
+    # Through the batch runner on the stop-seated cradle, at a design's own 50 mm/s approach (SIM round 18 b): the
+    # dump goes to its own file, named in the row.
     job = batch1._base("test", "S4", 45.0, job="t5", test="T5", finger="stainless", stop_g=0.0, power_s=0.1,
                        case="close dump", object="1ft", hub_contact=False, approach="seated", t5_path="tips",
-                       dump_dir=str(tmp_path), b1_over=short)
+                       dump_dir=str(tmp_path), b1_over=short, approach_m_s=0.05)
     row = batch1.run_job(job)
     assert row["kind"] == "mujoco" and row["ok"], row.get("reason")
     path = Path(row["close_dump"])
@@ -1119,12 +1131,49 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
     with gzip.open(path, "rt") as fh:
         d = json.load(fh)
     assert d["job"]["design"] == "S4" and "dump_dir" not in d["job"] and d["row"]["finger_material"] == "stainless"
+    assert d["sample_s"] == pytest.approx(4e-4) and d["row"]["sample_s"] < 1e-4
+    assert d["approach_m_s"] == row["approach_m_s"] == 0.05 and not d["row"]["deck_off_before_squeeze"]
     assert d["approach"] == "seated" and set(d["samples"]["phase"]) == {"approach", "seat", "squeeze", "settle"}
     assert row["A_thumb_close_5ms_phase"] in ("approach", "seat", "squeeze") and row["A_thumb_close_5ms_N"] > 0.0
     # The thumb meets the wall on the arm's approach; the outside finger meets the case's bottom as the cradle rises.
     fc = d["first_contact"]
     assert fc["AL"]["phase"] == "approach" and fc["AL"]["closing_before_m_s"] == pytest.approx(d["approach_m_s"], rel=0.1)
     assert fc["AR"]["phase"] == "seat" and fc["AR"]["closing_before_m_s"] == pytest.approx(d["seat_m_s"], rel=0.1)
+
+
+def test_t5_reads_every_step(batch1):
+    """The model's first impacts last less than the close record's 0.4 ms. The arms' and the jaws' contact detection
+    and every 5 ms average read every physics step, so on the hub path the arm stops on the hub's first impact, the
+    case stays on the deck, and the hub's close is that impact's 5 ms average."""
+    from graspsim2d.t5 import case_object, simulate_t5
+
+    with batch1.finger_material("stainless"):
+        c = batch1.ctx()
+        j = batch1.get_jaw("S2", 45.0)
+        case = case_object(c["b1"]["t5"], "2ft", c["lib"].materials)
+        r = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_dump_sample_s": 0.0}},
+                        close_dump=True, close_only=True)
+    d = r.pop("close_dump")
+    s = {k: np.array(v) for k, v in d["samples"].items() if k != "phase"}
+    assert r["ok"] and r["sample_s"] == d["sample_s"] < 1e-4 and r["contact_average_s"] == pytest.approx(0.005)
+    # The hub's first impact: kilonewtons for less than 0.4 ms.
+    k0 = int(np.searchsorted(s["t"], d["t_first_contact_s"] - 1e-9))
+    k1 = k0 + int(np.argmax(s["A_hub_N"][k0:] <= 1.0))
+    assert s["A_hub_N"][k0:k1].max() > 1000.0 and 0 < (k1 - k0) * d["sample_s"] < 4e-4
+    assert d["first_contact"]["A_hub"]["phase"] == "approach"
+    # The arm stops inside it. The impact makes the case hop off the deck for a few milliseconds, short of SIM round
+    # 18's flag for a missed detection.
+    assert d["t_first_contact_s"] <= d["t_approach_s"] < s["t"][k1]
+    assert s["cz_mm"][s["t"] <= d["t_close_s"]].max() < 0.0
+    assert r["deck_off_phase"] == "approach" and 0.0 < r["deck_off_longest_s"] < 0.02 and not r["deck_off_before_squeeze"]
+    sel = (s["t"] >= d["t_first_contact_s"] - 1e-9) & (s["t"] <= d["t_squeeze_end_s"] + 1e-9)
+    n = round(0.005 / d["sample_s"])
+    avg = np.convolve(s["A_hub_N"][sel], np.ones(n) / n, "valid")
+    assert int(np.argmax(avg)) < k1 - k0 and avg.max() == pytest.approx(r["A_hub_close_5ms_N"], rel=1e-3)
+    # The wrist sensor through the close, for information: only the hub touches in the impact's 5 ms.
+    assert r["A_close_sensor_F_N"] == pytest.approx(r["A_hub_close_5ms_N"], rel=0.02)
+    assert r["A_close_sensor_F_N_phase"] == r["A_hub_close_5ms_phase"]
+    assert set(r["A_close_sensor_F_N_by_phase"]) <= {"approach", "close", "squeeze"}
 
 
 def test_batch1_t5_cut_block_runs_revision_2_18(batch1):

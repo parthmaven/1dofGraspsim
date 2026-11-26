@@ -261,11 +261,15 @@ def job_mj(job: dict[str, Any]) -> dict[str, Any]:
 def job_t5(job: dict[str, Any]) -> dict[str, Any]:
     """One T5 two-arm lift. A job's `object` is a case key of the scenario's t5 block. With `dump_dir`, the run's
     close record goes to a gzipped JSON file there, and the row's `close_dump` names it. `close_only` stops the run
-    at the end of the squeeze and keeps only its close."""
+    at the end of the squeeze and keeps only its close. `approach_m_s` and `close_rad_s` name a design's own lower
+    contact speeds (SIM round 18 b): the arms' approach and the jaw's close."""
     from .t5 import case_object, simulate_t5
     c = ctx()
     j = get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))
     b1 = {**c["b1"], **job.get("b1_over", {})}
+    speeds = {k: float(job[k]) for k in ("approach_m_s", "close_rad_s") if job.get(k) is not None}
+    if speeds:
+        b1 = {**b1, "t5": {**b1["t5"], **speeds}}
     case = case_object(b1["t5"], job["object"], c["lib"].materials, job.get("mass_kg"))
     t0 = time.time()
     r = simulate_t5(j, case, c["sc"], b1, com_offset=job.get("com_offset", 0.0), squeeze=job.get("squeeze_N"),
@@ -301,7 +305,8 @@ def write_close_dump(folder: Path, job: dict[str, Any], row: dict[str, Any], dum
     keep = ("ok", "reason", "case_label", "mass_kg", "com_offset_W", "hub_contact", "approach", "hold", "stop_g",
             "cut_before_stop", "close_only", "finger_material", "mu_bare", "mu_hub", "t_first_contact_s", "t_approach_s",
             "t_close_s", "t_squeeze_end_s", "A_close", "B_close",
-            "A_first_touch_deg", "B_first_touch_deg", "A_touch_deg", "B_touch_deg", "substeps", "reset_flag")
+            "A_first_touch_deg", "B_first_touch_deg", "A_touch_deg", "B_touch_deg", "substeps", "sample_s",
+            "deck_off_before_squeeze", "reset_flag")
     with gzip.open(path, "wt") as fh:
         json.dump({"job": key, "commit": commit(), "row": {k: row.get(k) for k in keep}, **dump}, fh,
                   separators=(",", ":"), default=str)

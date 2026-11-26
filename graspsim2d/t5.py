@@ -492,11 +492,16 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     app = float(cfg.get("approach_mm", 30.0)) * 1e-3
     sq_s = float(cfg.get("squeeze_s", 0.4))
     inward = {"A": -1.0, "B": 1.0}
-    every = 4 * builders["A"].substeps
     dt = model.opt.timestep
-    # Rev 2.34: each gripper's wrist sensor, over its fingers, their elements and its hub.
-    sensors = {g: Wrench(model, b1, f"grip{g}", {**builders[g].geom_depth, **{nm: hub_depth(b1) for nm in hub_names[g]}},
-                         every * dt, mirror=g == "B") for g in G_}
+    # Every physics step is read, for the arms' and the jaws' contact detection and for every 5 ms average: the
+    # model's first impacts last about 0.25 ms. The close record keeps one sample in `dump_every` (0.4 ms; 0 keeps
+    # every step).
+    dump_every = max(1, int(round(float(cfg.get("close_dump_sample_s", 4 * builders["A"].substeps * dt)) / dt)))
+    # Rev 2.34: each gripper's wrist sensor, over its fingers, their elements and its hub; SIM round 18 reads it
+    # through the close too, for information.
+    s_geoms = {g: {**builders[g].geom_depth, **{nm: hub_depth(b1) for nm in hub_names[g]}} for g in G_}
+    sensors = {g: Wrench(model, b1, f"grip{g}", s_geoms[g], dt, mirror=g == "B") for g in G_}
+    close_sensors = {g: Wrench(model, b1, f"grip{g}", s_geoms[g], dt, mirror=g == "B") for g in G_}
     j_f = {f: jid(f"j{f}") for f in body_of}
     eq_gear = {g: name(mujoco.mjtObj.mjOBJ_EQUALITY, f"gear{g}") for g in G_}
     stop_phi = jaw.phi_max if stop_phi is None else stop_phi
@@ -604,7 +609,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     # Revision 2.31's window: each finger's force on the case from the end of the close (or the seat) to the power cut,
     # through every phase, scored as its largest 5 ms average; with the face that carries it, where on that face its
     # resultant sits and the face's tilt to the case, for the footprint rule. The drive torque is read over the same span.
-    n5 = max(1, int(round(float(cfg.get("contact_average_s", 0.005)) / (every * dt))))
+    n5 = max(1, int(round(float(cfg.get("contact_average_s", 0.005)) / dt)))
     faces_of: dict[str, tuple[list[str], list[np.ndarray]]] = {}
     el_s = np.zeros(n_el)
     face_ext: dict[tuple[str, str], tuple[float, float, float]] = {}
@@ -641,6 +646,12 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     # approach, the close or the seat, and the squeeze, where it joins the window above.
     croll = {(g, part): Rolling(n5) for g in G_ for part in ("out", "thumb", "hub")}
     t_first = math.nan
+    # SIM round 18's validity check: the case leaving the deck (the deck at 0 N) after the first contact and before
+    # the squeeze marks a missed detection. A first impact read at every step makes the case hop off the deck for up
+    # to about 12 ms (the 5 kg case on the hub path), so a run is flagged when the deck reads 0 N for longer than
+    # `deck_off_flag_s`. The seated approach's cradle lifts the case by design, so its seat isn't checked.
+    deck_flag_s = float(cfg.get("deck_off_flag_s", 0.05))
+    deck_off = {"s": math.nan, "phase": "", "min_N": math.inf, "run_s": 0.0, "longest_s": 0.0, "total_s": 0.0}
     # SIM round 17: each gripper's actuator torque over the whole run, every sample over the cap flagged.
     drive_cap = float((b1.get("drive_Nm_per_gripper") or {}).get("peak", 25.0))
     drive_max = {g: (0.0, "") for g in G_}
@@ -695,7 +706,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     # The close record (the coordinator, 10:35 AM PST): every sample from the run's first contact through the
     # approach, the close or the seat, and the squeeze, a margin either side: revision 2.35's close window.
     d_margin = float(cfg.get("close_dump_margin_s", 0.01))
-    d_pre: collections.deque = collections.deque(maxlen=max(1, int(round(d_margin / (every * dt)))))
+    d_pre: collections.deque = collections.deque(maxlen=max(1, int(round(d_margin / (dump_every * dt)))))
     d_rows: list[dict[str, Any]] = []
     d_state = {"on": False, "done": not close_dump}
     d_body = {f: body_of[f] for f in body_of}
@@ -740,7 +751,34 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             return None
         return P / w, n / np.linalg.norm(n)
 
-    def dump_sample(t: float, ph: str, ms: dict[str, Any]) -> None:
+    def dump_sample(t: float, ph: str, ms: dict[str, Any], keep: bool) -> None:
+        # Each part's speed at its first contact, at that step and at the one before, at the point it touches.
+        if len(d_first) < len(d_body):
+            tw_case = twist(case_body)
+            for nm, b in d_body.items():
+                if nm in d_first:
+                    continue
+                tw = twist(b)
+                N = part_N(nm, ms)
+                if N <= CONTACT_N:
+                    d_prev[nm] = (tw, tw_case)
+                    continue
+                first: dict[str, Any] = {"t": round(t, 6), "phase": ph, "N": N}
+                if nm in body_of:
+                    first.update(q_deg=math.degrees(float(data.qpos[q_f[nm]])), w_rad_s=float(data.qvel[v_f[nm]]),
+                                 tau_Nm=float(data.actuator_force[a_drive[nm]]))
+                tp = touch_point(nm)
+                if tp is not None:
+                    p, n = tp
+                    rel = at(tw, p) - at(tw_case, p)
+                    first.update(point_mm=[float(p[0]) * 1e3, float(p[2]) * 1e3], normal=[float(n[0]), float(n[2])],
+                                 closing_m_s=float(-rel @ n), speed_m_s=float(np.linalg.norm(rel)))
+                    if nm in d_prev:
+                        rel0 = at(d_prev[nm][0], p) - at(d_prev[nm][1], p)
+                        first.update(closing_before_m_s=float(-rel0 @ n), speed_before_m_s=float(np.linalg.norm(rel0)))
+                d_first[nm] = first
+        if not keep:
+            return
         row: dict[str, Any] = {"t": round(t, 6), "phase": ph}
         for f in body_of:
             ix = el_of[f]
@@ -761,32 +799,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                         f"{g}_arm_mm": float(data.qpos[q_arm[g]]) * 1e3, f"{g}_arm_m_s": float(data.qvel[v_arm[g]])})
         row.update({"cx_mm": float(data.qpos[q_cx]) * 1e3, "cz_mm": float(data.qpos[q_cz]) * 1e3,
                     "cth_deg": math.degrees(float(data.qpos[q_cth])), "deck_N": ms["deck"]})
-        # Each part's speed at its first contact, at that sample and at the one before, at the point it touches.
-        tw_case = twist(case_body)
-        for nm, b in d_body.items():
-            if nm in d_first:
-                continue
-            tw = twist(b)
-            N = part_N(nm, ms)
-            if N <= CONTACT_N:
-                d_prev[nm] = (tw, tw_case)
-                continue
-            first: dict[str, Any] = {"t": round(t, 6), "phase": ph, "N": N}
-            if nm in body_of:
-                first.update(q_deg=row[f"{nm}_q_deg"], w_rad_s=row[f"{nm}_w_rad_s"], tau_Nm=row[f"{nm}_tau_Nm"])
-            tp = touch_point(nm)
-            if tp is not None:
-                p, n = tp
-                rel = at(tw, p) - at(tw_case, p)
-                first.update(point_mm=[float(p[0]) * 1e3, float(p[2]) * 1e3], normal=[float(n[0]), float(n[2])],
-                             closing_m_s=float(-rel @ n), speed_m_s=float(np.linalg.norm(rel)))
-                if nm in d_prev:
-                    rel0 = at(d_prev[nm][0], p) - at(d_prev[nm][1], p)
-                    first.update(closing_before_m_s=float(-rel0 @ n), speed_before_m_s=float(np.linalg.norm(rel0)))
-            d_first[nm] = first
         if d_state["on"]:
             d_rows.append(row)
-        elif any(part_N(nm, ms) > CONTACT_N for nm in d_body):
+        elif math.isfinite(t_first):
             d_state["on"] = True
             d_rows.extend(d_pre)
             d_rows.append(row)
@@ -803,7 +818,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 if not k.endswith("_faces")}
         faces = {f: {nm: [sig(r[f"{f}_faces"][i]) for r in d_rows] for i, nm in enumerate(faces_of[f][0])} for f in body_of}
         return {"from_s": d_rows[0]["t"] if d_rows else math.nan, "to_s": d_rows[-1]["t"] if d_rows else math.nan,
-                "complete": d_state["done"], "sample_s": every * dt, "margin_s": d_margin, "t_first_contact_s": t_first,
+                "complete": d_state["done"], "sample_s": dump_every * dt, "margin_s": d_margin, "t_first_contact_s": t_first,
                 "t_approach_s": t_app_end, "t_close_s": t_close_end, "t_squeeze_end_s": t_sq_end, "approach": approach,
                 "preset_deg": math.degrees(preset), "close_rad_s": w_close, "approach_m_s": v_app, "seat_m_s": v_seat,
                 "contact_N": CONTACT_N, "fingers": fingers,
@@ -934,21 +949,31 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         if (data.time < t_step or any(data.warning[w].number for w in BAD_STATE) or not np.isfinite(data.qacc).all()):
             unstable, unstable_s = True, t_step
             break
-        if i % every:
-            continue
         t = data.time
         ms = measure()
         ph_now = phase if tl is None else tl.phase(t)
-        if not d_state["done"]:
-            dump_sample(t, ph_now, ms)
         load = {g: ms["N"][fingers[g]["out"]] + ms["N"][fingers[g]["thumb"]] + float(np.linalg.norm(ms["hub"][g])) for g in G_}
         if not math.isfinite(t_first) and max(load.values()) > CONTACT_N:
             t_first = t
+        if not d_state["done"]:
+            dump_sample(t, ph_now, ms, i % dump_every == 0)
         if math.isfinite(t_first) and phase in ("approach", "close", "seat", "squeeze"):
             for g in G_:
                 croll[(g, "out")].add(ms["N"][fingers[g]["out"]], phase)
                 croll[(g, "thumb")].add(ms["N"][fingers[g]["thumb"]], phase)
                 croll[(g, "hub")].add(float(np.linalg.norm(ms["hub"][g])), phase)
+                close_sensors[g].sample(model, data, t, phase, True, False)
+            if phase in ("approach", "close"):
+                on_deck = -ms["deck"]
+                deck_off["min_N"] = min(deck_off["min_N"], on_deck)
+                if on_deck < CONTACT_N:
+                    if not math.isfinite(deck_off["s"]):
+                        deck_off.update(s=t, phase=phase)
+                    deck_off["run_s"] += dt
+                    deck_off["total_s"] += dt
+                    deck_off["longest_s"] = max(deck_off["longest_s"], deck_off["run_s"])
+                else:
+                    deck_off["run_s"] = 0.0
         for g in G_:
             tq = abs(float(data.actuator_force[a_drive[fingers[g]["out"]]])
                      + float(data.actuator_force[a_drive[fingers[g]["thumb"]]]))
@@ -1015,7 +1040,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 if (touch_o or touch_t) and not math.isfinite(first_touch[g]):
                     first_touch[g] = float(data.qpos[q_f[f_o]])
                 om = abs(float(data.qvel[v_f[f_o]]))
-                stall[g] = stall[g] + every * dt if (om < 0.02 and (touch_o or touch_t)) else 0.0
+                stall[g] = stall[g] + dt if (om < 0.02 and (touch_o or touch_t)) else 0.0
                 if (touch_o and touch_t) or stall[g] > 0.03:
                     jaw_hold[g] = float(data.qpos[q_f[f_o]])
                     jaw_note[g] = "both fingers touch" if touch_o and touch_t else (
@@ -1178,7 +1203,11 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                            "finger_material": b1.get("finger_material", "pa12"),
                            "finger_density_kg_m3": builders["A"].density,
                            "dropped_in": dropped_in, "t_first_contact_s": t_first, "t_approach_s": t_app_end,
-                           "t_close_s": t_close_end, "t_squeeze_end_s": t_sq_end, "contact_average_s": n5 * every * dt,
+                           "t_close_s": t_close_end, "t_squeeze_end_s": t_sq_end, "contact_average_s": n5 * dt,
+                           "sample_s": dt, "deck_off_before_squeeze": deck_off["longest_s"] > deck_flag_s,
+                           "deck_off_s": deck_off["s"], "deck_off_phase": deck_off["phase"],
+                           "deck_off_longest_s": deck_off["longest_s"], "deck_off_total_s": deck_off["total_s"],
+                           "deck_min_before_squeeze_N": deck_off["min_N"] if math.isfinite(deck_off["min_N"]) else math.nan,
                            "drive_cap_Nm": drive_cap, "drive_over_cap": any(drive_over.values())}
 
     def close_fields(g: str) -> dict[str, Any]:
@@ -1190,7 +1219,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             out[f"{g}_{part}_close_5ms_phase"] = k
             out[f"{g}_{part}_close_phase_5ms_N"] = croll[(g, part)].phases()
         out[f"{g}_drive_max_Nm"], out[f"{g}_drive_max_phase"] = drive_max[g]
-        out[f"{g}_drive_over_cap_s"] = drive_over[g] * every * dt
+        out[f"{g}_drive_over_cap_s"] = drive_over[g] * dt
+        out.update({k: v for k, v in close_sensors[g].readings(f"{g}_close_").items() if not k.endswith("_hold")})
         return out
 
     if close_only:
@@ -1230,7 +1260,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             f"{g}_brake_stop_Nm": stats["brake_stop"][g], f"{g}_brake_saturated": stats["brake_sat"][g],
             f"{g}_out_peak_N": stats["peak_N"][f_o], f"{g}_thumb_peak_N": stats["peak_N"][f_t],
         })
-        res.update(_hub_readings(g, hub_sus[g], hub_pk["t"], hub_pk[g], hub_pk["ph"], hub_from, every * dt,
+        res.update(_hub_readings(g, hub_sus[g], hub_pk["t"], hub_pk[g], hub_pk["ph"], hub_from, dt,
                                  float(cfg.get("hub_peak_avg_s", 0.005)), t_close_end))
         res.update(sensors[g].readings(f"{g}_"))
         for part in ("out", "thumb", "hub"):
