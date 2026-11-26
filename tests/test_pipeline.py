@@ -636,3 +636,26 @@ def test_batch1_mount_flag_includes_the_limit(batch1):
     assert not batch1._torque_flag(batch1.get_jaw("platform-padded", 45.0, {"finger_torque": 3.85}))["mount_fatigue_flag"]
     failed = batch1.run_job({"block": "t", "design": "S3", "reading": 45.0, "job": "mj", "test": "T1", "object": "nope"})
     assert failed["kind"] == "error" and failed["finger_torque_Nm"] == pytest.approx(4.0) and failed["mount_fatigue_flag"]
+
+
+def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
+    from graspsim2d.t5 import case_object, mirrored, simulate_t5
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("S2", 45.0)
+    m = mirrored(j)
+    assert m.sides[1].body_mj == j.sides[-1].body_mj and {f.side for f in m.sides[1].faces} == {1}
+    assert len(m.sides[-1].faces) == len(j.sides[1].faces)
+    case = case_object(c["b1"]["t5"], "1ft", c["lib"].materials)
+    assert (case.thickness, case.height, case.mass) == (pytest.approx(0.305), pytest.approx(0.254), 5.0)
+    assert case.material.allow_pressure == pytest.approx(105e3)
+    assert case_object(c["b1"]["t5"], "shipper", c["lib"].materials).material.allow_pressure == pytest.approx(25e3)
+    r = simulate_t5(j, case, c["sc"], {**c["b1"], "shake_s": 0.0}, cut_before_stop=True, power_s=0.3)
+    assert r["ok"] and r["supported"] and r["power_cut_held"] and r["passed"]
+    assert set(r["margins"]) == {"slip", "tilt", "thumb", "power cut"} and r["score"] == min(r["margins"].values())
+    for g in "AB":
+        # Test conditions, T5: the tips touch at about 33 deg per finger, about 145 mm from each pivot.
+        assert r[f"{g}_close"] == "both fingers touch" and 28.0 < r[f"{g}_touch_deg"] < 38.0
+        assert 125.0 < r[f"{g}_out_bearing_mm"] < 160.0
+    assert r["A_hold_Nm"] == pytest.approx(r["B_hold_Nm"], rel=0.1, abs=0.05)
+    assert r["mu_bare"] == pytest.approx(0.35)
