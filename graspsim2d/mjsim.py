@@ -402,7 +402,7 @@ class Trajectory:
         self.t_hold = self.t_lift + sc.hold_time
         self.t_shake = self.t_hold + sc.shake_time
         self.t_end = self.t_shake + sc.final_hold_time
-        self.ramp = float(sc.raw.get("sequence", {}).get("shake", {}).get("ramp_s", 0.25))
+        self.ramp = float(sc.raw.get("sequence", {}).get("shake", {}).get("ramp_s", 0.5))
         wx = 2 * math.pi * sc.shake_lateral_hz
         wz = 2 * math.pi * sc.shake_vertical_hz
         self.wx, self.wz = wx, wz

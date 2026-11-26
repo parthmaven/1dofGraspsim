@@ -129,8 +129,11 @@ the jaw has closed, and are pinched near their free top edge. Every value in
 ### Scenario and pass criteria
 
 `scenario.yaml` sets the motion: close for 0.9 s at up to 1 rad/s, settle,
-lift 80 mm, hold, shake for 2 s (0.5 g lateral at 2 Hz plus 0.5 g vertical at
-3 Hz), and hold again. A grasp passes when every margin is at least 1:
+lift 80 mm, hold, shake for 3 s (0.5 g lateral at 2 Hz plus 0.5 g vertical at
+3 Hz, with 0.5 s ramps at each end), and hold again. Keep the ramps at least one
+lateral period long: shorter ramps overshoot the specified acceleration
+(0.25 s gives 0.68 g for 0.5 g) and kick the sheets' bending modes. A grasp
+passes when every margin is at least 1:
 
 | criterion | analytic screen | dynamic check |
 |---|---|---|
@@ -183,10 +186,11 @@ elastomer's shear stiffness (and a pin for self-aligning pads). A box is a
 rigid body on a table. A sheet is a chain of rigid segments joined by hinges
 with the board's bending stiffness, hanging from a holder that is released
 when the jaw has closed. Friction uses MuJoCo's elliptic cones. Each run
-records slip, rotation, pressure, panel force and bending moment from the start
-of the lift, so the closing impact (about twice the static force at 1 rad/s)
+records slip, rotation, pressure, panel force, bending moment and friction use
+(the largest share of μ times the normal force either pad uses) from the start
+of the lift, so the closing impact (up to twice the static force at 1 rad/s)
 counts only as the `closing_impact_pressure_kPa` metric. One run takes about
-3 s.
+4 to 6 s.
 
 ### Search loop (`search.py`)
 
@@ -204,8 +208,12 @@ Each round:
    every object.
 4. **Learn.** Per object and criterion, the ratio of dynamic to analytic margin
    (25th percentile of all runs so far, clipped to [0.25, 2]) corrects the
-   screen in the next round. Sheet bending resonance, for example, makes the
-   dynamic crease moment larger than the rigid estimate.
+   screen in the next round. The dynamic check's slip is a displacement, so the
+   screen's friction hold margin is corrected with the share of the available
+   friction the pads use in MuJoCo instead. Sheet bending is the clearest case
+   for corrections: with the default shake, 1.5 mm chipboard (first bending
+   mode near 2 to 3 Hz) sees about 2.3 times the rigid-sheet crease moment,
+   0.5 mm chipboard about 0.3 times, and corrugated sheets about 1 to 1.1 times.
 
 The best all-rounder is the finalist that passes the most objects in the
 dynamic check (ties go to the higher dynamic J). The best design per object is

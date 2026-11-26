@@ -41,7 +41,11 @@ sequence:
   lift_s: 0.5                 # minimum-jerk lift
   hold_s: 0.3
   shake:
-    duration_s: 2.0           # sinusoids with 0.25 s ramps at each end
+    # Sinusoids with raised-cosine ramps at each end. A ramp shorter than one
+    # lateral period overshoots the peak acceleration (0.25 s gives 0.68 g for
+    # a 0.5 g spec) and kicks the sheets' bending modes.
+    duration_s: 3.0
+    ramp_s: 0.5
     lateral:  {peak_accel_g: 0.5, freq_hz: 2.0}
     vertical: {peak_accel_g: 0.5, freq_hz: 3.0}
   final_hold_s: 0.5
