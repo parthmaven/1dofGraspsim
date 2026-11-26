@@ -34,6 +34,7 @@ HUB, DECK = 8, 16
 HUB_WIDTH_MM = 60.0  # out of plane; the contact is planar, so it only sizes the mesh
 TOUCH_N = 0.5  # N on a finger that counts as touching the case
 APPROACH_N = 1.0  # N on a gripper that ends its arm's approach
+CONTACT_N = 1e-3  # N on a finger or hub that marks its first contact in the close record
 
 
 def case_object(cfg: dict[str, Any], key: str, materials: dict[str, Material], mass: float | None = None) -> GraspObject:
@@ -198,7 +199,8 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
                 squeeze: float | None = None, friction_scale: float = 1.0, bare_mu: float | None = None,
                 brake: float = 30.0, stop_g: float | None = None, cut_before_stop: bool = False,
                 power_s: float | None = None, shake_g: float | None = None, hub_contact: bool = True,
-                approach: str = "close", hold: str = "servo", record: bool = False) -> dict[str, Any]:
+                approach: str = "close", hold: str = "servo", record: bool = False,
+                close_dump: bool = False) -> dict[str, Any]:
     """One T5 run. `com_offset` (fraction of W) moves the centre of mass toward gripper A, the +x gripper, which
     the stop also loads. `squeeze` is N per side; `bare_mu` replaces the bare printed finger's friction on the
     case; `brake` is N m per gripper; `stop_g=0` leaves out the stop. `hub_contact=False` releases the hub once
@@ -207,7 +209,11 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
     `approach="seated"` is revision 2.13's stop-seated cradle: the jaw stays on its stops and skips the closing
     step. `hold` is what holds the opening once the jaw has closed or seated: "servo" (the drive's position servo),
     "stops" (each finger on its own stop, the gear coupling released) or "thumb_stop" (the outside finger's stop
-    removed, so its moment crosses the mesh to the thumb's); with the stops the drive is off, on gear friction."""
+    removed, so its moment crosses the mesh to the thumb's); with the stops the drive is off, on gear friction.
+
+    `close_dump` adds `close_dump` to the result: each contact's samples from the run's first contact through the end
+    of the close (or the seat), each finger's and hub's speed at its first contact and the drive torque. It reads the
+    run without changing it, and nothing in it is scored."""
     if approach not in ("close", "seated") or hold not in ("servo", "stops", "thumb_stop"):
         raise ValueError(f"unknown T5 approach {approach!r} or hold {hold!r}")
     cfg = b1.get("t5", {}) or {}
@@ -332,7 +338,7 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
         model, builders, hub_names = build(dx, dz)
     data = mujoco.MjData(model)
     res = _run_t5(model, data, jaw, case, sc, b1, cfg, builders, hub_names, preset, squeeze, stop_g, cut_before_stop,
-                  power_s, shake_g, brake, k_servo, com_offset, hub_contact, record, approach, hold, stop_phi)
+                  power_s, shake_g, brake, k_servo, com_offset, hub_contact, record, approach, hold, stop_phi, close_dump)
     res.update(approach=approach, hold=hold, shake_g=shake_g, preset_deg=math.degrees(preset),
                stop_deg_jaw=math.degrees(stop_phi), stop_type=jaw.stop_type or "",
                start_out_mm=dx * 1e3, start_down_mm=-dz * 1e3)
@@ -408,7 +414,8 @@ def _start_shift(model, preset: float, W: float, app: float, under: float) -> tu
 def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cfg: dict, builders: dict, hub_names: dict,
             preset: float, squeeze: float, stop_g: float, cut_before_stop: bool, power_s: float, shake_g: float,
             brake: float, k_servo: float, com_offset: float, hub_contact: bool, record: bool,
-            approach: str = "close", hold: str = "servo", stop_phi: float | None = None) -> dict[str, Any]:
+            approach: str = "close", hold: str = "servo", stop_phi: float | None = None,
+            close_dump: bool = False) -> dict[str, Any]:
     name = lambda kind, n: mujoco.mj_name2id(model, kind, n)
     jid = lambda n: name(mujoco.mjtObj.mjOBJ_JOINT, n)
     gid = lambda n: name(mujoco.mjtObj.mjOBJ_GEOM, n)
@@ -669,6 +676,139 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                             face_res_end_mm=min(s - lo, hi - s), face_tilt_deg=face_tilt(f, names[k]))
             w_best[f] = best
 
+    # The close, recorded but not scored (the coordinator, 10:35 AM PST): every sample from the run's first contact
+    # through the end of the close or the seat, a margin either side, so SIM can score a close window without reruns.
+    d_margin = float(cfg.get("close_dump_margin_s", 0.01))
+    d_pre: collections.deque = collections.deque(maxlen=max(1, int(round(d_margin / (every * dt)))))
+    d_rows: list[dict[str, Any]] = []
+    d_state = {"on": False, "done": not close_dump}
+    d_body = {f: body_of[f] for f in body_of}
+    d_body.update({f"{g}_hub": int(model.geom_bodyid[gid(hub_names[g][0])]) for g in G_ if hub_names[g]})
+    d_geoms = {f: set(np.nonzero((g_grip == G_.index(f[0])) & (g_part == (0 if f == fingers[f[0]]["out"] else 1)))[0])
+               for f in body_of}
+    d_geoms.update({f"{g}_hub": set(np.nonzero((g_grip == G_.index(g)) & (g_part == 2))[0]) for g in G_})
+    d_first: dict[str, dict[str, Any]] = {}
+    d_prev: dict[str, tuple] = {}
+    el_of = {f: np.nonzero(el_gp == G_.index(g) * 2 + part)[0]
+             for g in G_ for part, f in ((0, fingers[g]["out"]), (1, fingers[g]["thumb"]))}
+    v_arm = {g: vadr(f"a{g}") for g in G_}
+    jacp, jacr = np.zeros((3, model.nv)), np.zeros((3, model.nv))
+
+    def twist(b: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """A body's angular velocity, its frame origin's velocity and that origin, in the world."""
+        o = data.xpos[b].copy()
+        mujoco.mj_jac(model, data, jacp, jacr, o, b)
+        return jacr @ data.qvel, jacp @ data.qvel, o
+
+    def at(tw: tuple[np.ndarray, np.ndarray, np.ndarray], p: np.ndarray) -> np.ndarray:
+        return tw[1] + np.cross(tw[0], p - tw[2])
+
+    def part_N(nm: str, ms: dict[str, Any]) -> float:
+        return float(np.linalg.norm(ms["hub"][nm[0]])) if nm.endswith("_hub") else ms["N"][nm]
+
+    def touch_point(nm: str) -> tuple[np.ndarray, np.ndarray] | None:
+        """A part's contacts with the case: their force-weighted point and normal, from the case into the part."""
+        P, n, w = np.zeros(3), np.zeros(3), 0.0
+        f6 = np.zeros(6)
+        for k in range(data.ncon):
+            con = data.contact[k]
+            if con.efc_address < 0 or case_geom not in (con.geom1, con.geom2):
+                continue
+            other, sgn = (con.geom2, 1.0) if con.geom1 == case_geom else (con.geom1, -1.0)
+            if other not in d_geoms[nm]:
+                continue
+            mujoco.mj_contactForce(model, data, k, f6)
+            if f6[0] > 0.0:
+                P, n, w = P + f6[0] * con.pos, n + f6[0] * sgn * con.frame[:3], w + f6[0]
+        if w <= 0.0 or np.linalg.norm(n) < 1e-12:
+            return None
+        return P / w, n / np.linalg.norm(n)
+
+    def dump_sample(t: float, ph: str, ms: dict[str, Any]) -> None:
+        row: dict[str, Any] = {"t": round(t, 6), "phase": ph}
+        for f in body_of:
+            ix = el_of[f]
+            fc = ms["Fc"][ix]
+            row.update({f"{f}_N": ms["N"][f], f"{f}_Fx": float(ms["F"][f][0]), f"{f}_Fz": float(ms["F"][f][2]),
+                        f"{f}_body_N": max(0.0, ms["N"][f] - float(fc.sum())),
+                        f"{f}_kPa": float(np.max(ms["Fe"][ix] / el_area[ix])) / 1e3 if len(ix) else 0.0,
+                        f"{f}_r_mm": ms["r"][f] * 1e3, f"{f}_span_mm": ms["span"][f] * 1e3,
+                        f"{f}_zc_mm": ms["zc"][f] * 1e3, f"{f}_zmin_mm": ms["zmin"][f] * 1e3,
+                        f"{f}_zmax_mm": ms["zmax"][f] * 1e3, f"{f}_q_deg": math.degrees(float(data.qpos[q_f[f]])),
+                        f"{f}_w_rad_s": float(data.qvel[v_f[f]]), f"{f}_tau_Nm": float(data.actuator_force[a_drive[f]]),
+                        f"{f}_faces": [float(ms["Fc"][g_ix].sum()) for g_ix in faces_of[f][1]]})
+        for g in G_:
+            hv = ms["hub"][g]
+            row.update({f"{g}_hub_N": float(np.linalg.norm(hv)), f"{g}_hub_Fx": float(hv[0]), f"{g}_hub_Fz": float(hv[2]),
+                        f"{g}_drive_Nm": abs(float(data.actuator_force[a_drive[fingers[g]["out"]]])
+                                             + float(data.actuator_force[a_drive[fingers[g]["thumb"]]])),
+                        f"{g}_arm_mm": float(data.qpos[q_arm[g]]) * 1e3, f"{g}_arm_m_s": float(data.qvel[v_arm[g]])})
+        row.update({"cx_mm": float(data.qpos[q_cx]) * 1e3, "cz_mm": float(data.qpos[q_cz]) * 1e3,
+                    "cth_deg": math.degrees(float(data.qpos[q_cth])), "deck_N": ms["deck"]})
+        # Each part's speed at its first contact, at that sample and at the one before, at the point it touches.
+        tw_case = twist(case_body)
+        for nm, b in d_body.items():
+            if nm in d_first:
+                continue
+            tw = twist(b)
+            N = part_N(nm, ms)
+            if N <= CONTACT_N:
+                d_prev[nm] = (tw, tw_case)
+                continue
+            first: dict[str, Any] = {"t": round(t, 6), "phase": ph, "N": N}
+            if nm in body_of:
+                first.update(q_deg=row[f"{nm}_q_deg"], w_rad_s=row[f"{nm}_w_rad_s"], tau_Nm=row[f"{nm}_tau_Nm"])
+            tp = touch_point(nm)
+            if tp is not None:
+                p, n = tp
+                rel = at(tw, p) - at(tw_case, p)
+                first.update(point_mm=[float(p[0]) * 1e3, float(p[2]) * 1e3], normal=[float(n[0]), float(n[2])],
+                             closing_m_s=float(-rel @ n), speed_m_s=float(np.linalg.norm(rel)))
+                if nm in d_prev:
+                    rel0 = at(d_prev[nm][0], p) - at(d_prev[nm][1], p)
+                    first.update(closing_before_m_s=float(-rel0 @ n), speed_before_m_s=float(np.linalg.norm(rel0)))
+            d_first[nm] = first
+        if d_state["on"]:
+            d_rows.append(row)
+        elif any(part_N(nm, ms) > CONTACT_N for nm in d_body):
+            d_state["on"] = True
+            d_rows.extend(d_pre)
+            d_rows.append(row)
+        else:
+            d_pre.append(row)
+        if math.isfinite(t_close_end) and t > t_close_end + d_margin:
+            d_state["done"] = True
+
+    def dump_result() -> dict[str, Any]:
+        def sig(v: Any) -> Any:
+            return float(f"{v:.5g}") if isinstance(v, float) and math.isfinite(v) else v
+
+        cols = {k: [r[k] if k == "t" else sig(r[k]) for r in d_rows] for k in (d_rows[0] if d_rows else {})
+                if not k.endswith("_faces")}
+        faces = {f: {nm: [sig(r[f"{f}_faces"][i]) for r in d_rows] for i, nm in enumerate(faces_of[f][0])} for f in body_of}
+        return {"from_s": d_rows[0]["t"] if d_rows else math.nan, "to_s": d_rows[-1]["t"] if d_rows else math.nan,
+                "complete": d_state["done"], "sample_s": every * dt, "margin_s": d_margin,
+                "t_approach_s": t_app_end, "t_close_s": t_close_end, "approach": approach,
+                "preset_deg": math.degrees(preset), "close_rad_s": w_close, "approach_m_s": v_app, "seat_m_s": v_seat,
+                "contact_N": CONTACT_N, "fingers": fingers,
+                "first_contact": {nm: {k: sig(v) for k, v in d.items()} for nm, d in d_first.items()},
+                "samples": cols,
+                "faces": {f: {nm: v for nm, v in d.items() if max(v, default=0.0) > 0.01} for f, d in faces.items()},
+                "units": {"N, Fx, Fz, body_N": "N on the part from the case; x along W, z up; body_N off the elements",
+                          "kPa": "the part's peak element pressure", "r_mm": "load-weighted distance from the pivot",
+                          "span_mm": "contact span along the finger", "zc_mm, zmin_mm, zmax_mm": "above the case's bottom",
+                          "q_deg, w_rad_s": "the finger's hinge", "tau_Nm": "the finger's drive",
+                          "drive_Nm": "the gripper's drive torque, as the window reads it",
+                          "arm_mm, arm_m_s": "the arm's slide", "cx_mm, cz_mm, cth_deg": "the case",
+                          "first_contact": "closing_m_s is the touch point's speed into the case along the contact "
+                                           "normal; _before is the sample before contact"}}
+
+    def fail(reason: str) -> dict[str, Any]:
+        out: dict[str, Any] = {"ok": False, "reason": reason}
+        if close_dump:
+            out["close_dump"] = dump_result()
+        return out
+
     # State machine: approach, close, squeeze, then the timeline.
     phase = "approach"
     arm_done = {g: False for g in G_}
@@ -782,6 +922,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             continue
         t = data.time
         ms = measure()
+        if not d_state["done"]:
+            dump_sample(t, phase, ms)
         load = {g: ms["N"][fingers[g]["out"]] + ms["N"][fingers[g]["thumb"]] + float(np.linalg.norm(ms["hub"][g])) for g in G_}
         if phase in ("squeeze", "timeline"):
             ph_s = "squeeze" if tl is None else tl.phase(t)
@@ -813,7 +955,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                         jaw_note[g] = "seated on its stops"
                     phase = "seat"
             elif t > t_limit:
-                return {"ok": False, "reason": "the arms' approach found no contact"}
+                return fail("the arms' approach found no contact")
             continue
         if phase == "seat":
             rise = v_seat * (t - t_app_end)
@@ -831,7 +973,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 z_base = rise
                 start_squeeze(t)
             elif rise > seat_max:
-                return {"ok": False, "reason": f"the cradle never lifted the case off the deck in {seat_max * 1e3:.0f} mm"}
+                return fail(f"the cradle never lifted the case off the deck in {seat_max * 1e3:.0f} mm")
             continue
         if phase == "close":
             for g in G_:
@@ -850,7 +992,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             if all(v is not None for v in jaw_hold.values()):
                 start_squeeze(t)
             elif t - t_app_end > (preset - jaw.phi_meet) / w_close + 1.0:
-                return {"ok": False, "reason": "the jaw never touched the case"}
+                return fail("the jaw never touched the case")
             continue
         if phase == "squeeze":
             ramp = min((t - t_close_end) / (0.5 * sq_s), 1.0)
@@ -1075,6 +1217,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     res["thumb_bed_margin"] = float(cfg.get("bed_limit_kPa", 25.0)) / max(thumb, 1e-9)
     if record:
         res["trace"] = rec
+    if close_dump:
+        res["close_dump"] = dump_result()
     if unstable:
         # Test conditions 2.15: a run that blew up is never scored; batch 1 reruns it at a finer timestep.
         res.update(supported=None, passed=None, score=None, limiting="", margins={}, power_cut_held=None)

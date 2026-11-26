@@ -1042,6 +1042,54 @@ def test_t5_on_stainless_keeps_the_printed_hub(batch1):
         assert r[f"{g}_sensor_F_N_hold"] > 0.0 and r[f"{g}_sensor_Mb_Nm_hold"] > 0.0
 
 
+def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
+    import gzip
+    import json
+
+    from graspsim2d.t5 import case_object, simulate_t5
+
+    with batch1.finger_material("stainless"):
+        c = batch1.ctx()
+        short = {"shake_s": 0.0, "t5": {**c["b1"]["t5"], "final_hold_s": 0.3}}
+        j = batch1.get_jaw("S2", 45.0)
+        case = case_object(c["b1"]["t5"], "1ft", c["lib"].materials)
+        on, off = (simulate_t5(j, case, c["sc"], {**c["b1"], **short}, stop_g=0.0, power_s=0.1, close_dump=d)
+                   for d in (True, False))
+    d = on.pop("close_dump")
+    # The record only reads the run.
+    assert json.dumps(on, sort_keys=True, default=str) == json.dumps(off, sort_keys=True, default=str)
+    s = d["samples"]
+    assert d["complete"] and d["from_s"] < d["t_approach_s"] < d["t_close_s"] < d["to_s"]
+    assert d["to_s"] == pytest.approx(d["t_close_s"] + d["margin_s"], abs=2 * d["sample_s"])
+    assert set(s["phase"]) == {"approach", "close", "squeeze"}
+    assert len(s["t"]) == len(s["AL_N"]) == len(s["A_drive_Nm"]) == len(d["faces"]["AL"]["tooth"])
+    assert np.all(np.diff(s["t"]) > 0) and max(s["A_drive_Nm"]) > 0.0
+    # On the hub path the hub meets the case on the arm's approach, and each finger in the close at the closing speed.
+    fc = d["first_contact"]
+    assert fc["A_hub"]["phase"] == "approach"
+    assert fc["A_hub"]["speed_before_m_s"] == pytest.approx(d["approach_m_s"], rel=0.1)
+    for f in ("AL", "AR", "BL", "BR"):
+        assert fc[f]["phase"] == "close" and fc[f]["closing_before_m_s"] > 0.0
+        assert abs(fc[f]["w_rad_s"]) == pytest.approx(d["close_rad_s"], rel=0.15)
+
+    # Through the batch runner on the stop-seated cradle: the dump goes to its own file, named in the row.
+    job = batch1._base("test", "S4", 45.0, job="t5", test="T5", finger="stainless", stop_g=0.0, power_s=0.1,
+                       case="close dump", object="1ft", hub_contact=False, approach="seated", t5_path="tips",
+                       dump_dir=str(tmp_path), b1_over=short)
+    row = batch1.run_job(job)
+    assert row["kind"] == "mujoco" and row["ok"], row.get("reason")
+    path = Path(row["close_dump"])
+    assert path.parent == tmp_path and path.name.startswith("S4_1ft_5kg_tips_0g_") and path.suffixes == [".json", ".gz"]
+    with gzip.open(path, "rt") as fh:
+        d = json.load(fh)
+    assert d["job"]["design"] == "S4" and "dump_dir" not in d["job"] and d["row"]["finger_material"] == "stainless"
+    assert d["approach"] == "seated" and set(d["samples"]["phase"]) == {"approach", "seat", "squeeze"}
+    # The thumb meets the wall on the arm's approach; the outside finger meets the case's bottom as the cradle rises.
+    fc = d["first_contact"]
+    assert fc["AL"]["phase"] == "approach" and fc["AL"]["closing_before_m_s"] == pytest.approx(d["approach_m_s"], rel=0.1)
+    assert fc["AR"]["phase"] == "seat" and fc["AR"]["closing_before_m_s"] == pytest.approx(d["seat_m_s"], rel=0.1)
+
+
 def test_batch1_t5_cut_block_runs_revision_2_18(batch1):
     jobs = batch1.block_t5_cut()
     assert len(jobs) == len({batch1._job_key(j) for j in jobs}) == 40

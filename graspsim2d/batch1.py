@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import gzip
+import hashlib
 import json
 import math
 import os
@@ -257,7 +259,8 @@ def job_mj(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def job_t5(job: dict[str, Any]) -> dict[str, Any]:
-    """One T5 two-arm lift. A job's `object` is a case key of the scenario's t5 block."""
+    """One T5 two-arm lift. A job's `object` is a case key of the scenario's t5 block. With `dump_dir`, the run's
+    close record goes to a gzipped JSON file there, and the row's `close_dump` names it."""
     from .t5 import case_object, simulate_t5
     c = ctx()
     j = get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))
@@ -268,14 +271,38 @@ def job_t5(job: dict[str, Any]) -> dict[str, Any]:
                     friction_scale=job.get("friction_scale", 1.0), bare_mu=job.get("bare_mu"),
                     brake=job.get("brake", 30.0), stop_g=job.get("stop_g"), cut_before_stop=job.get("cut_before_stop", False),
                     power_s=job.get("power_s"), shake_g=job.get("shake_g"), hub_contact=job.get("hub_contact", True),
-                    approach=job.get("approach", "close"), hold=job.get("hold", "servo"))
+                    approach=job.get("approach", "close"), hold=job.get("hold", "servo"),
+                    close_dump=bool(job.get("dump_dir")))
     out = {**job, "kind": "mujoco", "seconds": round(time.time() - t0, 1)}
+    dump = r.pop("close_dump", None)
     for k, v in r.items():
         if k == "margins":
             out.update(_flat("m_", v))
         elif k != "trace":
             out[k] = v
+    if dump is not None:
+        out["close_dump"] = write_close_dump(Path(job["dump_dir"]), job, out, dump)
     return {**out, **_torque_flag(j)}
+
+
+def write_close_dump(folder: Path, job: dict[str, Any], row: dict[str, Any], dump: dict[str, Any]) -> str:
+    """A T5 run's close record, named by its design, case and path and a hash of the whole job."""
+    key = {k: v for k, v in job.items() if k != "dump_dir"}
+    tag = hashlib.sha1(json.dumps(key, sort_keys=True, default=str).encode()).hexdigest()[:10]
+    sg = row.get("stop_g")
+    name = "_".join(str(p) for p in (
+        job.get("design"), job.get("object"), f"{row.get('mass_kg') or 0:g}kg", "com" if job.get("com_offset") else "",
+        job.get("t5_path") or ("hub" if job.get("hub_contact", True) else "tips"),
+        "cut" if job.get("cut_before_stop") else "", f"{sg:g}g" if sg is not None else "", tag) if p != "")
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{name}.json.gz"
+    keep = ("ok", "reason", "case_label", "mass_kg", "com_offset_W", "hub_contact", "approach", "hold", "stop_g",
+            "cut_before_stop", "finger_material", "mu_bare", "mu_hub", "t_approach_s", "t_close_s", "A_close", "B_close",
+            "A_first_touch_deg", "B_first_touch_deg", "A_touch_deg", "B_touch_deg", "substeps", "reset_flag")
+    with gzip.open(path, "wt") as fh:
+        json.dump({"job": key, "commit": commit(), "row": {k: row.get(k) for k in keep}, **dump}, fh,
+                  separators=(",", ":"), default=str)
+    return str(path)
 
 
 def job_t3(job: dict[str, Any]) -> dict[str, Any]:
