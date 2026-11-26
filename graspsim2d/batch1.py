@@ -134,7 +134,12 @@ def job_scan(job: dict[str, Any]) -> dict[str, Any]:
     row["simulate"] = bool(g is not None and g.status != "nogrip" and math.isfinite(r.depth) and (g.ok or g.status == "mujoco"))
     if not row["simulate"]:
         row["not_simulated"] = (g.reason if g is not None else "") or r.ended
-    return row
+    return {**row, **_torque_flag(j)}
+
+
+def _torque_flag(j) -> dict[str, Any]:
+    lim = float(ctx()["b1"].get("mount_fatigue_Nm_per_finger", 4.0))
+    return {"finger_torque_Nm": j.torque, "mount_fatigue_flag": bool(j.torque > lim)}
 
 
 def job_sheet_screen(job: dict[str, Any]) -> dict[str, Any]:
@@ -145,7 +150,7 @@ def job_sheet_screen(job: dict[str, Any]) -> dict[str, Any]:
     g = solve_sheet(j, o, c["sc"], Limits.from_config(c["b1"], "T2"), job["depth_mm"])
     return {**job, "kind": "screen", "test": "T2", "status": g.status, "ok": g.ok, "score": g.score, "limiting": g.limiting,
             "reason": g.reason, **_flat("m_", g.margins), **_flat("d_", g.demand),
-            **{k: v for k, v in g.info.items() if not isinstance(v, (list, dict))}}
+            **{k: v for k, v in g.info.items() if not isinstance(v, (list, dict))}, **_torque_flag(j)}
 
 
 def job_mj(job: dict[str, Any]) -> dict[str, Any]:
@@ -287,18 +292,33 @@ def block_s5() -> list[dict[str, Any]]:
             + t1_jobs("s5", "S5", 45.0, boxes, values={"finger_reach": 170.0}, reach_cap=170.0))
 
 
+def block_s2() -> list[dict[str, Any]]:
+    """Block 2: S2 at 160 and 170 mm (the flagged run), boxes, and its sheets, at the 45 deg reading."""
+    boxes, sheets = _boxes_sheets()
+    return (t1_jobs("s2", "S2", 45.0, boxes)
+            + t1_jobs("s2", "S2", 45.0, boxes, values={"finger_reach": 170.0}, reach_cap=170.0)
+            + t2_jobs("s2", "S2", 45.0, sheets))
+
+
 def block_s3_sheets_platform() -> list[dict[str, Any]]:
-    """Block 4: S3 at the 15 N top band with its sensitivities, the sheets for S3 and S5 (S1's wait on
-    its revised spec), and the platform as built."""
+    """Block 4: S3 at the 15 N top band with its sensitivities, the sheets for S1, S3 and S5, and the
+    platform as built."""
     boxes, sheets = _boxes_sheets()
     sens = [("band x1 stiffness", {"band_factor": 1.0})]
     jobs = t1_jobs("s3p0", "S3", 45.0, boxes, sens=sens)
-    jobs += t2_jobs("s3p0", "S3", 45.0, sheets) + t2_jobs("s3p0", "S5", 45.0, sheets)
+    for d in ("S1", "S3", "S5"):
+        jobs += t2_jobs("s3p0", d, 45.0, sheets)
     jobs += t1_jobs("s3p0", "P0", 45.0, boxes) + t2_jobs("s3p0", "P0", 45.0, sheets)
     return jobs
 
 
-BLOCKS = {"refs": block_refs, "s5": block_s5, "s3p0": block_s3_sheets_platform}
+def block_s1_s6() -> list[dict[str, Any]]:
+    """S1 and S6 at nominal on the boxes, and S6's sheets: the T1 counts beside VAL's hand numbers."""
+    boxes, sheets = _boxes_sheets()
+    return t1_jobs("s1s6", "S1", 45.0, boxes) + t1_jobs("s1s6", "S6", 45.0, boxes) + t2_jobs("s1s6", "S6", 45.0, sheets)
+
+
+BLOCKS = {"refs": block_refs, "s2": block_s2, "s5": block_s5, "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:
@@ -342,7 +362,8 @@ def run(jobs: list[dict[str, Any]], workers: int, log) -> list[dict[str, Any]]:
 
 
 CSV_FIRST = ["commit", "block", "test", "design", "reading", "reach_cap", "values", "object", "fill", "case", "kind", "status",
-             "depth_mm", "lateral_mm", "friction_scale", "shake_hz", "brake", "passed", "score", "limiting", "reason"]
+             "depth_mm", "lateral_mm", "friction_scale", "shake_hz", "brake", "passed", "score", "limiting", "reason",
+             "finger_torque_Nm", "mount_fatigue_flag"]
 
 
 def write_rows(rows: list[dict[str, Any]], path: Path) -> None:

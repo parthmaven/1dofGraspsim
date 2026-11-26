@@ -607,6 +607,8 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     power_slip = 0.0
     power_rot = 0.0
     brake_use = 0.0
+    brake_net: list[float] = []
+    brake_on = None
     bottomed = 0
     surf_load = {}
     released = False
@@ -651,9 +653,11 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         if eq >= 0 and not released and t >= tl.t_close:
             data.eq_active[eq] = 0
             released = True
-        if t >= tl.t_power and power_ref is None:
+        # On the drive's clock, not the sampled phase, which reads "power" one step early.
+        if t >= tl.t_power and brake_on is None:
             model.dof_frictionloss[d_jR] = brake_motor
             model.dof_frictionloss[d_jL] = brake_motor
+            brake_on = t
         mujoco.mj_step(model, data)
         if not np.isfinite(data.qacc).all() or abs(data.qpos[a_jR]) > 3.0:
             unstable = True
@@ -750,9 +754,13 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
                 power_ref = (slip, rot)
             ne = data.nefc
             if ne:
-                m = (data.efc_type[:ne] == mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF) & \
-                    ((data.efc_id[:ne] == d_jR) | (data.efc_id[:ne] == d_jL))
-                brake_use = max(brake_use, float(np.abs(data.efc_force[:ne][m]).sum()))
+                fr = data.efc_type[:ne] == mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+                f = data.efc_force[:ne]
+                # Net over both motors: the gear couples the fingers, so the two frictions can
+                # fight each other and their magnitudes overstate what the brake holds.
+                net = abs(float(f[fr & (data.efc_id[:ne] == d_jR)].sum() + f[fr & (data.efc_id[:ne] == d_jL)].sum()))
+                brake_net.append(net)
+                brake_use = max(brake_use, net)
             power_slip = max(power_slip, slip - power_ref[0])
             power_rot = max(power_rot, abs(rot - power_ref[1]))
             if slip > DROP:
@@ -840,7 +848,11 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         "drive_cont_margin": drive["continuous"][1] / max(hold_torque, 1e-9),
         "drive_over_flag": bool(hold_torque > drive["continuous"][0]),
         "drive_peak_margin": drive["peak"] / max(torque_peak, 1e-9),
-        "brake_use_Nm": brake_use,
+        "brake_use_Nm": float(np.median(brake_net[len(brake_net) // 2:])) if brake_net else 0.0,
+        "brake_peak_Nm": brake_use,
+        "brake_on_s": brake_on if brake_on is not None else math.nan, "power_cut_s": tl.t_power,
+        "finger_torque_Nm": tau,
+        "mount_fatigue_flag": bool(tau > float(b1.get("mount_fatigue_Nm_per_finger", 4.0))),
         "pad_elements_at_stop": bottomed,
         "load_by_surface_N": surf_load,
         "mu_pad": obj.material.friction * lim.friction_scale,

@@ -1,5 +1,5 @@
-# Batch 1 (simple-shape concepts): the shared scenario with test-conditions.md revision 2.11
-# (10:23 UTC). The block `batch1:` holds the values the first pass didn't have. Everything else is the first pass's
+# Batch 1 (simple-shape concepts): the shared scenario with test-conditions.md revision 2.12
+# (10:46 UTC). The block `batch1:` holds the values the first pass didn't have. Everything else is the first pass's
 # config/scenario.yaml, unchanged where the test conditions agree with it.
 # How each object is presented, the motion sequence, and what counts as a
 # successful grasp. Defaults until Parth says otherwise; every value is
@@ -187,6 +187,7 @@ batch1:
   shake_s: 3.0                    # lateral 2 Hz, vertical 3 Hz
   sheet_shake_hz: [1.5, 2.0, 3.0] # the carton blank's lateral shake, every design (its second mode is 1.84 - 2.11 Hz)
   drive_Nm_per_gripper: {continuous: [7.0, 10.0], peak: 25.0}   # both finger motors together; flag over 7
+  mount_fatigue_Nm_per_finger: 4.0  # rev 2.12: flag any pinch above this finger torque, the as-built mount's fatigue limit
   short_face_mm: 20.0             # pads and bare faces shorter than this run at fine_pitch_mm
   fine_pitch_mm: 1.5
   bare_travel_mm: 1.5             # bare-face elements travel this far before the body behind them

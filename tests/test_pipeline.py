@@ -531,7 +531,9 @@ def test_batch1_brake_holds_the_power_cut(batch1):
     o = batch1.get_obj("gm_016000275492")
     b1 = {**c["b1"], "shake_s": 1.0}
     held = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5)
-    assert held["power_cut_held"] and held["brake_use_Nm"] < 30.0
+    assert held["power_cut_held"] and held["brake_on_s"] - held["power_cut_s"] < 1e-3
     assert held["drive_hold_Nm"] == pytest.approx(2 * j.torque, rel=0.02)
+    assert held["brake_use_Nm"] == pytest.approx(held["drive_hold_Nm"], rel=0.05)
+    assert held["mount_fatigue_flag"] and held["finger_torque_Nm"] == j.torque
     loose = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5, brake=1.0)
     assert not loose["power_cut_held"]
