@@ -200,7 +200,7 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
                 brake: float = 30.0, stop_g: float | None = None, cut_before_stop: bool = False,
                 power_s: float | None = None, shake_g: float | None = None, hub_contact: bool = True,
                 approach: str = "close", hold: str = "servo", record: bool = False,
-                close_dump: bool = False) -> dict[str, Any]:
+                close_dump: bool = False, close_only: bool = False) -> dict[str, Any]:
     """One T5 run. `com_offset` (fraction of W) moves the centre of mass toward gripper A, the +x gripper, which
     the stop also loads. `squeeze` is N per side; `bare_mu` replaces the bare printed finger's friction on the
     case; `brake` is N m per gripper; `stop_g=0` leaves out the stop. `hub_contact=False` releases the hub once
@@ -213,7 +213,11 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
 
     `close_dump` adds `close_dump` to the result: each contact's samples from the run's first contact through the end
     of the squeeze, each finger's and hub's speed at its first contact and the drive torque. It reads the run without
-    changing it; the rows score the same window themselves (`*_close_*`, revision 2.35)."""
+    changing it; the rows score the same window themselves (`*_close_*`, revision 2.35).
+
+    `close_only` stops the run at the end of the squeeze and returns the close alone: the close window, the first
+    contacts and the drive's record, with nothing rated. Nothing before the squeeze's end depends on the stop, the
+    cut or the timeline, so it matches the close of every run of the same case and position."""
     if approach not in ("close", "seated") or hold not in ("servo", "stops", "thumb_stop"):
         raise ValueError(f"unknown T5 approach {approach!r} or hold {hold!r}")
     cfg = b1.get("t5", {}) or {}
@@ -338,7 +342,8 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
         model, builders, hub_names = build(dx, dz)
     data = mujoco.MjData(model)
     res = _run_t5(model, data, jaw, case, sc, b1, cfg, builders, hub_names, preset, squeeze, stop_g, cut_before_stop,
-                  power_s, shake_g, brake, k_servo, com_offset, hub_contact, record, approach, hold, stop_phi, close_dump)
+                  power_s, shake_g, brake, k_servo, com_offset, hub_contact, record, approach, hold, stop_phi, close_dump,
+                  close_only)
     res.update(approach=approach, hold=hold, shake_g=shake_g, preset_deg=math.degrees(preset),
                stop_deg_jaw=math.degrees(stop_phi), stop_type=jaw.stop_type or "",
                start_out_mm=dx * 1e3, start_down_mm=-dz * 1e3)
@@ -418,7 +423,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             preset: float, squeeze: float, stop_g: float, cut_before_stop: bool, power_s: float, shake_g: float,
             brake: float, k_servo: float, com_offset: float, hub_contact: bool, record: bool,
             approach: str = "close", hold: str = "servo", stop_phi: float | None = None,
-            close_dump: bool = False) -> dict[str, Any]:
+            close_dump: bool = False, close_only: bool = False) -> dict[str, Any]:
     name = lambda kind, n: mujoco.mj_name2id(model, kind, n)
     jid = lambda n: name(mujoco.mjtObj.mjOBJ_JOINT, n)
     gid = lambda n: name(mujoco.mjtObj.mjOBJ_GEOM, n)
@@ -1030,6 +1035,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                     model.actuator_biasprm[a_pos[g], 1] = -k_servo
                     data.ctrl[a_pos[g]] = float(data.qpos[q_arm[g]])
                 phase, t_sq_end = "timeline", t
+                if close_only:
+                    d_state["done"] = True
+                    break
                 tl = T5Timeline(sc, t, shake_g, (sc.shake_lateral_hz, sc.shake_vertical_hz), float(b1.get("shake_s", 3.0)),
                                 stop_g, power_s, cut_before_stop, final_s=cfg.get("final_hold_s"))
                 t_end = tl.t_end
@@ -1172,6 +1180,30 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                            "dropped_in": dropped_in, "t_first_contact_s": t_first, "t_approach_s": t_app_end,
                            "t_close_s": t_close_end, "t_squeeze_end_s": t_sq_end, "contact_average_s": n5 * every * dt,
                            "drive_cap_Nm": drive_cap, "drive_over_cap": any(drive_over.values())}
+
+    def close_fields(g: str) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for part in ("out", "thumb", "hub"):
+            cp = croll[(g, part)].by_phase
+            k = max(cp, key=cp.get) if cp else ""
+            out[f"{g}_{part}_close_5ms_N"] = cp[k] if k else 0.0
+            out[f"{g}_{part}_close_5ms_phase"] = k
+            out[f"{g}_{part}_close_phase_5ms_N"] = croll[(g, part)].phases()
+        out[f"{g}_drive_max_Nm"], out[f"{g}_drive_max_phase"] = drive_max[g]
+        out[f"{g}_drive_over_cap_s"] = drive_over[g] * every * dt
+        return out
+
+    if close_only:
+        for g in G_:
+            res.update({f"{g}_touch_deg": math.degrees(jaw_hold[g]) if jaw_hold[g] is not None else math.nan,
+                        f"{g}_first_touch_deg": math.degrees(first_touch[g]) if math.isfinite(first_touch[g]) else math.nan,
+                        f"{g}_close": jaw_note[g]})
+            res.update(close_fields(g))
+        res.update(close_only=True, thumb_limit_kPa=case.material.allow_pressure / 1e3, supported=None, passed=None,
+                   score=None, limiting="", margins={})
+        if close_dump:
+            res["close_dump"] = dump_result()
+        return res
     for g in G_:
         f_o, f_t = fingers[g]["out"], fingers[g]["thumb"]
         hub = np.array(stats["hold"]["hub"][g]) if stats["hold"]["hub"][g] else np.zeros((1, 3))
@@ -1203,13 +1235,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         res.update(sensors[g].readings(f"{g}_"))
         for part in ("out", "thumb", "hub"):
             res[f"{g}_{part}_phase_5ms_N"] = roll[(g, part)].phases()
-            cp = croll[(g, part)].by_phase
-            k = max(cp, key=cp.get) if cp else ""
-            res[f"{g}_{part}_close_5ms_N"] = cp[k] if k else 0.0
-            res[f"{g}_{part}_close_5ms_phase"] = k
-            res[f"{g}_{part}_close_phase_5ms_N"] = croll[(g, part)].phases()
-        res[f"{g}_drive_max_Nm"], res[f"{g}_drive_max_phase"] = drive_max[g]
-        res[f"{g}_drive_over_cap_s"] = drive_over[g] * every * dt
+        res.update(close_fields(g))
         n_hub = res[f"{g}_hub_hold_N"]
         n_all = n_hub + res[f"{g}_out_N_hold"] + res[f"{g}_thumb_N_hold"]
         res[f"{g}_hub_share"] = n_hub / n_all if n_all > 1e-9 else math.nan

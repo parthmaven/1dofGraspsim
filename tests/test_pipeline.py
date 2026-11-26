@@ -1068,7 +1068,17 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
         case = case_object(c["b1"]["t5"], "1ft", c["lib"].materials)
         on, off = (simulate_t5(j, case, c["sc"], {**c["b1"], **short}, stop_g=0.0, power_s=0.1, close_dump=d)
                    for d in (True, False))
+        only = simulate_t5(j, case, c["sc"], c["b1"], close_dump=True, close_only=True)
     d = on.pop("close_dump")
+    # The close alone stops at the end of the squeeze, rates nothing, and reads the same close as the whole run, which
+    # had a different timeline.
+    od = only.pop("close_dump")
+    assert only["ok"] and only["close_only"] and only["supported"] is None and only["margins"] == {}
+    assert od["complete"] and od["to_s"] == pytest.approx(only["t_squeeze_end_s"]) and "settle" not in od["samples"]["phase"]
+    for k in [k for k in on if k.endswith(("_close_5ms_N", "_close_5ms_phase", "_close_phase_5ms_N"))] + [
+            "t_first_contact_s", "t_close_s", "t_squeeze_end_s"]:
+        assert only[k] == on[k], k
+    assert od["samples"]["AL_N"] == d["samples"]["AL_N"][:len(od["samples"]["t"])]
     # The record only reads the run.
     assert json.dumps(on, sort_keys=True, default=str) == json.dumps(off, sort_keys=True, default=str)
     s = d["samples"]
