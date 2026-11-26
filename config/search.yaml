@@ -1,0 +1,15 @@
+# Search budget. Each round screens every concept (Latin hypercube, then
+# differential evolution on the analytic screen), refines a design per
+# object, checks the finalists dynamically in MuJoCo, and learns correction
+# factors that tighten (or relax) the screen for the next round.
+n_lhs: 256                  # Latin hypercube samples per concept per round
+de_popsize: 3               # population = de_popsize x number of variables
+de_maxiter: 40              # generations per concept per round
+de_tol: 0.001
+per_object_maxiter: 30      # generations of the per-object refinement
+finalists_per_concept: 3    # distinct top designs per concept sent to MuJoCo
+rounds: 2
+min_margin_weight: 0.25     # J = sum min(m,1) + w * min(min(m,2))
+workers: 0                  # 0 = all cores
+seed: 1
+correction_clip: [0.25, 2.0]

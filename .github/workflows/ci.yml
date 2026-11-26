@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e . --no-deps
+      - name: Unit tests
+        run: pytest -q
+      - name: CLI smoke run
+        run: |
+          graspsim2d describe
+          graspsim2d screen baseline_paddle --out runs/ci/screen
+          graspsim2d simulate baseline_paddle --objects mini_1oz,b_flute_3mm --out runs/ci/simulate
+          graspsim2d sweep baseline_paddle --vary finger_torque=1:9:5 --out runs/ci/sweep
+      - name: Quick search on four objects
+        run: |
+          python - <<'EOF'
+          import pathlib, yaml
+          raw = yaml.safe_load(open("config/objects.yaml"))
+          raw["enabled"] = ["mini_1oz", "hbo_28oz", "chipboard_0p5mm", "b_flute_3mm"]
+          raw["box_tables"] = [dict(t, file=str(pathlib.Path("config", t["file"]).resolve())) for t in raw.get("box_tables") or []]
+          pathlib.Path("runs/ci").mkdir(parents=True, exist_ok=True)
+          yaml.safe_dump(raw, open("runs/ci/objects_small.yaml", "w"))
+          EOF
+          graspsim2d --objects runs/ci/objects_small.yaml search --quick --out runs/ci/search
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-runs
+          path: runs/ci
+          if-no-files-found: ignore
