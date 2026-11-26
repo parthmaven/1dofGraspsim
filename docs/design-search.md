@@ -11,9 +11,13 @@ all-rounder and the best design for each object.
 The bounding box is centred on the platform finger
 (`Finger, Left, MV-UMI01-3DP-001 A.stp`): two pivots 38 mm apart, geared 1:1
 (equal and opposite rotation), the tip 150 mm from the pivot line, and a flat
-face that is parallel to the other finger's when closed, made of a wide paddle,
-a recessed notch and a narrow tab. That design is concept C1, and it is always
-simulated as drawn for reference. Every candidate must also clear the hub of
+face that is parallel to the other finger's when closed. The contact surface is
+the inner face of the finger's 3 mm blade, 4 mm inboard of the paddle part (the
+`Paddle, Gripper, MV-UMI01 A` plate that carries the pivot barrel), so the
+paddle part never touches the object. Along its length the face is a wide main
+face, a recess and a narrow tip pad, which the model calls the paddle, the notch
+and the tab. That design is concept C1, and it is always simulated as drawn for
+reference. Every candidate must also clear the hub of
 the FT Dynamic bracket (top) at every angle of its swing: each finger is cut to
 clear it, as the platform finger's notch does.
 
@@ -169,13 +173,16 @@ fill_height_mm, com_height_mm, bulk_density_g_cm3, source, confidence`. A blank
 `fill_height_mm` falls back to the bulk density (net mass over density and
 footprint), then to `fill_fraction` (0.8); a blank `com_height_mm` uses the
 carton-plus-contents estimate; a blank `box_mass_g` uses the carton blank area
-times the board grammage. The shipped `config/general_mills_cereal_boxes.csv`
-holds one placeholder row (Cheerios Family Size 18 oz, scaled from the sourced
-8.9 oz box at the same bulk density) until the sourced General Mills table
-replaces it: copy the table over that file, or point `file:` at it (a relative
-path is relative to `objects.yaml`). Table boxes get the id prefix `gm_` plus
-the product and size, for example `gm_cheerios_family_size_18_oz`, and rows
-with confidence `placeholder` are labelled so.
+times the board grammage. `config/general_mills_cereal_boxes.csv` is a copy of
+the General Mills catalog (`docs/general-mills-cereal-boxes.csv` in the project
+store), which so far holds Cheerios Family Size 18 oz: 325 x 196 x 94 mm, 626 g
+with the carton, settled fill 234 mm (72 %, 91 mm headspace) and centre of
+mass 126 mm above the bottom, both modelled from its bulk density. To take a
+newer catalog, copy it over that file or point `file:` at it (a relative path
+is relative to `objects.yaml`). A table box's id is the prefix `gm_` plus its
+UPC, unless the table entry's `names` (keyed by UPC) gives a short id and label,
+as it does for `gm_cheerios_family_18oz`. Rows with confidence `placeholder`
+are labelled so.
 
 Sheets hang from a holder that lets go once the jaw has closed, and are
 pinched near their free top edge. Every value in `objects.yaml` carries its
@@ -298,8 +305,43 @@ through-thickness modulus; box panel on the cereal bed). Self-aligning pads
 turn until their contact moment balances the centring spring. From the pressure
 distribution the screen computes the margins in the table above. The friction
 hold accounts for the moment the friction force puts on the jaw, and for the
-squeeze-out force at a box's top corner. One design on all 14 objects takes
-about 0.1 to 0.25 s.
+squeeze-out of a box by a tilted pad face. Where the face is tilted to the box
+side by θ, the contact normal tilts by the box's share of the overlap, so the
+squeeze also pushes the box toward the fingertips. At the box's top edge,
+which meets the face edge-on, that share is all of it, so a grasp on the top
+edges alone needs μ ≥ tan θ. A face that closes toward the tips gets no credit
+for wedging the box in. The screen also reports the jaw opening at which an
+object passes between the fingertips (`pass_opening`). One design on all 14
+objects takes about 0.1 to 0.25 s.
+
+### Validation: the platform finger on Cheerios Family Size
+
+The CAD study of the platform finger on the 94 mm deep Cheerios Family Size box
+(`docs/general-mills-cereal-boxes.md` in the project store, with the true-scale
+render `media/cereal-boxes/cheerios-family-size-with-gripper.png`) found the following:
+
+- The jaws must open 17.4° each (a 94 mm tip gap) to pass the box.
+- They then meet only its top edges, because the faces are tilted at the jaw angle.
+- The squeeze therefore pushes the box out, so holding needs μ ≥ tan θ.
+
+`test_cheerios_family_size_validation` checks the screen against it. The test
+models the stock face as rigid printed plastic (the pad at 90 A, with the face
+kept where the CAD has it) on a rigid box edge, as the study does:
+
+| case (CAD study) | CAD study | screen |
+|---|---|---|
+| box just passes between the tips | 17.4° per jaw, 94 mm tip gap | 17.45°, 94.0 mm |
+| tip-pad pinch as drawn: box top 18 mm inside the tips | 20.0°, 107 mm tip gap, contact 131 mm from the pivot line, μ ≥ 0.36 | insertion 20.8 mm: box top 17.9 mm inside the tips, first touch at 19.97° on the tab at 131.0 mm, top edge only, μ ≥ 0.358 |
+| deepest contact on the tip pad | 20.7°, contact at 126 mm, μ ≥ 0.38 | 20.2°, 128.4 mm (the model's tab starts at 129.5 mm) |
+| corner on the arm and main face | 24.6° to 46.5°, μ ≥ 0.46 to 1.05 | 26.8° to 33.0° (corner 97 to 79 mm out), μ ≥ 0.50 to 0.64; deeper does not fit at the model's 35° stroke |
+
+The model's 6 mm, 40 A pad sits on a box wall with the cereal-backed stiffness,
+top edge included. With that pad, the tip-pad pinch dents the wall about 8 mm
+under 5 N·m. The jaw then closes to about 16°, and the finger body meets the
+box. The screen's own pick puts the top edge on the main face (insertion
+74 mm, 29.6° per jaw), where the squeeze needs μ ≥ 0.57, more than the
+carton's 0.5. So the hold fails (margin 0.63), as the CAD study expects of
+the bare main face.
 
 ### Dynamic check (`mjsim.py`)
 
@@ -388,9 +430,10 @@ clearance over the stroke), the keep-out (rejecting a paddle that reaches into
 the bracket, capping insertion), the
 contact-width cap, the gear coupling (driving one finger carries the
 other), the box tables (given and fallback fill height and centre of mass,
-missing columns), the grasp axis, the simulator interface (both levels match
-direct calls), sweeps (grid order, saved files, agreement with the screen) and
-run directories keeping their box tables. CI runs them on every pull request.
+missing columns, ids by UPC), the grasp axis, the simulator interface (both
+levels match direct calls), sweeps (grid order, saved files, agreement with the
+screen), run directories keeping their box tables, and the Cheerios Family Size
+validation above. CI runs them on every pull request.
 
 ## Limits of the model
 
@@ -405,6 +448,10 @@ run directories keeping their box tables. CI runs them on every pull request.
   contact model loses nothing, but the cutout is applied to the whole beam.
 - Boxes are rigid bodies; panel denting and crushing are judged by force and
   pressure limits, not simulated deformation. Cereal does not flow.
+- A box side has one surface stiffness, the cereal-backed panel's, up to and
+  including its top edge. The real top edge is braced by the glued top flaps
+  and is much stiffer, and the cereal crush pressure limit is applied even in
+  the empty headspace, where the panel force limit is the real constraint.
 - Sheets bend only in the plane, at hinges every `sheet_segment_mm`; creasing
   is judged at the first hinge below the pinch.
 - The drive is an ideal torque source with viscous speed limiting; no gearbox
