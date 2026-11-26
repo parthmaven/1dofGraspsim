@@ -207,10 +207,10 @@ batch1:
     pa12: {density_kg_m3: 1010.0}
   # Rev 2.34: the wrist F/T sensor. The finger assembly, the drive and brake, and the hub shell ride on its moving side,
   # so it reads every external contact on the jaw assembly and the pinch cancels. Its axis is the hub's, square to the
-  # jaw plane; SR's bracket check may move its centre.
+  # jaw plane.
   sensor:
     centre_mm: [0.0, -31.0]       # the hub's axis, in gripper coordinates (SR round 15)
-    depth_mm: 24.0                # its centre along the tool axis, below the top datum, in the hub bore
+    depth_mm: 31.5                # its mid-plane along the tool axis, below the top datum, between the brackets (SR round 16)
     # The specs don't say where a finger's widths sit along the tool axis. A full-width part, and comb layer a, hang
     # from the top of this span; comb layer b sits at its bottom (the platform finger's 155 mm paddle).
     finger_span_mm: [1.0, 156.0]
