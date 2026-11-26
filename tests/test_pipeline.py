@@ -1079,6 +1079,8 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
         on, off = (simulate_t5(j, case, c["sc"], {**c["b1"], **fine}, stop_g=0.0, power_s=0.1, close_dump=d)
                    for d in (True, False))
         only = simulate_t5(j, case, c["sc"], c["b1"], close_dump=True, close_only=True)
+        slow = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_rad_s": 0.15, "close_brakes": True}},
+                           close_dump=True, close_only=True)
     d = on.pop("close_dump")
     # The close alone stops at the end of the squeeze, rates nothing, and reads the same close as the whole run, which
     # had a different timeline.
@@ -1125,6 +1127,13 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
     for f in ("AL", "AR", "BL", "BR"):
         assert fc[f]["phase"] == "close" and fc[f]["closing_before_m_s"] > 0.0
         assert abs(fc[f]["w_rad_s"]) == pytest.approx(d["close_rad_s"], rel=0.15)
+    # A design's own lower closing speed (SIM round 18 b): the drive brakes the fingers to it. The rated close only
+    # pushes, and the hub's impact swings the fingers in at about the rated speed.
+    sd = slow.pop("close_dump")
+    assert sd["close_brakes"] and not d["close_brakes"] and sd["close_rad_s"] == 0.15
+    for f in ("AL", "AR", "BL", "BR"):
+        assert sd["first_contact"][f]["phase"] == "close"
+        assert abs(sd["first_contact"][f]["w_rad_s"]) == pytest.approx(0.15, rel=0.15)
 
     # Through the batch runner on the stop-seated cradle, at a design's own 50 mm/s approach (SIM round 18 b): the
     # dump goes to its own file, named in the row.

@@ -488,6 +488,10 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     tau = jaw.torque
     w_close = float(cfg.get("close_rad_s", 0.3))
     kv_drive = tau / 0.2
+    # The rated close only pushes. On the hub path the arm's stop on the hub's impact already swings the fingers shut,
+    # and with no joint damping they coast in at about the rated speed. A design's own lower closing speed (SIM round
+    # 18 b) needs the drive to hold them back as well: `close_brakes` lets the servo brake, within the drive's torque.
+    brake_floor = -tau if cfg.get("close_brakes") else 0.0
     v_app = float(cfg.get("approach_m_s", 0.1))
     app = float(cfg.get("approach_mm", 30.0)) * 1e-3
     sq_s = float(cfg.get("squeeze_s", 0.4))
@@ -820,7 +824,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         return {"from_s": d_rows[0]["t"] if d_rows else math.nan, "to_s": d_rows[-1]["t"] if d_rows else math.nan,
                 "complete": d_state["done"], "sample_s": dump_every * dt, "margin_s": d_margin, "t_first_contact_s": t_first,
                 "t_approach_s": t_app_end, "t_close_s": t_close_end, "t_squeeze_end_s": t_sq_end, "approach": approach,
-                "preset_deg": math.degrees(preset), "close_rad_s": w_close, "approach_m_s": v_app, "seat_m_s": v_seat,
+                "preset_deg": math.degrees(preset), "close_rad_s": w_close, "close_brakes": brake_floor < 0.0,
+                "approach_m_s": v_app, "seat_m_s": v_seat,
                 "contact_N": CONTACT_N, "fingers": fingers,
                 "first_contact": {nm: {k: sig(v) for k, v in d.items()} for nm, d in d_first.items()},
                 "samples": cols,
@@ -932,7 +937,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 elif jaw_hold[g] is not None:
                     u = kp_j * (jaw_hold[g] - phi) - kv_j * om
                 elif phase == "close":
-                    u = -min(max(kv_drive * (w_close + om), 0.0), tau)
+                    u = -min(max(kv_drive * (w_close + om), brake_floor), tau)
                 else:
                     u = kp_j * (preset - phi) - kv_j * om
                 data.ctrl[a_drive[f]] = u
