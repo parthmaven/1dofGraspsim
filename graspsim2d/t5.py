@@ -193,10 +193,12 @@ class T5Timeline:
 def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *, com_offset: float = 0.0,
                 squeeze: float | None = None, friction_scale: float = 1.0, bare_mu: float | None = None,
                 brake: float = 30.0, stop_g: float | None = None, cut_before_stop: bool = False,
-                power_s: float | None = None, shake_g: float | None = None, record: bool = False) -> dict[str, Any]:
+                power_s: float | None = None, shake_g: float | None = None, hub_contact: bool = True,
+                record: bool = False) -> dict[str, Any]:
     """One T5 run. `com_offset` (fraction of W) moves the centre of mass toward gripper A, the +x gripper, which
     the stop also loads. `squeeze` is N per side; `bare_mu` replaces the bare printed finger's friction on the
-    case; `brake` is N m per gripper."""
+    case; `brake` is N m per gripper. `hub_contact=False` releases the hub once the jaw has closed, so only the
+    fingers carry the case: the hand checks' load path."""
     cfg = b1.get("t5", {}) or {}
     W, H, D = case.thickness, case.height, case.width
     hf = float(cfg.get("hub_front_mm", 48.5)) * 1e-3
@@ -298,12 +300,12 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
     model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
     data = mujoco.MjData(model)
     return _run_t5(model, data, jaw, case, sc, b1, cfg, builders, hub_names, preset, squeeze, stop_g, cut_before_stop,
-                   power_s, shake_g, brake, k_servo, com_offset, record)
+                   power_s, shake_g, brake, k_servo, com_offset, hub_contact, record)
 
 
 def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cfg: dict, builders: dict, hub_names: dict,
             preset: float, squeeze: float, stop_g: float, cut_before_stop: bool, power_s: float, shake_g: float,
-            brake: float, k_servo: float, com_offset: float, record: bool) -> dict[str, Any]:
+            brake: float, k_servo: float, com_offset: float, hub_contact: bool, record: bool) -> dict[str, Any]:
     name = lambda kind, n: mujoco.mj_name2id(model, kind, n)
     jid = lambda n: name(mujoco.mjtObj.mjOBJ_JOINT, n)
     gid = lambda n: name(mujoco.mjtObj.mjOBJ_GEOM, n)
@@ -531,6 +533,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 for g in G_:
                     model.actuator_gainprm[a_pos[g], 0] = 0.0
                     model.actuator_biasprm[a_pos[g], 1] = 0.0
+                    if not hub_contact:
+                        for nm in hub_names[g]:
+                            model.geom_contype[gid(nm)] = model.geom_conaffinity[gid(nm)] = 0
             elif t - t_app_end > (preset - jaw.phi_meet) / w_close + 1.0:
                 return {"ok": False, "reason": "the jaw never touched the case"}
             continue
@@ -608,7 +613,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         return float(np.mean(v)) if len(v) else math.nan
 
     res: dict[str, Any] = {"ok": not unstable, "reason": UNSTABLE if unstable else "", "unstable_s": unstable_s,
-                           "reset_flag": unstable, "substeps": builders["A"].substeps, "case": case.id, "case_label": case.label,
+                           "reset_flag": unstable, "substeps": builders["A"].substeps, "case_id": case.id, "case_label": case.label,
+                           "hub_contact": hub_contact,
                            "mass_kg": case.mass, "com_offset_W": com_offset, "squeeze_N": squeeze, "stop_g": stop_g,
                            "cut_before_stop": cut_before_stop, "brake_Nm": brake, "power_s": power_s,
                            "mu_bare": builders["A"].mu_bare, "mu_pad": builders["A"].mu_pad,

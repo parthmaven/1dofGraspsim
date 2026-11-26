@@ -759,3 +759,13 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
         assert 125.0 < r[f"{g}_out_bearing_mm"] < 160.0
     assert r["A_hold_Nm"] == pytest.approx(r["B_hold_Nm"], rel=0.1, abs=0.05)
     assert r["mu_bare"] == pytest.approx(0.35)
+
+
+def test_batch1_t5_cut_block_runs_revision_2_18(batch1):
+    jobs = batch1.block_t5_cut()
+    assert len(jobs) == len({batch1._job_key(j) for j in jobs}) == 40
+    assert {j["design"] for j in jobs} == {"S1", "S2", "S3", "S6"}
+    assert all(j["job"] == "t5" and j["cut_before_stop"] and j["object"] == "2ft" and j["reading"] == 45.0 for j in jobs)
+    assert {j["mass_kg"] for j in jobs if j["design"] == "S2"} == {12.8}
+    assert {(j["friction_scale"], j["bare_mu"]) for j in jobs} == {(1.0, None), (0.8, None), (1.0, 0.24)}
+    assert {j["hub_contact"] for j in jobs} == {True, False}

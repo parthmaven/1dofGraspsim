@@ -228,4 +228,6 @@ batch1:
     bed_limit_kPa: 25.0
     # rev 2.18: S1, S2, S3 and S6, on the brake, cut power mid-move and then make the 1 g stop, at the rated mass on
     # the 2 ft case; the bare printed finger on corrugated at 0.35 and 0.28 (x0.8), and 0.24 as a sensitivity.
-    midmove_cut: {case: 2ft, designs: [S1, S2, S3, S6], bare_mu_sensitivity: 0.24}
+    # Rated masses on the reference drive, from each spec's G1 text (S3's at the 60/40 share).
+    midmove_cut: {case: 2ft, designs: [S1, S2, S3, S6], bare_mu_sensitivity: 0.24,
+                  rated_kg: {S1: 13.8, S2: 12.8, S3: 14.0, S6: 13.3}}

@@ -206,9 +206,30 @@ def job_mj(job: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def job_t5(job: dict[str, Any]) -> dict[str, Any]:
+    """One T5 two-arm lift. A job's `object` is a case key of the scenario's t5 block."""
+    from .t5 import case_object, simulate_t5
+    c = ctx()
+    j = get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))
+    b1 = {**c["b1"], **job.get("b1_over", {})}
+    case = case_object(b1["t5"], job["object"], c["lib"].materials, job.get("mass_kg"))
+    t0 = time.time()
+    r = simulate_t5(j, case, c["sc"], b1, com_offset=job.get("com_offset", 0.0), squeeze=job.get("squeeze_N"),
+                    friction_scale=job.get("friction_scale", 1.0), bare_mu=job.get("bare_mu"),
+                    brake=job.get("brake", 30.0), cut_before_stop=job.get("cut_before_stop", False),
+                    power_s=job.get("power_s"), hub_contact=job.get("hub_contact", True))
+    out = {**job, "kind": "mujoco", "seconds": round(time.time() - t0, 1)}
+    for k, v in r.items():
+        if k == "margins":
+            out.update(_flat("m_", v))
+        elif k != "trace":
+            out[k] = v
+    return {**out, **_torque_flag(j)}
+
+
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
     try:
-        f = {"scan": job_scan, "sheet_screen": job_sheet_screen, "mj": job_mj}[job["job"]]
+        f = {"scan": job_scan, "sheet_screen": job_sheet_screen, "mj": job_mj, "t5": job_t5}[job["job"]]
         return _clean(f(job))
     except Exception as e:  # noqa: BLE001 - a failed job is a row, not a dead batch
         import traceback
@@ -410,8 +431,30 @@ def block_fs_loose() -> list[dict[str, Any]]:
     return jobs
 
 
+def block_t5_cut() -> list[dict[str, Any]]:
+    """Revision 2.18: S1, S2, S3 and S6, which hold on the brake, cut power mid-move and then make T5's 1 g stop
+    along W, at each one's rated mass on the 2 ft case. The bare printed finger on corrugated runs at 0.35, 0.28
+    (the x0.8 run) and 0.24 (a sensitivity), with the hub carrying the corner and, as the hand checks have it,
+    released once the jaw closes; the 10 % centre-of-mass offset runs at 0.35 and 0.28."""
+    cfg = ctx()["b1"]["t5"]["midmove_cut"]
+    mus = ((1.0, None, "mu 0.35"), (0.8, None, "x0.8, mu 0.28"),
+           (1.0, float(cfg["bare_mu_sensitivity"]), f"mu {float(cfg['bare_mu_sensitivity']):g}"))
+    jobs = []
+    for d in cfg["designs"]:
+        for fs, mu, tag in mus:
+            for hub in (True, False):
+                for com in (0.0, float(ctx()["b1"]["t5"]["com_offset_W"])):
+                    if com and mu is not None:
+                        continue
+                    label = f"mid-move cut, {tag}, {'hub' if hub else 'tips only'}" + (f", COM +{com:.0%} W" if com else "")
+                    jobs.append(_base("t5cut", d, 45.0, job="t5", test="T5", object=cfg["case"],
+                                      mass_kg=float(cfg["rated_kg"][d]), cut_before_stop=True, friction_scale=fs,
+                                      bare_mu=mu, hub_contact=hub, com_offset=com, case=label))
+    return jobs
+
+
 BLOCKS = {"refs": block_refs, "s2": block_s2, "s5": block_s5, "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6,
-          "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose}
+          "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose, "t5cut": block_t5_cut}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:
