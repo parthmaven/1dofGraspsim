@@ -3,7 +3,7 @@
 # Frame: graspsim2d finger-local, mm. u along the finger, v inward; the face plane is v = 17.75.
 # Geometry and loads: internal/gripper-review/scripts/fp-concept-geometry.py, fp-t4a-lip-spans.py
 # (T4a; supersedes fp-t4a-descent.py on hooking), fp-t3-chisel-lean.py (T3) and fp-s3-t5-stop.py
-# (T5's stop and brake, VAL-Q7).
+# (T5's stop and brake, VAL-Q7, and the G1 rating).
 # Nominal numbers in comments are at finger_reach 155 and the new_variables' nominals.
 
 id: S3
@@ -74,7 +74,7 @@ fingers:
       hard_stop:
         type: l_angle
         opening_deg: 45
-        where: "a printed block on the back of each finger's paddle, about 60 - 80 mm from its pivot, against the bracket, on each finger's own shaft. It caps the stroke. In T5 it carries load only if the jaw stays on it: then the case lies on the outside shoulder alone with its wall on the hub, and that finger's block takes 22 - 27 N·m at 23 kg, about 0.3 - 0.45 kN (VAL-Q7)"
+        where: "a printed block on the back of each finger's paddle, about 60 - 80 mm from its pivot, against the bracket, on each finger's own shaft. It caps the stroke. In T5 it carries load only if the jaw stays on it: then the case lies on the outside shoulder alone with its wall on the hub, and that finger's block takes 22 - 27 N·m at 23 kg, about 0.3 - 0.45 kN (VAL-Q7). Its 20 x 30 mm face, against SR's 2 mm 304 wear plate on the bracket, then bears 0.5 - 0.75 MPa"
   inside: same
 
 search:
@@ -105,7 +105,9 @@ search:
     - "back drop 6 mm long behind the stop face: keeps >= 10 mm under the pocket floor's far end at every seat_backcut"
     - "no pads: S3 tests the bare top-edge pinch; S1, S2 and S6 cover padded panel grips"
     - "hard stop at 45 deg: caps the stroke; the closed T5 grip sits at about 34 deg, short of it (VAL-Q7)"
-    - "T5 holder: the drive's power-off brake, the reference 30 N·m per gripper unless EE names a larger one; 23 kg needs about 41 N·m (expected T5)"
+    - "T5 holder: the drive during the lift and its power-off brake at rest, the reference 25 N·m peak and 30 N·m per gripper unless EE names larger ones; 23 kg needs about 41 N·m in the strength check, so the reference drive's peak sets the G1 rating at about 14 kg (notes)"
+    - "hinge: the next phase's metal hinge (SR's hardware list): Ø15 h6 stainless shafts (17-4PH H1025 or 440C), keyed; four sealed 6002-2RS bearings, stainless with H1 grease over open product, in metal sleeves; steel or 7075 clamp hubs in place of the printed mount; a case-hardened module-2 steel gear pair; each finger on two captive M5 x 25 A4-70 socket screws with retaining washers, in pressed Ø9 x Ø5.2 x 12 mm stainless sleeves"
+    - "operator fasteners (G2): only each finger's two captive M5 socket screws (ISO 4762), which take the cell's one 4 mm stainless hex key; the stops' wear plates are fitted at the bench"
 
 stroke:
   readings: [45]                # the l_angle stop caps the stroke at 45 deg
@@ -142,19 +144,36 @@ notes: >
   stop only catches the case if the brake lets go: the case drops 25.5 mm onto the outside
   shoulder, with its wall on the hub. A 90 deg version is the same outline without the stop,
   held the same way, with the same T5 numbers.
+  G1. Judged with the next phase's metal hinge (fixed_by_spec), S3 rates about 14 kg, set by
+  the reference drive's 25 N·m peak during the lift, not by the brake. The strength check
+  needs 37 - 41 N·m per gripper at 23 kg, so the peak covers 14.0 kg at the 60/40 share
+  (15.6 at an equal share). The reference 30 N·m brake alone would cover about 17 kg (16.8),
+  and at rest it holds the full 23 kg (19 - 22 N·m) for the 10 minutes and through the power
+  cut. Nothing else limits it. The ligament under the pocket sees 3.4 MPa at 23 kg (6.7 with
+  K_t 2), against 16 MPa. The steel clamp hub and stainless sleeves clear the root at 23 kg,
+  and the 14 mm knuckle is a free end that carries nothing (VAL R5.2). The stop carries nothing
+  in the closed grip. The hardened gear pair takes the full moment across the mesh, as on S1,
+  S2 and S6, and the hinge is SR's check for S3 - S5. With SR's next-phase drive (at least
+  50 N·m peak) and brake (at least 70 N·m), S3 rates 23 kg: they cover about 28 and 39 kg.
+  As built, VAL puts the printed root at about 5 - 7 kg for a short lift on tip-bearing
+  loads, and 3 - 4 kg held (R5.2).
+  G2. The operator touches only each finger's two captive M5 socket screws, on the cell's one
+  4 mm stainless hex key. S3 has no pad, so nothing else comes off. A stainless tip insert, if
+  added for detection, would be held by those same screws or by fasteners on the same key.
 
 expected:
   T1: "Passes boxes up to about 400 g and is marginal above. The clamp sits within 5 deg of square, so squeeze-out needs mu >= 0.09 (F1, F3). Bare at mu 0.3 the hold needs 15 N per finger on a 626 g box (23 N with the hold SF), over the 15 N top-band limit and within the 40 N sensitivity (F2)."
   T2: "Holds light sheets and is marginal on heavy corrugated. The flat shoulders meet at 1.4 deg, a parallel pinch, but bare at mu 0.30 - 0.35 (F1: no tip-only line contact)."
   T3: "Enters the 3 mm gap. The chisel is <= 3 mm over its 18 mm and leans <= 5 deg, so it sits <= 1.3 mm off the face over 15 mm. At the 1.3 mm gap it must push a neighbour 1 - 2 mm, within the 3 mm limit (F3)."
   T4: "Passes T4b and fails T4a. T4b: the seat carries 110 N, and the load opens the jaw with a 1.5 N·m moment the drive must hold. T4a: S3 hooks lips up to 134 mm across, but the 212 mm bin's lip doesn't fit the 13.5 mm pocket at the 45 - 49 deg it needs (fp-t4a-lip-spans.py)."
-  T5: "Brake-held, not stop-held. The shoulders' outer corners bear about 130 mm from each pivot at 34 deg. At 23 kg that needs 26 - 30 N·m per gripper in the hold test and 37 - 41 N·m in the strength check (equal to 60/40 share). The reference 30 N·m brake holds the hold test, about 1 % short at 60/40, and rates S3 at about 17 kg in the strength check; 23 kg needs about 41 N·m. The 45 deg stop carries load only in the one-face seat: 22 - 27 N·m on the outside finger. The shoulder's 480 - 600 mm² is under the 820 mm² the board needs, so the bearing check fails at 23 kg either way (fp-s3-t5-stop.py, VAL-Q7)."
+  T5: "Brake-held, not stop-held. The shoulders' outer corners bear about 130 mm from each pivot at 34 deg. At 23 kg that needs 19 - 22 N·m per gripper at rest, 26 - 30 N·m in the 0.25 g hold test with the thumbs sharing the sideways load (33 if one thumb takes it all) and 37 - 41 N·m in the strength check (equal to 60/40 share). The reference 30 N·m brake holds the case at rest and through the power cut, and the hold test while the thumbs share. G1 rates S3 about 14 kg, set by the reference drive's 25 N·m peak during the lift; the brake alone would cover about 17 kg, and SR's next-phase drive and brake cover 23 kg (notes). The 45 deg stop carries load only in the one-face seat: 22 - 27 N·m on the outside finger. The shoulder's 480 - 600 mm² is under the 820 mm² the board needs if one thumb takes the shake, and at the 550 mm² limit if the thumbs share it, so the bearing check fails or is marginal at 23 kg (fp-s3-t5-stop.py, VAL-Q7, VAL R5.5)."
 
 tradeoffs:
   - "The top-edge pinch avoids the empty panel but relies on the top band's unmeasured limit (15 N, sensitivity 5 - 40)"
   - "Bare clamp face (the T3 rule): mu 0.3 needs 1.7 times the squeeze of a mu 0.5 pad"
   - "One clamp angle covers the 45 - 99 mm boxes to ±5 deg; tighter needs a second tip"
   - "The 45 deg stop removes the 90 deg reading but doesn't hold T5: the closed grip sits at 34 deg on the brake, so a 90 deg version without the stop scores the same"
+  - "Drive- and brake-held T5 rates about 14 kg on the reference drive; 23 kg needs SR's next-phase drive (50 N·m peak) and brake (70 N·m)"
   - "A proud shoulder protects the chisel in T5, pinches sheets and deepens the lip pocket to 13.5 mm (hooks 134 mm spans, against about 54 for a flush 8 mm pocket), but it collides below 1.4 deg"
 
 risks:
