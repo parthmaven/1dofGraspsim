@@ -228,6 +228,17 @@ def test_stroke_runs_from_where_the_fingers_meet(setup):
             assert r.info["approach_stroke_deg"] == pytest.approx(r.info["approach_opening_deg"] - math.degrees(f.phi_meet))
 
 
+def test_thick_fingers_meet_at_the_pad(setup):
+    space, concepts, _, sc = setup
+    d = concepts["cranked_flat"].make(space).replace(finger_thickness=30.5, crank_offset=15.8, crank_position=0.58,
+                                                     pad_thickness=9.9, pad_angle=14.6)
+    f = build_finger(d, sc.keep_out, sc.closed_limit)
+    # the beam's square end behind the pivot crosses the centreline mid-stroke on a finger this thick
+    assert min(to_view(b.poly, math.radians(45.0), f.pivot_x)[:, 0].min() for b in f.body) < 0.0
+    assert min(to_view(p.outline(), f.phi_meet, f.pivot_x)[:, 0].min() for p in f.pads) == pytest.approx(0.0, abs=0.05)
+    assert math.degrees(f.phi_meet) < 20.0
+
+
 def test_brackets_clear_the_baseline_over_the_whole_stroke(setup):
     from graspsim2d.geometry import clearance_profile
 
@@ -243,10 +254,17 @@ def test_brackets_clear_the_baseline_over_the_whole_stroke(setup):
     assert set(prof) == {"hub", *(b.name for b in ko.brackets)}
     assert min(v.min() for k, v in prof.items() if k != "hub") == pytest.approx(f.bracket_clearance, abs=0.5)
     assert prof["hub"].min() == pytest.approx(f.hub_clearance, abs=0.05)
-    # A root carried at full height would run through the brackets' fillets beside the hub:
-    # the platform finger's first 46 mm are its lower blade only, below both brackets.
+    # A full-width root at the brackets' heights would run through their fillets beside the
+    # hub; the platform finger's root has material there only on its outer side.
     full = build_finger(d, dataclasses.replace(ko, root_length=0.0), sc.closed_limit)
     assert full.bracket_clearance < 0.0 and any("FT Dynamic bracket" in s for s in full.issues)
+    # the root clears the brackets in 3D between the jaw angles root_clear; nothing else stops the jaw before that
+    from graspsim2d.geometry import widest_opening
+
+    w, why = widest_opening(f, ko)
+    assert math.degrees(w) == pytest.approx(130.5 - math.degrees(f.phi_meet), abs=0.01) and "root" in why
+    assert not build_finger(d.replace(max_opening=135.0), ko, sc.closed_limit).feasible
+    assert not build_finger(d, dataclasses.replace(ko, root_clear=(0.0, ko.root_clear[1])), sc.closed_limit).feasible
 
 
 def test_keep_out_rejects_pads_in_the_bracket_and_limits_insertion(setup):
@@ -273,6 +291,36 @@ def test_contact_width_is_capped_by_the_object(setup):
     mini, cheerios = lib.by_id("mini_1oz"), lib.by_id("cheerios_8p9oz")
     assert _pad_models(f, mini)[0].w == pytest.approx(mini.width)
     assert _pad_models(f, cheerios)[0].w == pytest.approx(0.095)
+
+
+def test_collision_model_leaves_the_hub_notch_open(setup):
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    from graspsim2d.geometry import collision_rects, rect_polygon
+    from graspsim2d.mjsim import build_model
+
+    space, concepts, lib, sc = setup
+    d = concepts["baseline_paddle"].make(space)
+    f = build_finger(d, sc.keep_out, sc.closed_limit)
+    material = unary_union([Polygon(P) for P in f.cut_body])
+    uncut = unary_union([Polygon(p.poly) for p in f.body if p.rect is not None])
+    rects = collision_rects(f)
+    boxes = unary_union([Polygon(rect_polygon(*r)) for _, r in rects])
+    assert uncut.difference(material).area == pytest.approx(253.0, abs=5.0)  # the platform paddle's hub notch
+    assert boxes.difference(material).area < 0.01
+    assert boxes.area > 0.98 * uncut.intersection(material).area
+    xml, _ = build_model(d, lib.by_id("mini_1oz"), sc, 0.03, finger=f)
+    assert xml.count('<geom name="R_beam') == len(rects) > 1
+
+
+def test_close_time_grows_with_the_start_opening(setup):
+    from graspsim2d.mjsim import close_time
+
+    space, concepts, _, sc = setup
+    f = build_finger(concepts["crowned"].make(space), sc.keep_out, sc.closed_limit)
+    assert close_time(sc, f, f.phi_meet + math.radians(10.0)) == sc.close_time
+    assert close_time(sc, f, f.phi_max) == pytest.approx(math.radians(90.0) / sc.closing_speed + sc.squeeze_time)
 
 
 def test_fingers_are_geared_one_to_one(setup):

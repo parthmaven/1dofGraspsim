@@ -238,7 +238,9 @@ def _report(result: dict, run, log) -> None:
             lig = f"ligament {d['ligament_mm']:.1f} mm" if d.get("ligament_mm") is not None else "no cut needed"
             brk = (f"brackets {d['bracket_clearance_mm']:6.2f} mm at {d['bracket_clearance_phi_deg']:5.1f} deg ({d.get('bracket', '')})"
                    if d.get("bracket_clearance_mm") is not None else "brackets not checked")
-            log(f"  {d['name']:9s} {d['concept']:16s} hub {d['hub_clearance_mm']:5.2f} mm at {d['hub_clearance_phi_deg']:5.1f} deg  {lig:16s}  {brk}")
+            wide = (f"  clear to {d['widest_opening_deg']:5.1f} deg ({d.get('widest_opening_limit', '')})"
+                    if d.get("widest_opening_deg") is not None else "")
+            log(f"  {d['name']:9s} {d['concept']:16s} hub {d['hub_clearance_mm']:5.2f} mm at {d['hub_clearance_phi_deg']:5.1f} deg  {lig:16s}  {brk}{wide}")
 
 
 def make_figures(out: Path, paths: dict[str, str], log=print) -> list[Path]:

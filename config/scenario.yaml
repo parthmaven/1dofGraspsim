@@ -52,22 +52,27 @@ gripper:
     clearance_mm: 1.0         # extra radius: the platform finger's notch gap
     min_ligament_mm: 5.0      # finger material that must remain beside the cutout
     blocks_objects: true
-    # Both FT Dynamic brackets, top (1 - 14.5 mm below the top of the finger)
-    # and bottom (14.5 - 67.3 mm: the hub tube and a plate that rings both
-    # pivots and runs 38 mm back behind them). Outlines are their plan
-    # footprints from the CAD (union of sections at 0.2 mm steps, simplified to
-    # 0.1 mm), in gripper coordinates. They are not cut from the fingers: each
-    # candidate must clear them over its whole stroke or it is infeasible. The
-    # hub circle above is checked on its own. Within hinge_radius of a pivot the
-    # bracket's pivot lobe (R18) interleaves in height with the finger's hinge,
-    # and the platform finger's first 46 mm ahead of the pivot line is its lower
-    # blade only, below the brackets (CAD study of Cheerios Family Size), so
-    # candidates are taken to share that root. The platform jaw itself (finger,
-    # paddle and hinge interfaces) clears both brackets in 3D from 0 to 110 deg.
+    # Both FT Dynamic brackets in plan, from the CAD (union of sections every
+    # 0.2 mm, simplified to 0.1 mm), in gripper coordinates. heights_mm is the
+    # depth below the assembly's top datum; the finger spans 1 - 162 mm. Top
+    # bracket: 1 - 14.5 mm. Bottom bracket: 14.5 - 67.3 mm, the hub tube and a
+    # plate that rings both pivots and runs 38 mm back behind them. They are not
+    # cut from the fingers: each candidate must clear them over its whole stroke
+    # or it is infeasible. The hub circle above is checked on its own, and so is
+    # the hinge: within hinge_radius of a pivot the bracket's pivot lobe (R18)
+    # and the finger's hinge share the axis at different heights. Every
+    # candidate keeps the platform finger's root, the first root_length mm ahead
+    # of the pivot line: at the brackets' heights it has material only on its
+    # outer side. In 3D the platform jaw (finger, paddle and hinge interfaces)
+    # clears both brackets at jaw angles of -1.5 to 130.5 deg from the finger as
+    # drawn; at -2 and at 130.75 deg the finger meets them. Each stroke must lie
+    # in root_clear_deg. The 2D check covers the rest of the finger and every
+    # pad and pad mount.
     brackets:
       hinge_radius_mm: 18.5
       hinge_centres_mm: [[-19.0, 0.0], [19.0, 0.0]]
       root_length_mm: 46.0
+      root_clear_deg: [-1.5, 130.5]
       footprints:
         - name: FT Dynamic bracket (top)
           heights_mm: [1.0, 14.5]
@@ -102,7 +107,11 @@ gripper:
             -42.64], [-10.67, -44.87], [-7.9, -46.62]]
 
 sequence:
-  close_s: 0.9                # sheets are released from the holder at the end of closing
+  # The close lasts close_s, or longer when the jaw starts wide: the free travel from the start
+  # opening to where the fingers meet, at closing_speed_rad_s, plus squeeze_s. Sheets are
+  # released from the holder at the end of closing.
+  close_s: 0.9
+  squeeze_s: 0.3
   settle_s: 0.25
   lift_height_mm: 80
   lift_s: 0.5                 # minimum-jerk lift

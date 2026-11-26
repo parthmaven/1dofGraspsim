@@ -17,9 +17,11 @@ the inner face of the finger's 3 mm blade, 4 mm inboard of the paddle part (the
 paddle part never touches the object. Along its length the face is a wide main
 face, a recess and a narrow tip pad, which the model calls the paddle, the notch
 and the tab. That design is concept C1, and it is always simulated as drawn for
-reference. Every candidate must also clear the hub of
-the FT Dynamic bracket (top) at every angle of its swing: each finger is cut to
-clear it, as the platform finger's notch does.
+reference. Each finger can open 90° from where the fingers meet, and a grasp
+opens only as far as its object needs. Every candidate must clear the hub of
+the FT Dynamic bracket (top) at every angle of that swing: each finger is cut
+to clear it, as the platform finger's notch does. It must also clear both FT
+Dynamic brackets, top and bottom, over the same swing.
 
 Everything is 2D: the plane of the jaw (finger opening direction x, lift
 direction z). Each pad is extruded its own width out of the plane, and the
@@ -130,7 +132,7 @@ The variables:
 | `pad_shore` | Shore A | pad hardness, converted to a modulus (Gent 1958) |
 | `pad_crown_curvature` | 1/m | pad face curvature (0 = flat) |
 | `finger_torque` | N*m | drive torque at each finger pivot (the 1:1 gears give both fingers the same), one value for every object |
-| `max_opening` | deg | opening angle of each finger at the start of a grasp |
+| `max_opening` | deg | stroke of each finger: its largest opening, measured from where the fingers meet (fixed at 90: the fingers open more than 90°). A grasp opens only as far as the object needs |
 | `pad2_offset`, `pad2_length`, `pad2_angle`, `pad2_protrusion` | mm, mm, deg, mm | dual-zone concept: the proximal box pad |
 | `pivot_depth`, `pivot_stiffness`, `pivot_range` | mm, N*m/rad, deg | self-aligning concept: the pad's pivot pin and centring spring |
 
@@ -229,6 +231,23 @@ is left beside the cutout. With `blocks_objects: true` an object's top must
 also stay below the circle, which caps box insertion at 100.5 mm for a 150 mm
 finger. `clearance_mm` adds to every radius.
 
+`keep_out.brackets` holds the plan footprints of both FT Dynamic brackets,
+taken from the CAD. In the assembly the finger spans 1–162 mm below the top
+datum. The top bracket spans 1–14.5 mm. The bottom bracket spans 14.5–67.3 mm:
+the hub tube, and a plate that rings both pivots and runs 38 mm back behind
+them. The brackets are not cut from the fingers. Instead, each candidate must
+clear them over its whole stroke, or it is infeasible, and its least gap is
+recorded. Every candidate keeps the platform finger's root, the first
+`root_length_mm` (46 mm) ahead of the pivot line, which carries the hinge and
+is shaped around the brackets in 3D: at their heights it has material only on
+its outer side. In 3D the platform jaw (finger, paddle part and hinge
+interfaces) clears both brackets from 0° to 110°. The check therefore covers
+the rest of the beam, which the design variables change, and every pad and pad
+mount wherever it sits. It leaves out the hub, which the circle above handles,
+and the disc of `hinge_radius_mm` (18.5 mm) around each pivot, where the
+bracket's pivot lobe and the finger's hinge share the axis at different
+heights.
+
 ## Architecture
 
 ```text
@@ -238,7 +257,8 @@ config/  design_space.yaml  concepts.yaml  objects.yaml + box tables (.csv)  sce
        (GripperDesign)                   (GraspObject)                   (Scenario)    (search loop)
             |                                 |                              |              |
          geometry.py: finger polygons,        |                              |              |
-         1:1 gearing, swept hub keep-out      |                              |              |
+         1:1 gearing, swept hub keep-out,     |                              |              |
+         bracket check                        |                              |              |
             |                                 |                              |              |
             +---------------> simulator.py: make_simulator("analytic" | "mujoco").run(design, object, scenario)
                                  |  analytic.py (screen)      mjsim.py (MuJoCo check)
@@ -255,7 +275,7 @@ config/  design_space.yaml  concepts.yaml  objects.yaml + box tables (.csv)  sce
 | `schema.py` | the typed design-variable schema (`SCHEMA`, `GripperDesign`), the bounding-box loader (units, fixed values, unknown names rejected) and the concepts |
 | `objects.py` | the object library: materials, boxes from YAML and CSV box tables (fill height, centre of mass, grasp axis) and sheets, as `GraspObject`s |
 | `scenario.py` | presentation, drive, keep-out, motion and shake, pass criteria and simulation settings, as a `Scenario` |
-| `geometry.py` | the parametric finger: one polygon per finger for each pad style, the 1:1 geared jaw kinematics, the FT-hub keep-out swept over the stroke and cut from the beam, the ligament and the least hub clearance, feasibility |
+| `geometry.py` | the parametric finger: one polygon per finger for each pad style, the 1:1 geared jaw kinematics, the stroke from where the fingers meet, the FT-hub keep-out swept over the stroke and cut from the beam, the ligament, the least hub clearance, the bracket check over the stroke, feasibility |
 | `pads.py` | the elastomer: Shore A to modulus, bonded compression modulus |
 | `analytic.py` | level 0, the quasi-static screen (`solve_grip`) |
 | `mjsim.py` | level 1, the planar MuJoCo model (`build_model`) and run (`simulate`) |
@@ -289,16 +309,28 @@ slightly. A design is infeasible when its pads overlap, leave the finger, sit
 where they can never touch, or collide with the keep-out. The paddle style
 puts the paddle and the tab on one face line with one rigid mount, so they
 stay coplanar whatever the pad angle, with a recessed notch of `tab_gap`
-between them. The keep-out cutout is drawn in every figure, and every finalist
-records its least clearance to the hub over the stroke (`hub_clearance_mm`,
-with the angle where it occurs), which the final report lists.
+between them. The stroke runs from where the fingers meet (`meet_deg`: the
+angle at which the closing fingers first touch on the centreline, or the closed
+limit) to `max_opening` beyond it. The keep-out cutout is drawn in every
+figure. Every finalist records its least clearance to the hub over the stroke
+(`hub_clearance_mm`) and to the brackets (`bracket_clearance_mm`, with
+`bracket`), each with the opening from where the fingers meet at which it
+occurs. The final report lists them, and `bracket-clearance.png` plots them
+against opening.
 
 ### Analytic screen (`analytic.py`)
 
-For each object and insertion depth: the object must fit between the fully
-open fingers, the pads (not the finger body) must touch it first, and the tips
-must not meet above it. The jaw then closes until the pad compression balances
-the drive torque. Pads are a Winkler foundation: bonded elastomer compression
+For each object and insertion depth, the jaw first opens only as far as the
+object needs. The approach opening is the smallest jaw angle at which both
+fingers clear the object by `FIT_CLEARANCE` (1 mm) at every height down to that
+depth. It is recorded as `approach_opening_deg` (the jaw angle) and
+`approach_stroke_deg` (the opening from where the fingers meet). An object that
+needs more than the stroke does not fit. Closing from there, the pads (not the
+finger body) must touch it first, and the tips must not meet above it. The jaw
+then closes until the pad compression balances the drive torque. The pad face
+is sampled at points, so on a stiff contact the torque can jump past the
+drive's within one bisection step. The final load is therefore scaled to the
+drive torque. Pads are a Winkler foundation: bonded elastomer compression
 modulus E_c = E(1 + 2S^2) (S is the shape factor, capped by the bulk modulus)
 over the pad thickness, in series with the object's surface stiffness (board
 through-thickness modulus; box panel on the cereal bed). Self-aligning pads
@@ -312,7 +344,7 @@ which meets the face edge-on, that share is all of it, so a grasp on the top
 edges alone needs μ ≥ tan θ. A face that closes toward the tips gets no credit
 for wedging the box in. The screen also reports the jaw opening at which an
 object passes between the fingertips (`pass_opening`). One design on all 14
-objects takes about 0.1 to 0.25 s.
+objects takes about 0.2 to 0.45 s.
 
 ### Validation: the platform finger on Cheerios Family Size
 
@@ -333,7 +365,8 @@ kept where the CAD has it) on a rigid box edge, as the study does:
 | box just passes between the tips | 17.4° per jaw, 94 mm tip gap | 17.45°, 94.0 mm |
 | tip-pad pinch as drawn: box top 18 mm inside the tips | 20.0°, 107 mm tip gap, contact 131 mm from the pivot line, μ ≥ 0.36 | insertion 20.8 mm: box top 17.9 mm inside the tips, first touch at 19.97° on the tab at 131.0 mm, top edge only, μ ≥ 0.358 |
 | deepest contact on the tip pad | 20.7°, contact at 126 mm, μ ≥ 0.38 | 20.2°, 128.4 mm (the model's tab starts at 129.5 mm) |
-| corner on the arm and main face | 24.6° to 46.5°, μ ≥ 0.46 to 1.05 | 26.8° to 33.0° (corner 97 to 79 mm out), μ ≥ 0.50 to 0.64; deeper does not fit at the model's 35° stroke |
+| corner on the arm and main face | 24.6° to 46.5°, μ ≥ 0.46 to 1.05 | main face at insertions of 52 to 99 mm: 26.0° to 46.6°, corner 100 to 55 mm out, μ ≥ 0.48 to 1.04. The model's notch is recessed finger body, so the depths that would put the corner on the CAD's arm (41.5 to 49 mm) are rejected |
+| deepest main-face case: box top 51 mm below the pivots, 65 mm inside the open tips | 46.5°, contact 55 mm from the pivot line, μ ≥ 1.05 | insertion 99 mm: 65.0 mm inside the tips, 46.58°, 55.4 mm, μ ≥ 1.04 |
 
 The model's 6 mm, 40 A pad sits on a box wall with the cereal-backed stiffness,
 top edge included. With that pad, the tip-pad pinch dents the wall about 8 mm
@@ -359,8 +392,11 @@ when the jaw has closed. Friction uses MuJoCo's elliptic cones. Each run
 records slip, rotation, pressure, panel force, bending moment, bare-finger load and friction use
 (the largest share of μ times the normal force either pad uses) from the start
 of the lift, so the closing impact (up to twice the static force at 1 rad/s)
-counts only as the `closing_impact_pressure_kPa` metric. One run takes about
-4 to 6 s.
+counts only as the `closing_impact_pressure_kPa` metric. Each run starts 1°
+beyond the object's approach opening (`START_MARGIN`; `start_opening_deg` in the
+metrics), not at the full stroke. The closing speed is damping-limited, so the
+speed at contact is the same either way, and a start at 90° would not close
+within the 0.9 s close phase. One run takes about 4 to 6 s.
 
 ### Search loop (`search.py`)
 
@@ -414,7 +450,7 @@ over a two-variable grid) and the inputs.
 | `archive.json` | the analytic evaluations kept from each round (concept, variables, per-object scores): every Latin hypercube sample, the final evolved population and each per-object result; intermediate differential-evolution evaluations are not stored |
 | `search.log` | progress and the final report |
 | `*.yaml`, `*.csv` | the inputs of the run, box tables included |
-| `figures/` | `first-pass-best-designs.png` (all-rounder and per-object best, closed on each object), `baseline-as-drawn.png` (the platform finger on each object, MuJoCo results), `concepts-nominal.png` (analytic screen results), `concepts-best.png` (MuJoCo results), `object-library.png`, `pass-matrix.png`, `iteration-progress.png`, `designs-in-bounds.png`, `shake-traces.png` (all-rounder time histories, including the share of available friction used) |
+| `figures/` | `first-pass-best-designs.png` (all-rounder and per-object best, closed on each object), `baseline-as-drawn.png` (the platform finger on each object, MuJoCo results), `concepts-nominal.png` (analytic screen results), `concepts-best.png` (MuJoCo results), `object-library.png`, `pass-matrix.png`, `iteration-progress.png`, `designs-in-bounds.png`, `bracket-clearance.png` (the brackets in plan with the all-rounder swung through its stroke, and the least gap to the hub and each bracket against opening), `shake-traces.png` (all-rounder time histories, including the share of available friction used) |
 
 ## Tests
 
@@ -427,7 +463,9 @@ the jaw kinematics, the pad model, the object library, the analytic force
 balance, agreement between the analytic and MuJoCo static grip, the baseline
 against the CAD (pad positions and widths, 2.4 mm closed gap, 1.0 mm hub
 clearance over the stroke), the keep-out (rejecting a paddle that reaches into
-the bracket, capping insertion), the
+the bracket, capping insertion), the 90° stroke from where the fingers meet
+(each grasp's approach opening lies inside it), the brackets (the baseline
+clears both over the whole stroke; a full-width root would not), the
 contact-width cap, the gear coupling (driving one finger carries the
 other), the box tables (given and fallback fill height and centre of mass,
 missing columns, ids by UPC), the grasp axis, the simulator interface (both
@@ -442,10 +480,15 @@ validation above. CI runs them on every pull request.
   finger's face tapers (139 mm high at 55 mm from the pivot line to 97 mm at
   85 mm, then the 27 mm arm edge to 101.5 mm), so the paddle uses the mean
   width over its length (95 mm), which keeps the contact area.
-- The keep-out is treated as full height. In the CAD the hub and its tube
+- The hub keep-out is treated as full height. In the CAD the hub and its tube
   occupy the top 67 mm of the finger's height, and the finger's lower blade
   reaches back under the tube; no object can reach that region, so the
   contact model loses nothing, but the cutout is applied to the whole beam.
+- The brackets are checked in plan. Every candidate is taken to keep the
+  platform finger's root (the first 46 mm ahead of the pivot line, with the
+  hinge), whose 3D shape clears both brackets. A candidate that changes the
+  root needs a 3D check. Pads and pad mounts are checked wherever they sit, as
+  if they spanned the brackets' heights.
 - Boxes are rigid bodies; panel denting and crushing are judged by force and
   pressure limits, not simulated deformation. Cereal does not flow.
 - A box side has one surface stiffness, the cereal-backed panel's, up to and

@@ -14,7 +14,7 @@ import numpy as np  # noqa: E402
 from matplotlib.patches import Circle, Polygon, Rectangle  # noqa: E402
 
 from .analytic import solve_grip  # noqa: E402
-from .geometry import bracket_height_solid, build_finger, clearance_profile, finger_outline_view, swept_keep_out, to_view  # noqa: E402
+from .geometry import bracket_check_solid, build_finger, clearance_profile, finger_outline_view, swept_keep_out, to_view  # noqa: E402
 from .objects import GraspObject, ObjectLibrary  # noqa: E402
 from .scenario import Scenario  # noqa: E402
 from .schema import SCHEMA_BY_NAME, Concept, DesignSpace, GripperDesign  # noqa: E402
@@ -393,57 +393,72 @@ def fig_bracket_clearance(path: Path, result: dict[str, Any], sc: Scenario) -> N
         a1.add_patch(Circle((x * 19.0, 0.0), ko.hinge_radius, fc="none", ec="k", lw=0.5, ls=":"))
     gd = GripperDesign.from_dict(ar["design"])
     f = build_finger(gd, ko, sc.closed_limit)
-    high = bracket_height_solid(f, ko, swept_keep_out(f, ko, f.phi_meet, f.phi_max))
-    openings = (0, 30, 60, 90)
+    checked = bracket_check_solid(f, ko, swept_keep_out(f, ko, f.phi_meet, f.phi_max))
+    openings = tuple(round(x) for x in np.linspace(0.0, gd.max_opening, 4))
     shades = plt.cm.Oranges(np.linspace(0.45, 0.95, len(openings)))
     for op, shade in zip(openings, shades):
-        ph = f.phi_meet + math.radians(min(op, gd.max_opening))
+        ph = f.phi_meet + math.radians(op)
         for side in (1, -1):
             for P in finger_outline_view(f, ph, side)["body"]:
                 a1.add_patch(Polygon(P, closed=True, fc="none", ec=shade, lw=0.5, alpha=0.8))
-            for g in getattr(high, "geoms", [high]):
+            for g in getattr(checked, "geoms", [checked]):
                 a1.add_patch(Polygon(to_view(np.asarray(g.exterior.coords), ph, f.pivot_x, side), closed=True, fc=shade, ec="k",
-                                     lw=0.3, alpha=0.75, label=f"{ar['name']} at bracket height, {op} deg" if side == 1 else None))
+                                     lw=0.3, alpha=0.75, label=f"{ar['name']}, parts checked, {op} deg" if side == 1 else None))
     a1.set_aspect("equal")
     a1.set_xlim(-120, 120)
     a1.set_ylim(-110, 55)
     a1.set_xlabel("x (mm)")
     a1.set_ylabel("z (mm), pivots at z = 0")
-    a1.set_title(f"Brackets in plan, with the all-rounder {ar['name']} at 0, 30, 60 and 90 deg from where the fingers meet\n"
-                 f"outline only = the root, the first {ko.root_length:.0f} mm, which runs below the brackets; "
-                 f"dotted = hinge, R{ko.hinge_radius:g}", fontsize=8)
+    a1.set_title(f"Brackets in plan, with the all-rounder {ar['name']} at {', '.join(map(str, openings[:-1]))} and {openings[-1]} deg "
+                 "from where the fingers meet\n"
+                 f"outline only = the root (first {ko.root_length:.0f} mm), kept from the platform finger, which clears both "
+                 f"brackets in 3D; dotted = hinge, R{ko.hinge_radius:g}", fontsize=8)
     handles, labels = a1.get_legend_handles_labels()
     keep = dict(zip(labels, handles))
     a1.legend(keep.values(), keep.keys(), fontsize=7, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.1))
-    openings_deg = np.linspace(0.0, 90.0, 46)
+    stroke = float(gd.max_opening)
+    wide = {name: d.get("widest_opening_deg") for name, d in designs.items()}
+    reach = max([w for w in wide.values() if w is not None] + [stroke])
+    openings_deg = np.linspace(0.0, 5.0 * math.ceil(reach / 5.0), int(math.ceil(reach / 5.0)) * 2 + 1)
     least: dict[str, np.ndarray] = {}
     base = designs.get("baseline")
     base_prof = None
     for name, d in designs.items():
         g = GripperDesign.from_dict(d["design"])
         fz = build_finger(g, ko, sc.closed_limit)
-        prof = clearance_profile(fz, ko, np.radians(np.minimum(openings_deg, g.max_opening)))
+        top = wide[name] if wide[name] is not None else g.max_opening
+        prof = clearance_profile(fz, ko, np.radians(openings_deg))
         for k, v in prof.items():
+            v = np.where(openings_deg <= top + 1e-9, v, np.inf)
             least[k] = np.minimum(least.get(k, np.full_like(v, np.inf)), v)
         if d is base:
-            base_prof = prof
+            base_prof = {k: np.where(openings_deg <= top + 1e-9, v, np.nan) for k, v in prof.items()}
     colors = {"hub": "#c0392b", **{br.name: BRACKET_COLORS[k % len(BRACKET_COLORS)] for k, br in enumerate(ko.brackets)}}
     for i, (k, v) in enumerate(least.items()):
         # the brackets share the fillets beside the hub, so their curves can coincide: draw wide to narrow
         lw = max(3.4 - 1.0 * i, 1.4)
-        a2.plot(openings_deg, v, lw=lw, color=colors[k], alpha=0.85, label=f"{k}: least over all {len(designs)} designs")
+        a2.plot(openings_deg, np.where(np.isfinite(v), v, np.nan), lw=lw, color=colors[k], alpha=0.85,
+                label=f"{k}: least over all {len(designs)} designs")
         if base_prof is not None:
             a2.plot(openings_deg, base_prof[k], lw=1.0, ls=":", color=colors[k], label=f"{k}: baseline as drawn")
     a2.axhline(0.0, color="k", lw=0.8)
     a2.text(1, 0.3, "touching", fontsize=7)
-    a2.set_xlim(0, 90)
+    a2.axvline(stroke, color="k", lw=0.8, ls="--")
+    a2.text(stroke + 1, 0.97, f"end of the {stroke:.0f} deg stroke", transform=a2.get_xaxis_transform(), fontsize=7, va="top")
+    lo_w = min(w for w in wide.values() if w is not None) if any(w is not None for w in wide.values()) else None
+    if lo_w is not None and lo_w > stroke:
+        a2.axvspan(lo_w, openings_deg[-1], color="#999999", alpha=0.15, lw=0)
+        a2.text(lo_w + 1, 0.85, f"from {lo_w:.0f} deg the platform root\nof at least one design meets\nthe bottom bracket (3D)",
+                transform=a2.get_xaxis_transform(), fontsize=7, va="top")
+    a2.set_xlim(0, openings_deg[-1])
     a2.set_ylim(bottom=-1)
     a2.set_xlabel("opening from where the fingers meet (deg)")
     a2.set_ylabel("gap (mm)")
     a2.grid(alpha=0.3)
-    a2.legend(fontsize=7, loc="upper right")
-    a2.set_title("Least gap to the hub and to each bracket over the whole stroke\n"
-                 f"(hub: its circle at R{ko.circles[0][2]:g}; brackets: the parts at their heights)" if ko.circles else "", fontsize=8)
+    a2.legend(fontsize=7, loc="upper right", bbox_to_anchor=(1.0, 0.75))
+    a2.set_title("Least gap to the hub and to each bracket, over the stroke and on to the widest opening each design\n"
+                 f"reaches before its platform root meets a bracket (hub: its circle at R{ko.circles[0][2]:g}; brackets: "
+                 "the parts at their heights; past the stroke, the parts beyond the root)" if ko.circles else "", fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=110, bbox_inches="tight")
     plt.close(fig)
@@ -456,6 +471,9 @@ def fig_traces(path: Path, traces: dict[str, tuple[str, dict[str, np.ndarray]]],
               "share of available\nfriction used (worst pad)", "peak pad pressure (kPa)", "sheet bending moment at pinch (N*m)"]
     scale = {"grip_N": 1, "rel_z": 1e3, "rel_th": 180 / math.pi, "friction_use": 1, "p_max": 1e-3, "hinge_M": 1}
     fig, axes = plt.subplots(len(keys), 1, figsize=(11, 2.1 * len(keys)), sharex=True)
+    # a jaw that starts wider closes for longer; line the runs up at the start of the lift
+    close = {lab: float(tr["close_s"][0]) if len(tr.get("close_s", [])) else sc.close_time for lab, (_, tr) in traces.items()}
+    t_close = max(close.values(), default=sc.close_time)
     for lab, (dname, tr) in traces.items():
         if not len(tr.get("t", [])):
             continue
@@ -466,18 +484,18 @@ def fig_traces(path: Path, traces: dict[str, tuple[str, dict[str, np.ndarray]]],
                 y = np.hypot(tr["rel_x"], tr["rel_z"]) * 1e3
             else:
                 y = tr[k] * scale[k]
-            ax.plot(tr["t"], y, lw=0.9, label=f"{lab} ({dname})")
-    t_settle = sc.close_time + sc.settle_time
+            ax.plot(tr["t"] + t_close - close[lab], y, lw=0.9, label=f"{lab} ({dname})")
+    t_settle = t_close + sc.settle_time
     t_hold = t_settle + sc.lift_time + sc.hold_time
     for ax, lab in zip(axes, labels):
         ax.set_ylabel(lab, fontsize=7)
-        for t, txt in ((sc.close_time, "close"), (t_settle, "lift"), (t_hold, "shake"), (t_hold + sc.shake_time, "hold")):
+        for t, txt in ((t_close, "close"), (t_settle, "lift"), (t_hold, "shake"), (t_hold + sc.shake_time, "hold")):
             ax.axvline(t, color="k", lw=0.5, ls=":")
         ax.grid(alpha=0.3)
-    for t, txt in ((0, "close"), (sc.close_time, "settle"), (t_settle, "lift"), (t_hold, "shake"), (t_hold + sc.shake_time, "hold")):
+    for t, txt in ((0, "close"), (t_close, "settle"), (t_settle, "lift"), (t_hold, "shake"), (t_hold + sc.shake_time, "hold")):
         axes[0].text(t + 0.02, 1.02, txt, transform=axes[0].get_xaxis_transform(), fontsize=7)
     axes[0].legend(fontsize=7, loc="upper right")
-    axes[-1].set_xlabel("time (s)")
+    axes[-1].set_xlabel("time (s)" if len(set(close.values())) <= 1 else "time (s), runs lined up at the start of the lift")
     fig.suptitle("Dynamic check time histories (all-rounder)", fontsize=10)
     fig.tight_layout()
     fig.savefig(path, dpi=110)

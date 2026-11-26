@@ -50,6 +50,7 @@ class Scenario:
     torque_mode: str  # "fixed": one drive torque for every object
     pressure_sf: float = 1.0
     friction_scale: float = 1.0  # multiplies every material's pad friction (sensitivity runs)
+    squeeze_time: float = 0.3  # s the close allows after the free travel from the start opening to the meet
     keep_out: KeepOut | None = None
     sim: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -114,6 +115,7 @@ def load_scenario(path: str | Path) -> Scenario:
         torque_mode=str(g.get("torque_mode", "fixed")),
         pressure_sf=float(pc.get("pressure_safety_factor", 1.0)),
         friction_scale=float(raw.get("friction_scale", 1.0)),
+        squeeze_time=float(seq.get("squeeze_s", 0.3)),
         keep_out=_keep_out(g.get("keep_out")),
         sim=dict(raw.get("sim", {}) or {}),
         raw=raw,
@@ -150,4 +152,5 @@ def _keep_out(e: Mapping[str, Any] | None) -> KeepOut | None:
         brackets=tuple(brackets),
         hinge_radius=hinge_r,
         root_length=float(br.get("root_length_mm", 0.0)),
+        root_clear=tuple(math.radians(float(a)) for a in br.get("root_clear_deg", (-math.inf, math.inf))),
     )

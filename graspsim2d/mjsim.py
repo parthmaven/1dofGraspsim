@@ -31,7 +31,7 @@ import mujoco
 import numpy as np
 
 from .analytic import approach_opening, solve_grip
-from .geometry import Finger, Pad, build_finger
+from .geometry import Finger, Pad, build_finger, collision_rects
 from .objects import G, GraspObject
 from .pads import foundation_stiffness, series, shear_stiffness
 from .scenario import Scenario
@@ -113,16 +113,14 @@ class _Builder:
         f, d = self.f, self.f.design
         name = "R" if side > 0 else "L"
         out = []
-        for piece in f.body:
-            if piece.rect is not None:
-                cu, cv, ang, hl, ht = piece.rect
-                X, Z = self.p(cu, cv, side)
-                dX, dZ = self.d(math.cos(ang), math.sin(ang), side)
-                out.append(
-                    f'<geom name="{name}_{piece.name}" type="box" pos="{_fmt((X, 0, Z))}" euler="0 {_fmt(_beta(dX, dZ))} 0" '
-                    f'size="{_fmt((hl * 1e-3, self.b / 2, ht * 1e-3))}" density="{ALU_DENSITY}" friction="{FINGER_FRICTION} 0.005 0.0001" '
-                    f'priority="1" contype="{GRIP}" conaffinity="{OBJ | TABLE}" rgba="0.55 0.6 0.68 1"/>'
-                )
+        for piece, (cu, cv, ang, hl, ht) in collision_rects(f):
+            X, Z = self.p(cu, cv, side)
+            dX, dZ = self.d(math.cos(ang), math.sin(ang), side)
+            out.append(
+                f'<geom name="{name}_{piece}" type="box" pos="{_fmt((X, 0, Z))}" euler="0 {_fmt(_beta(dX, dZ))} 0" '
+                f'size="{_fmt((hl * 1e-3, self.b / 2, ht * 1e-3))}" density="{ALU_DENSITY}" friction="{FINGER_FRICTION} 0.005 0.0001" '
+                f'priority="1" contype="{GRIP}" conaffinity="{OBJ | TABLE}" rgba="0.55 0.6 0.68 1"/>'
+            )
         for pad in f.pads:
             out.append(self.mount_xml(pad, side, name))
             out.append(self.pad_xml(pad, side, name))
@@ -399,12 +397,18 @@ def _envelope(t: float, T: float, ramp: float) -> tuple[float, float]:
     return 1.0, 0.0
 
 
+def close_time(sc: Scenario, f: Finger, phi0: float) -> float:
+    """Length of the closing phase (s) for a jaw starting at `phi0`: at least `close_s`, and
+    long enough to run to where the fingers meet at the free closing speed, then squeeze."""
+    return max(sc.close_time, (phi0 - f.phi_meet) / sc.closing_speed + sc.squeeze_time)
+
+
 class Trajectory:
     """Gripper base offset (x, z) and velocity relative to its start pose."""
 
-    def __init__(self, sc: Scenario):
+    def __init__(self, sc: Scenario, t_close: float | None = None):
         self.sc = sc
-        self.t_close = sc.close_time
+        self.t_close = sc.close_time if t_close is None else t_close
         self.t_settle = self.t_close + sc.settle_time
         self.t_lift = self.t_settle + sc.lift_time
         self.t_hold = self.t_lift + sc.hold_time
@@ -517,7 +521,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
     hinge_k = np.array(meta["hinge_k"])
     a_ox, a_oz, a_oth = qadr("ox"), qadr("oz"), qadr("oth")
     a_bx, a_bz, a_jR = qadr("base_x"), qadr("base_z"), qadr("jR")
-    traj = Trajectory(sc)
+    traj = Trajectory(sc, close_time(sc, f, phi0))
     tau = meta["tau"]
     kv, kp = meta["kv_servo"], meta["k_servo"]
     top = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, meta["top_body"])
@@ -615,6 +619,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
             tr["friction_use"].append(_friction_use(data, geom_side, is_obj))
 
     trace = {k: np.asarray(v) for k, v in tr.items()}
+    trace["close_s"] = np.array([traj.t_close])
     if unstable:
         return SimResult(design, obj.id, False, "simulation went unstable", {}, trace, depth * 1e3)
     if ref is None:
@@ -647,6 +652,7 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
         "friction_margin": float(min(1.0 / max(fric_peak, 1e-9), 99.0)),
         "dropped": float(dropped),
         "start_opening_deg": math.degrees(meta["phi0"]),
+        "close_time_s": traj.t_close,
         "margins": {k: float(min(v, 99.0)) for k, v in margins.items()},
     }
     if dropped:

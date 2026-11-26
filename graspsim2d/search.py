@@ -35,7 +35,7 @@ from scipy.optimize import differential_evolution
 from scipy.stats import qmc
 
 from .analytic import GripResult, solve_grip
-from .geometry import build_finger
+from .geometry import build_finger, widest_opening
 from .objects import ObjectLibrary, load_objects
 from .scenario import Scenario, load_scenario
 from .schema import Concept, DesignSpace, GripperDesign, load_concepts, load_design_space
@@ -410,6 +410,7 @@ class SearchRun:
         designs = []
         for f in finalists:
             fz = build_finger(GripperDesign.from_dict(f["design"]), self.sc.keep_out, self.sc.closed_limit)
+            wide, wide_by = widest_opening(fz, self.sc.keep_out) if self.sc.keep_out else (math.nan, "")
             row = table.get(f["name"], {})
             n_pass = sum(1 for o in ids if row.get(o, {}).get("passed"))
             worst = min((min(row[o]["score"], 2.0) if row.get(o, {}).get("passed") else 0.0) for o in ids) if row else 0.0
@@ -432,6 +433,8 @@ class SearchRun:
                     "bracket_clearance_mm": _finite(fz.bracket_clearance),
                     "bracket_clearance_phi_deg": _finite(fz.bracket_clearance_phi),
                     "bracket": fz.bracket_name,
+                    "widest_opening_deg": _finite(math.degrees(wide)),
+                    "widest_opening_limit": wide_by,
                     "results": {o: _slim(row.get(o)) for o in ids},
                 }
             )
@@ -520,6 +523,7 @@ def _slim(r: dict[str, Any] | None) -> dict[str, Any] | None:
         "approach_opening_deg": r.get("approach_opening_deg"),
         "approach_stroke_deg": r.get("approach_stroke_deg"),
         "start_opening_deg": m.get("start_opening_deg"),
+        "close_time_s": m.get("close_time_s"),
         "margins": m.get("margins", {}),
         "slip_mm": m.get("slip_mm"),
         "rotation_deg": m.get("rotation_deg"),
