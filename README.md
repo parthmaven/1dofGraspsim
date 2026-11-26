@@ -23,7 +23,3 @@ A 2D design search. Given a bounding box of design variables (a range for each),
 - 1-DoF pinch gripper with two synced fingers.
 - The two finger pivots are 38 mm apart.
 - The gripper tip is 150 mm forward of the pivots.
-
-## Status
-
-The simulation stack has not been chosen yet because a literature review is in progress.
