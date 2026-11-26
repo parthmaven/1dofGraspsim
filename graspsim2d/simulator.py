@@ -32,8 +32,8 @@ class GraspOutcome:
     fidelity: str
     design: str
     object_id: str
-    passed: bool
-    score: float  # smallest pass-criterion margin; >= 1 passes, 0 when the grasp cannot be set up
+    passed: bool | None  # None: not scored, a MuJoCo run that blew up at every timestep tried
+    score: float | None  # smallest pass-criterion margin; >= 1 passes, 0 when the grasp cannot be set up
     limiting: str  # criterion with the smallest margin, or why the grasp failed
     reason: str  # empty when passed
     margins: dict[str, float]
@@ -47,6 +47,11 @@ class GraspOutcome:
         d = asdict(self)
         d.pop("trace")
         return d
+
+
+def verdict(r: dict[str, Any]) -> str:
+    """PASS, FAIL, or UNSCORED for a run that is neither: MuJoCo blew up at every timestep tried."""
+    return "UNSCORED" if r["passed"] is None else "PASS" if r["passed"] else "FAIL"
 
 
 class Simulator(Protocol):

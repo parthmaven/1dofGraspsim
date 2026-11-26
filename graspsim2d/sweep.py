@@ -69,16 +69,19 @@ def run_sweep(base: GripperDesign, vary: Sequence[tuple[str, Sequence[float]]], 
     summary = []
     for i, (values, _) in enumerate(points):
         rs = [r for r in rows if r["point"] == i]
-        worst = min(rs, key=lambda r: r["score"])
+        # a run left unscored (MuJoCo blew up at every timestep) is neither a pass nor a fail
+        scored = [r for r in rs if r["passed"] is not None]
+        worst = min(scored, key=lambda r: r["score"]) if scored else None
         summary.append({
             "point": i,
             **values,
-            "n_pass": int(sum(r["passed"] for r in rs)),
+            "n_pass": sum(1 for r in rs if r["passed"]),
             "n_objects": len(rs),
-            "J": objective_from_scores([r["score"] for r in rs], weight),
-            "min_score": worst["score"],
-            "worst_object": worst["object_id"],
-            "worst_reason": worst["reason"] or worst["limiting"],
+            "n_unscored": len(rs) - len(scored),
+            "J": objective_from_scores([r["score"] for r in scored], weight) if scored else math.nan,
+            "min_score": worst["score"] if worst else math.nan,
+            "worst_object": worst["object_id"] if worst else "",
+            "worst_reason": (worst["reason"] or worst["limiting"]) if worst else "",
         })
     return {
         "fidelity": fidelity,

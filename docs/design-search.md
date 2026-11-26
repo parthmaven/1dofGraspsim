@@ -423,13 +423,18 @@ so the hub notch stays open. A dropped object scores 0, and the run keeps every
 other margin measured up to the drop, with slip at 0. One run takes about 4 to
 6 s.
 
-A run that blows up is never scored. MuJoCo would reset it to t = 0 and carry
-on, so its automatic reset is off, and every step checks MuJoCo's bad-state
-warnings and whether time ran backwards. The run is flagged and rerun at half,
-then a quarter, of `timestep_s`, with every contact and joint time constant
+A run that blows up is never scored (test conditions 2.15: flagged and rerun,
+never scored as a fail). MuJoCo would reset it to t = 0 and carry on, so its
+automatic reset is off, and every step checks MuJoCo's bad-state warnings and
+whether time ran backwards. The run is flagged and rerun at a half, a quarter
+and then an eighth of `timestep_s`, with every contact and joint time constant
 kept. The metrics record how many tries blew up (`resets`), when the first did
 (`reset_s`), and the timestep of the run that was scored (`timestep_s`). If all
-three blow up, the result is "simulation went unstable", with no margins.
+four tries blow up, the run is left unscored: `passed` and `score` are empty
+(`None`), the reason is "simulation went unstable", and there are no margins.
+It is neither a pass nor a fail. The CLI prints it as UNSCORED and gives pass
+counts out of the scored runs, and the search counts it apart and flags the
+design (below).
 
 ### Search loop (`search.py`)
 
@@ -459,9 +464,15 @@ Each round:
    chipboard about 0.3 times, and corrugated sheets about 1.1 to 1.3 times
    (medians; more on some pad layouts).
 
-The best all-rounder is the finalist that passes the most objects in the
-dynamic check (ties go to the higher dynamic J). The best design per object is
-the finalist with the highest dynamic margin on that object.
+The best all-rounder is the finalist that fails the fewest objects in the
+dynamic check, then passes the most (ties go to the higher dynamic J). With no
+unscored runs, that is the finalist that passes the most. An unscored run is
+left out of a design's pass and fail counts and its dynamic J. Each design
+records the count (`sim_unscored`) and the objects (`unscored`), and
+`results.json` lists each such design under `flagged`. A flagged design is
+never ranked down as if it had failed. The best design per object
+is the finalist with the highest dynamic margin on that object, among its
+scored runs.
 
 ### Outputs
 

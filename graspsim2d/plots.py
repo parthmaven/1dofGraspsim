@@ -30,7 +30,7 @@ CONCEPT_COLORS = {
 BOX_COLOR = "#e8c37a"
 SHEET_COLOR = "#a8763e"
 PAD_COLOR = "#2b2b2b"
-PASS, FAIL = "#2e8b57", "#c0392b"
+PASS, FAIL, UNSCORED = "#2e8b57", "#c0392b", "#7f7f7f"
 MIN_SHEET_DRAW_MM = 1.5
 
 
@@ -107,6 +107,8 @@ def draw_grasp(ax, design: GripperDesign, obj: GraspObject, sc: Scenario, sim: d
 
 def _status(sim: dict[str, Any] | None, an) -> tuple[str, str]:
     if sim is not None:
+        if sim["passed"] is None:
+            return "UNSCORED  blew up at every timestep", UNSCORED
         if sim.get("passed"):
             worst = min(sim["margins"], key=sim["margins"].get) if sim.get("margins") else ""
             return f"PASS  min margin {sim['score']:.2f} ({worst})", PASS
@@ -178,7 +180,8 @@ def fig_design_on_objects(path: Path, result: dict[str, Any], name: str, lib: Ob
             draw_grasp(ax, gd, o, sc, sim=sim, title=o.label, depth_mm=(sim or {}).get("insertion_mm"))
     fig.suptitle(
         f"{d['why'][0].replace(' (reference)', '')} ({name}), closed on each object; "
-        f"passes {d['sim_pass']}/{len(lib.objects)} in the dynamic check\n"
+        f"passes {d['sim_pass']}/{len(lib.objects) - d.get('sim_unscored', 0)} in the dynamic check"
+        + (f", unscored on {d['sim_unscored']} (blew up at every timestep)" if d.get("sim_unscored") else "") + "\n"
         f"dynamic check result under each panel; dashed line = settled fill level; {KEEP_OUT_NOTE}",
         fontsize=11,
     )
@@ -281,23 +284,33 @@ def fig_pass_matrix(path: Path, result: dict[str, Any], lib: ObjectLibrary) -> N
     designs = result["designs"]
     M = np.zeros((len(names), len(ids)))
     P = np.zeros_like(M, dtype=bool)
+    U = np.zeros_like(M, dtype=bool)
     for i, n in enumerate(names):
         for j, o in enumerate(ids):
             r = designs[n]["results"].get(o)
-            if r:
+            if r and r["passed"] is None:
+                U[i, j] = True
+            elif r:
                 M[i, j] = min(r["score"], 2.0)
                 P[i, j] = r["passed"]
     fig, ax = plt.subplots(figsize=(1.0 + 0.62 * len(ids), 1.4 + 0.3 * len(names)))
-    im = ax.imshow(M, cmap="RdYlGn", vmin=0, vmax=2, aspect="auto")
+    cmap = plt.get_cmap("RdYlGn").with_extremes(bad=UNSCORED)
+    im = ax.imshow(np.ma.masked_where(U, M), cmap=cmap, vmin=0, vmax=2, aspect="auto")
     for i in range(len(names)):
         for j in range(len(ids)):
-            ax.text(j, i, "P" if P[i, j] else f"{M[i, j]:.1f}", ha="center", va="center", fontsize=6.5,
+            ax.text(j, i, "U" if U[i, j] else "P" if P[i, j] else f"{M[i, j]:.1f}", ha="center", va="center", fontsize=6.5,
                     color="k", fontweight="bold" if P[i, j] else "normal")
+
+    def count(n: str) -> str:
+        u = designs[n].get("sim_unscored", 0)
+        return f"{designs[n]['sim_pass']}/{len(ids) - u}" + (f", {u} unscored" if u else "")
+
     ax.set_xticks(range(len(ids)))
     ax.set_xticklabels([lib.by_id(o).label for o in ids], rotation=60, ha="right", fontsize=7)
     ax.set_yticks(range(len(names)))
-    ax.set_yticklabels([f"{n} {_short(designs[n]['concept'])} ({designs[n]['sim_pass']}/{len(ids)})" for n in names], fontsize=7)
-    ax.set_title("Dynamic check: smallest pass margin per design and object (P = pass, colour capped at 2)", fontsize=9)
+    ax.set_yticklabels([f"{n} {_short(designs[n]['concept'])} ({count(n)})" for n in names], fontsize=7)
+    key = "\nU = unscored: MuJoCo blew up at every timestep, so it is neither a pass nor a fail" if U.any() else ""
+    ax.set_title(f"Dynamic check: smallest pass margin per design and object (P = pass, colour capped at 2){key}", fontsize=9)
     fig.colorbar(im, ax=ax, fraction=0.03, pad=0.01)
     fig.tight_layout()
     fig.savefig(path, dpi=120)
@@ -531,7 +544,8 @@ def fig_sweep(path: Path, result: dict[str, Any], labels: dict[str, str] | None 
                                  gridspec_kw={"height_ratios": [3, 2, 1] if boxes else [3, 1]})
         a1, a2 = axes[0], axes[-1]
         for k, oid in enumerate(result["objects"]):
-            a1.plot(xs, [min(score[(s["point"], oid)], 3.0) for s in summary], marker="os^D"[k // 20 % 4], ms=3,
+            ys = [np.nan if score[(s["point"], oid)] is None else min(score[(s["point"], oid)], 3.0) for s in summary]
+            a1.plot(xs, ys, marker="os^D"[k // 20 % 4], ms=3,
                     color=plt.cm.tab20(k % 20), ls="-" if k % 2 == 0 else "--", label=labels.get(oid, oid))
         a1.axhline(1.0, color="k", ls=":", lw=0.8)
         a1.set_ylabel("smallest pass margin (>= 1 passes,\ncapped at 3; 0 = dropped)")

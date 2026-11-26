@@ -85,10 +85,21 @@ def cmd_describe(args: argparse.Namespace) -> None:
               f"allow {s['allow_pressure_kPa']:.0f} kPa")
 
 
+def _score(r: dict) -> str:
+    return "  n/a" if r["score"] is None else f"{r['score']:5.2f}"
+
+
+def _passes(rows: list[dict]) -> str:
+    """Passes out of the scored runs; a run left unscored is counted apart, never as a fail."""
+    n_unscored = sum(r["passed"] is None for r in rows)
+    text = f"{sum(1 for r in rows if r['passed'])}/{len(rows) - n_unscored}"
+    return text + (f" scored, {n_unscored} unscored (blew up at every timestep)" if n_unscored else "")
+
+
 def _print_outcome(r: dict) -> None:
     m = r["metrics"]
-    verdict = "PASS" if r["passed"] else "UNSTABLE" if r["reason"] == "simulation went unstable" else "fail"
-    head = f"  {r['object_id']:18s} {verdict}  score {r['score']:5.2f}"
+    verdict = "PASS" if r["passed"] else "UNSCORED" if r["passed"] is None else "fail"
+    head = f"  {r['object_id']:18s} {verdict}  score {_score(r)}"
     if r["fidelity"] == "analytic":
         body = (f"  N {m['normal_force_N']:5.1f} N  insertion {r['insertion_mm']:5.1f} mm" if "normal_force_N" in m else "")
     else:
@@ -96,7 +107,9 @@ def _print_outcome(r: dict) -> None:
                 if "slip_mm" in m else "")
     margins = " ".join(f"{k}={v:.2f}" for k, v in r["margins"].items())
     tail = f"  ({r['seconds']:.1f} s)" if r["fidelity"] == "mujoco" else ""
-    if m.get("resets"):
+    if m.get("resets") and r["passed"] is None:
+        tail += f"  [blew up at every timestep down to {m['timestep_s'] * 1e3:g} ms, first at {m['reset_s']:.3f} s; flagged, not scored]"
+    elif m.get("resets"):
         tail += f"  [{m['resets']:.0f} reset(s) from {m['reset_s']:.3f} s; rerun at {m['timestep_s'] * 1e3:g} ms]"
     print(f"{head}{body}  {margins or r['reason']}{tail}")
 
@@ -133,7 +146,7 @@ def cmd_simulate(args: argparse.Namespace) -> None:
         outs, rows = [], run_batch(fidelity, [d], ids, paths["objects"], paths["scenario"], args.workers or None)
     for r in rows:
         _print_outcome(r)
-    print(f"passes {sum(r['passed'] for r in rows)}/{len(rows)}")
+    print(f"passes {_passes(rows)}")
     if outs and plot:
         from .plots import fig_traces
 
@@ -183,10 +196,13 @@ def cmd_sweep(args: argparse.Namespace) -> None:
     names = [nm for nm, _ in vary]
     print("  " + "  ".join(f"{nm:>14s}" for nm in names) + f"  {'pass':>6s}  {'J':>6s}  {'min':>5s}  worst object")
     for row in res["summary"]:
+        n_scored = row["n_objects"] - row["n_unscored"]
         print("  " + "  ".join(f"{row[nm]:14.4g}" for nm in names)
-              + f"  {row['n_pass']:>2d}/{row['n_objects']:<3d}  {row['J']:6.2f}  {row['min_score']:5.2f}  {row['worst_object']} ({row['worst_reason']})")
-    best = max(res["summary"], key=lambda r: (r["n_pass"], r["J"]))
-    print(f"best point: {' '.join(f'{nm}={best[nm]:g}' for nm in names)} passes {best['n_pass']}/{best['n_objects']}")
+              + f"  {row['n_pass']:>2d}/{n_scored:<3d}  {row['J']:6.2f}  {row['min_score']:5.2f}  {row['worst_object']} ({row['worst_reason']})"
+              + (f"  [{row['n_unscored']} unscored]" if row["n_unscored"] else ""))
+    best = max(res["summary"], key=lambda r: (-(r["n_objects"] - r["n_unscored"] - r["n_pass"]), r["n_pass"], r["J"]))
+    print(f"best point: {' '.join(f'{nm}={best[nm]:g}' for nm in names)} passes {best['n_pass']}/{best['n_objects'] - best['n_unscored']}"
+          + (f" scored, {best['n_unscored']} unscored" if best["n_unscored"] else ""))
     print(f"done in {time.perf_counter() - t0:.0f} s; wrote " + ", ".join(str(f) for f in files))
 
 
@@ -219,21 +235,32 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 
 def _report(result: dict, run, log) -> None:
+    from .simulator import verdict
+
     ids = result["objects"]
+
+    def passes(d: dict) -> str:
+        flag = f"; flagged: unscored on {', '.join(d['unscored'])}" if d.get("unscored") else ""
+        return f"passes {d['sim_pass']}/{len(ids) - d.get('sim_unscored', 0)} in the dynamic check{flag}"
+
     ar = result["designs"][result["all_rounder"]]
-    log(f"\nBest all-rounder: {ar['name']} ({ar['concept']}), passes {ar['sim_pass']}/{len(ids)} in the dynamic check")
+    log(f"\nBest all-rounder: {ar['name']} ({ar['concept']}), {passes(ar)}")
     for o in ids:
         r = ar["results"][o]
-        log(f"  {o:18s} {'PASS' if r['passed'] else 'FAIL'}  {r['reason']}")
+        log(f"  {o:18s} {verdict(r)}  {r['reason']}")
     log("\nBest design per object:")
     for o, p in result["per_object"].items():
-        log(f"  {o:18s} {p['design']} ({p['concept']})  {'PASS' if p['passed'] else 'FAIL'}  score {p['score']:.2f}  {p['reason']}")
+        log(f"  {o:18s} {p['design']} ({p['concept']})  {verdict(p)}  score {p['score']:.2f}  {p['reason']}")
     for name in result.get("references", []):
         ref = result["designs"][name]
-        log(f"\nReference {name} ({ref['why'][0]}): passes {ref['sim_pass']}/{len(ids)} in the dynamic check")
+        log(f"\nReference {name} ({ref['why'][0]}): {passes(ref)}")
         for o in ids:
             r = ref["results"][o]
-            log(f"  {o:18s} {'PASS' if r['passed'] else 'FAIL'}  score {r['score']:.2f}  {r['reason']}")
+            log(f"  {o:18s} {verdict(r)}  score {_score(r).strip()}  {r['reason']}")
+    if result.get("flagged"):
+        log("\nFlagged designs (MuJoCo blew up at every timestep on these objects; unscored, not counted as fails):")
+        for name, objs in result["flagged"].items():
+            log(f"  {name:14s} {', '.join(objs)}")
     rows = [d for d in result["designs"].values() if d.get("hub_clearance_mm") is not None]
     if rows:
         log("\nClearance over the stroke (least gap, and the opening from where the fingers meet at which it occurs):")

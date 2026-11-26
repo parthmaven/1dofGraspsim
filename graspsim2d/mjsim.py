@@ -47,7 +47,7 @@ BODY_CONTACT_LIMIT = 1.0  # N: load the bare finger body and pad mounts may put 
 START_MARGIN = math.radians(1.0)  # beyond the approach opening, where each grasp starts
 BAD_STATE = tuple(int(w) for w in (mujoco.mjtWarning.mjWARN_BADQPOS, mujoco.mjtWarning.mjWARN_BADQVEL,
                                    mujoco.mjtWarning.mjWARN_BADQACC))
-RERUN_STEPS = (2, 4)  # a run that blows up is rerun at the timestep divided by each of these in turn
+RERUN_STEPS = (2, 4, 8)  # a run that blows up is rerun at the timestep divided by each of these in turn
 UNSTABLE = "simulation went unstable"
 
 
@@ -64,7 +64,7 @@ class _Element:
 class SimResult:
     design: GripperDesign
     object_id: str
-    passed: bool
+    passed: bool | None  # None: not scored, because the run blew up at every timestep tried
     reason: str
     metrics: dict[str, float] = field(default_factory=dict)
     trace: dict[str, np.ndarray] = field(default_factory=dict)
@@ -72,8 +72,10 @@ class SimResult:
     blowups: list[dict[str, Any]] = field(default_factory=list)  # each try that blew up: time, phase, timestep
 
     @property
-    def score(self) -> float:
-        """Smallest pass-criterion margin (>= 1 passes)."""
+    def score(self) -> float | None:
+        """Smallest pass-criterion margin (>= 1 passes); None for a run that isn't scored."""
+        if self.passed is None:
+            return None
         m = self.metrics.get("margins", {})
         return float(min(m.values())) if m else 0.0
 
@@ -499,10 +501,11 @@ def simulate(design: GripperDesign, obj: GraspObject, sc: Scenario, depth: float
              finger: Finger | None = None, record: bool = True) -> SimResult:
     """Close, settle, release (sheets), lift, hold, shake, hold; then score.
 
-    A run that blows up is never scored. It is flagged (metrics `resets` and `reset_s`, and
-    `blowups`) and rerun at a finer timestep, half and then a quarter of the scenario's, with
-    every time constant kept; `timestep_s` records the step of the run that was scored. If every
-    try blows up, the result is "simulation went unstable", with no margins."""
+    A run that blows up is never scored (test conditions 2.15). It is flagged (metrics `resets`
+    and `reset_s`, and `blowups`) and rerun at a finer timestep, a half, a quarter and then an
+    eighth of the scenario's, with every time constant kept; `timestep_s` records the step of the
+    run that was scored. If every try blows up, the run is left unscored: `passed` and `score` are
+    None, the reason is "simulation went unstable", and there are no margins."""
     f = finger or build_finger(design, sc.keep_out, sc.closed_limit)
     if not f.feasible:
         return SimResult(design, obj.id, False, "infeasible geometry")
@@ -662,7 +665,7 @@ def _run(model: mujoco.MjModel, meta: dict[str, Any], design: GripperDesign, obj
     trace["close_s"] = np.array([traj.t_close])
     if math.isfinite(unstable_s):
         blowup = {"t_s": unstable_s, "phase": traj.phase(unstable_s), "timestep_s": dt}
-        return SimResult(design, obj.id, False, UNSTABLE, {"unstable_s": unstable_s}, trace, depth * 1e3, [blowup])
+        return SimResult(design, obj.id, None, UNSTABLE, {"unstable_s": unstable_s}, trace, depth * 1e3, [blowup])
     if ref is None:
         return SimResult(design, obj.id, False, "never reached the lift", {}, trace, depth * 1e3)
 
