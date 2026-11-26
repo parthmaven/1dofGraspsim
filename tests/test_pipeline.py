@@ -561,3 +561,5 @@ def test_batch1_mount_flag_includes_the_limit(batch1):
     assert j.torque == pytest.approx(4.0)
     assert batch1._torque_flag(j) == {"finger_torque_Nm": j.torque, "mount_fatigue_flag": True}
     assert not batch1._torque_flag(batch1.get_jaw("S1", 45.0))["mount_fatigue_flag"]
+    failed = batch1.run_job({"block": "t", "design": "S3", "reading": 45.0, "job": "mj", "test": "T1", "object": "nope"})
+    assert failed["kind"] == "error" and failed["finger_torque_Nm"] == pytest.approx(4.0) and failed["mount_fatigue_flag"]

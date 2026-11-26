@@ -214,7 +214,12 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         return _clean(f(job))
     except Exception as e:  # noqa: BLE001 - a failed job is a row, not a dead batch
         import traceback
-        return {**job, "kind": "error", "reason": f"{type(e).__name__}: {e}", "traceback": traceback.format_exc()[-2000:]}
+        row = {**job, "kind": "error", "reason": f"{type(e).__name__}: {e}", "traceback": traceback.format_exc()[-2000:]}
+        try:
+            row.update(_torque_flag(get_jaw(job["design"], job["reading"], job.get("values"), job.get("reach_cap"))))
+        except Exception:  # noqa: BLE001 - the jaw itself may be what failed
+            row.update(finger_torque_Nm=math.nan, mount_fatigue_flag=False)
+        return row
 
 
 # ---------------------------------------------------------------- blocks
