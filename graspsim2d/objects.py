@@ -1,14 +1,20 @@
 """Predefined object library: filled cereal boxes and cardboard sheets.
 
-Everything is described in the grasp plane. A box stands upright and the jaw
-closes across its depth (front to back), so the 2D section is depth x height
-and the box width is out of plane. A sheet hangs from a pinch near its free
-edge, so the section is thickness x hanging length and the sheet width is
-out of plane.
+Everything is described in the grasp plane. A box stands upright and the
+gripper comes down on its top end; by default the jaw closes across the depth
+(front to back), so the 2D section is the depth x height side panel and the box
+width is out of plane (`grasp_axis: width` closes across the width instead). A
+sheet hangs from a pinch near its free edge, so the section is thickness x
+hanging length and the sheet width is out of plane.
+
+Boxes come from the `boxes` list in the YAML file and from CSV box tables
+(`box_tables`), one box per row with the columns in BOX_TABLE_COLUMNS.
 """
 
 from __future__ import annotations
 
+import csv
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -16,6 +22,10 @@ from typing import Any, Mapping
 import yaml
 
 G = 9.81
+GRASP_AXES = ("depth", "width")
+BOX_TABLE_COLUMNS = ("product_title", "size_label", "upc", "net_mass_g", "box_mass_g", "height_mm", "width_mm",
+                     "depth_mm", "fill_height_mm", "com_height_mm", "bulk_density_g_cm3", "source", "confidence")
+_BOX_TABLE_REQUIRED = ("product_title", "net_mass_g", "height_mm", "width_mm", "depth_mm")
 
 
 @dataclass(frozen=True)
@@ -51,8 +61,16 @@ class GraspObject:
     unsupported_force: float = float("inf")  # N per pad allowed on an unsupported panel
     net_mass: float = 0.0
     packaging_mass: float = 0.0
+    fill_height: float = 0.0  # m of settled contents above the bottom (boxes)
+    grasp_axis: str = ""  # boxes: the box dimension the jaw closes across
+    confidence: str = ""
     notes: str = ""
     sources: tuple[str, ...] = ()
+
+    @property
+    def com_height(self) -> float:
+        """Centre of mass above the bottom (boxes) or below the pinch line (sheets), m."""
+        return self.height - self.com_below_top
 
     @property
     def weight(self) -> float:
@@ -72,8 +90,13 @@ class GraspObject:
             "material": self.material.name,
         }
         if self.kind == "box":
+            d["grasp_axis"] = self.grasp_axis
+            d["fill_height_mm"] = round(self.fill_height * 1000, 1)
+            d["com_height_mm"] = round(self.com_height * 1000, 1)
             d["headspace_mm"] = round(self.headspace * 1000, 1)
             d["unsupported_force_N"] = self.unsupported_force
+            if self.confidence:
+                d["confidence"] = self.confidence
         else:
             d["bending_stiffness_Nm"] = self.material.bending_stiffness
             d["bending_strength_Nm_per_m"] = self.material.bending_strength
@@ -116,43 +139,71 @@ def _material(name: str, e: Mapping[str, Any]) -> Material:
     )
 
 
+def _given(e: Mapping[str, Any], key: str) -> float | None:
+    v = e.get(key)
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    return float(v)
+
+
 def _box(e: Mapping[str, Any], mat: Material) -> GraspObject:
-    """Filled cereal box: carton shell plus settled contents."""
-    B, H, W = (float(e[k]) / 1000.0 for k in ("depth_mm", "height_mm", "width_mm"))
+    """Filled cereal box: carton shell plus contents settled at the bottom.
+
+    Fill height: `fill_height_mm`, else net mass over `bulk_density_g_cm3` and
+    the box footprint, else `fill_fraction` of the height. Centre of mass:
+    `com_height_mm` above the bottom, else the shell-plus-contents estimate."""
+    D, H, W = (float(e[k]) / 1000.0 for k in ("depth_mm", "height_mm", "width_mm"))
+    axis = str(e.get("grasp_axis", "depth"))
+    if axis not in GRASP_AXES:
+        raise ValueError(f"box {e.get('id')}: grasp_axis must be one of {GRASP_AXES}, not {axis!r}")
+    B, Wo = (D, W) if axis == "depth" else (W, D)  # across the jaw, out of plane
     net = float(e["net_mass_g"]) / 1000.0
-    fill = float(e.get("fill_fraction", 0.8))
-    if "packaging_mass_g" in e:
-        pack = float(e["packaging_mass_g"]) / 1000.0
+    pack_g = _given(e, "packaging_mass_g")
+    if pack_g is not None:
+        pack = pack_g / 1000.0
     else:
         # Blank area of a tuck-end carton with glue flap, times board grammage.
-        pack = 1.15 * 2 * (W * H + B * H + W * B) * mat.grammage
+        pack = 1.15 * 2 * (W * H + D * H + W * D) * mat.grammage
+    hf_mm, rho = _given(e, "fill_height_mm"), _given(e, "bulk_density_g_cm3")
+    if hf_mm is not None:
+        hf = hf_mm / 1000.0
+    elif rho:
+        hf = net / (rho * 1000.0 * W * D)
+    else:
+        hf = float(e.get("fill_fraction", 0.8)) * H
+    if not 0.0 < hf <= H * (1 + 1e-9):
+        raise ValueError(f"box {e.get('id')}: fill height {hf * 1000:.1f} mm is outside the box height {H * 1000:.1f} mm")
     # Shell: front/back panels at x = +-B/2, side panels across the section,
-    # top/bottom at the ends. Contents fill the bottom `fill` of the height.
-    a_fb, a_s, a_tb = 2 * W * H, 2 * B * H, 2 * W * B
+    # top/bottom at the ends. Contents fill the bottom hf of the height.
+    a_fb, a_s, a_tb = 2 * Wo * H, 2 * B * H, 2 * Wo * B
     a = a_fb + a_s + a_tb
     m_fb, m_s, m_tb = pack * a_fb / a, pack * a_s / a, pack * a_tb / a
     i_shell = m_fb * (B**2 / 4 + H**2 / 12) + m_s * (B**2 + H**2) / 12 + m_tb * (H**2 / 4 + B**2 / 12)
-    hf = fill * H
     z_shell, z_cont = H / 2, hf / 2  # above the bottom
     m = pack + net
-    z_com = (pack * z_shell + net * z_cont) / m
+    z_est = (pack * z_shell + net * z_cont) / m
     i_cont = net * (B**2 + hf**2) / 12
-    inertia = i_shell + pack * (z_shell - z_com) ** 2 + i_cont + net * (z_cont - z_com) ** 2
+    inertia = i_shell + pack * (z_shell - z_est) ** 2 + i_cont + net * (z_cont - z_est) ** 2
+    com_mm = _given(e, "com_height_mm")
+    z_com = com_mm / 1000.0 if com_mm is not None else z_est
     return GraspObject(
         id=str(e["id"]),
         label=str(e["label"]),
         kind="box",
         thickness=B,
         height=H,
-        width=W,
+        width=Wo,
         mass=m,
         com_below_top=H - z_com,
         inertia=inertia,
         material=mat,
-        headspace=(1 - fill) * H,
+        headspace=H - hf,
         unsupported_force=float(e.get("unsupported_panel_force_N", "inf")),
         net_mass=net,
         packaging_mass=pack,
+        fill_height=hf,
+        grasp_axis=axis,
+        confidence=str(e.get("confidence", "")),
         notes=str(e.get("notes", "")),
         sources=tuple(e.get("sources", []) or []),
     )
@@ -179,6 +230,51 @@ def _sheet(e: Mapping[str, Any], mat: Material, caliper_mm: float) -> GraspObjec
     )
 
 
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+
+def table_path(entry: Mapping[str, Any], base: Path) -> Path:
+    """A box table's file, resolved against the directory of the objects YAML."""
+    p = Path(str(entry["file"])).expanduser()
+    return p if p.is_absolute() else base / p
+
+
+def read_box_table(path: str | Path) -> list[dict[str, str]]:
+    """Rows of a box table CSV (see BOX_TABLE_COLUMNS), blank rows skipped."""
+    path = Path(path)
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        cols = [c.strip() for c in (reader.fieldnames or [])]
+        missing = [c for c in _BOX_TABLE_REQUIRED if c not in cols]
+        if missing:
+            raise ValueError(f"{path}: box table is missing columns {missing}; expected {list(BOX_TABLE_COLUMNS)}")
+        rows = [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in reader]
+    return [r for r in rows if r.get("product_title")]
+
+
+def boxes_from_table(path: str | Path, defaults: Mapping[str, Any], materials: Mapping[str, Material]) -> list[GraspObject]:
+    """One box per CSV row, on top of `defaults` (box_defaults plus the table entry)."""
+    out = []
+    prefix = str(defaults.get("id_prefix", ""))
+    for row in read_box_table(path):
+        title = " ".join(x for x in (row["product_title"], row.get("size_label", "")) if x)
+        e: dict[str, Any] = {k: v for k, v in defaults.items() if k not in ("file", "id_prefix", "enabled")}
+        e["id"] = prefix + _slug(title)
+        conf = row.get("confidence", "")
+        e["label"] = title + (" (placeholder)" if conf.lower() == "placeholder" else "")
+        for col, key in (("net_mass_g", "net_mass_g"), ("box_mass_g", "packaging_mass_g"), ("height_mm", "height_mm"),
+                         ("width_mm", "width_mm"), ("depth_mm", "depth_mm"), ("fill_height_mm", "fill_height_mm"),
+                         ("com_height_mm", "com_height_mm"), ("bulk_density_g_cm3", "bulk_density_g_cm3")):
+            if row.get(col):
+                e[key] = float(row[col])
+        e["confidence"] = conf
+        e["notes"] = f"UPC {row['upc']}" if row.get("upc") else ""
+        e["sources"] = [row["source"]] if row.get("source") else []
+        out.append(_box(e, materials[e["material"]]))
+    return out
+
+
 def load_objects(path: str | Path) -> ObjectLibrary:
     path = Path(path)
     raw = yaml.safe_load(path.read_text()) or {}
@@ -191,6 +287,9 @@ def load_objects(path: str | Path) -> ObjectLibrary:
         e = {**box_defaults, **e}
         if e.get("enabled", True):
             objects.append(_box(e, materials[e["material"]]))
+    for t in raw.get("box_tables", []) or []:
+        if t.get("enabled", True):
+            objects.extend(boxes_from_table(table_path(t, path.parent), {**box_defaults, **t}, materials))
     for e in raw.get("sheets", []) or []:
         e = {**sheet_defaults, **e}
         if e.get("enabled", True):

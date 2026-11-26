@@ -91,6 +91,47 @@ def test_objects_have_sourced_physical_values(setup):
     assert hbo.mass == pytest.approx(0.8938, abs=0.002)
 
 
+BOX_COLUMNS = ("product_title,size_label,upc,net_mass_g,box_mass_g,height_mm,width_mm,depth_mm,"
+               "fill_height_mm,com_height_mm,bulk_density_g_cm3,source,confidence")
+
+
+def _objects_with(tmp_path, box_defaults=None, box_tables=None):
+    raw = yaml.safe_load((CFG / "objects.yaml").read_text())
+    raw["box_defaults"].update(box_defaults or {})
+    if box_tables is None:
+        box_tables = [{**t, "file": str(CFG / t["file"])} for t in raw["box_tables"]]
+    raw["box_tables"] = box_tables
+    (tmp_path / "objects.yaml").write_text(yaml.safe_dump(raw))
+    return load_objects(tmp_path / "objects.yaml")
+
+
+def test_box_table_rows_become_boxes(tmp_path, setup):
+    gm = setup[2].by_id("gm_cheerios_family_size_18_oz")
+    assert gm.kind == "box" and gm.label.endswith("(placeholder)") and gm.confidence == "placeholder"
+    assert gm.fill_height == pytest.approx(0.289) and gm.com_height == pytest.approx(0.1506)
+    assert gm.headspace == pytest.approx(0.3613 - 0.289) and gm.mass == pytest.approx(0.6143)
+    # Blank fill height: bulk density over the footprint, then fill_fraction; blank CoM: shell plus contents.
+    (tmp_path / "t.csv").write_text(BOX_COLUMNS + "\nTest,A,,300,60,300,200,50,,,0.15,x,low\nTest,B,,300,60,300,200,50,,,,x,low\n")
+    lib = _objects_with(tmp_path, box_tables=[{"file": "t.csv", "material": "cereal_carton_flakes"}])
+    a, b = lib.by_id("test_a"), lib.by_id("test_b")
+    assert a.fill_height == pytest.approx(0.2)
+    assert b.fill_height == pytest.approx(0.24) and b.com_height == pytest.approx((60 * 0.15 + 300 * 0.12) / 360)
+    (tmp_path / "t.csv").write_text("product_title,net_mass_g,height_mm,width_mm\nTest,300,300,200\n")
+    with pytest.raises(ValueError, match="depth_mm"):
+        load_objects(tmp_path / "objects.yaml")
+
+
+def test_box_grasp_axis_is_configurable(tmp_path, setup):
+    deep = setup[2].by_id("hbo_28oz")
+    wide = _objects_with(tmp_path, box_defaults={"grasp_axis": "width"}).by_id("hbo_28oz")
+    assert (deep.grasp_axis, wide.grasp_axis) == ("depth", "width")
+    assert (wide.thickness, wide.width) == pytest.approx((deep.width, deep.thickness))
+    assert wide.mass == pytest.approx(deep.mass) and wide.com_height == pytest.approx(deep.com_height)
+    assert wide.inertia > deep.inertia
+    with pytest.raises(ValueError, match="grasp_axis"):
+        _objects_with(tmp_path, box_defaults={"grasp_axis": "diagonal"})
+
+
 def test_force_balance_of_the_analytic_grip(setup):
     space, concepts, lib, sc = setup
     d = concepts["baseline_paddle"].make(space)

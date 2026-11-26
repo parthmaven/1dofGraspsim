@@ -10,8 +10,10 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 from .analytic import screen_design
-from .objects import load_objects
+from .objects import load_objects, table_path
 from .scenario import load_scenario
 from .schema import GripperDesign, load_concepts, load_design_space
 
@@ -27,6 +29,28 @@ def _paths(args: argparse.Namespace) -> dict[str, str]:
         if v:
             out[k] = v
     return out
+
+
+def save_inputs(out: Path, paths: dict[str, str]) -> None:
+    """Copy the configs, and the box tables the objects file names, into a run directory."""
+    out.mkdir(parents=True, exist_ok=True)
+    for k in CONFIG_FILES:
+        if Path(paths[k]).exists():
+            shutil.copy(paths[k], out / Path(paths[k]).name)
+    obj = Path(paths["objects"])
+    if not obj.exists():
+        return
+    raw = yaml.safe_load(obj.read_text()) or {}
+    moved = False
+    for t in raw.get("box_tables") or []:
+        src = table_path(t, obj.parent)
+        if src.exists():
+            shutil.copy(src, out / src.name)
+            if str(t["file"]) != src.name:
+                t["file"], moved = src.name, True
+    if moved:
+        (out / obj.name).write_text(f"# Copy of {obj} with box tables pointed at the copies beside it.\n"
+                                    + yaml.safe_dump(raw, sort_keys=False))
 
 
 def _load_design(spec: str, paths: dict[str, str]) -> GripperDesign:
@@ -115,10 +139,7 @@ def cmd_search(args: argparse.Namespace) -> None:
     if args.rounds:
         cfg.rounds = args.rounds
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    for k in ("design_space", "concepts", "objects", "scenario", "search"):
-        if Path(paths[k]).exists():
-            shutil.copy(paths[k], out / Path(paths[k]).name)
+    save_inputs(out, paths)
     log_f = open(out / "search.log", "w")
 
     def log(msg: str) -> None:

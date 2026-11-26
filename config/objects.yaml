@@ -6,10 +6,12 @@
 # derived from the others. Ranges are kept next to the value used so a
 # sensitivity run is a config edit.
 #
-# Grasp plane: a box stands upright and the jaw closes across its depth D, so
-# the 2D section is D x H and the width W is out of plane. A sheet hangs from
-# a pinch near its free top edge; the section is caliper x hanging length and
-# the sheet width is out of plane.
+# Grasp plane: a box stands upright and the gripper comes down on its top end
+# (the shortest end). By default the jaw closes across the depth D, so the 2D
+# section is the D x H side panel and the width W is out of plane; set
+# box_defaults.grasp_axis (or a box's own grasp_axis) to `width` to close
+# across W instead. A sheet hangs from a pinch near its free top edge; the
+# section is caliper x hanging length and the sheet width is out of plane.
 
 meta:
   compiled: 2026-11-26
@@ -125,8 +127,11 @@ materials:
 # push at most unsupported_panel_force_N before the panel dents: yield-line
 # estimate 2-4 pi x M_p = 6-12 N for 18 pt CRB under a small pad, first
 # permanent strain from about 3 N; larger pads and loading near the glued top
-# closure raise it [E]. 10 N is used.
+# closure raise it [E]. 10 N is used. Cereal settles at the bottom: the
+# contents fill the bottom fill_fraction of the height (unless a box gives its
+# fill height or bulk density) and the centre of mass sits below mid-height.
 box_defaults:
+  grasp_axis: depth             # depth | width: the box dimension the jaw closes across
   fill_fraction: 0.8
   unsupported_panel_force_N: 10
 
@@ -207,6 +212,21 @@ boxes:
     net_mass_g: 581.2
     packaging_mass_g: 50        # 47-58 [E]; case method 48.5 g
     sources: [Post Foodservice Item Specifications, item 88418, Go-UPC 884912004710]
+
+# Box tables: CSV files with one box per row, loaded after `boxes`, with the
+# columns product_title, size_label, upc, net_mass_g, box_mass_g, height_mm,
+# width_mm, depth_mm, fill_height_mm, com_height_mm, bulk_density_g_cm3,
+# source, confidence. A blank fill_height_mm falls back to the bulk density
+# (net mass / density / footprint), then to fill_fraction; a blank
+# com_height_mm uses the carton-plus-contents estimate; a blank box_mass_g
+# uses the carton blank area times the board grammage. A relative file is
+# relative to this YAML file. Rows with confidence `placeholder` are labelled
+# so. The General Mills table holds one placeholder row until the sourced
+# table replaces it.
+box_tables:
+  - file: general_mills_cereal_boxes.csv
+    material: cereal_carton_flakes
+    id_prefix: gm_
 
 # Sheet size is an assumption: 400 mm hanging below the pinched edge, 400 mm wide.
 sheet_defaults:
