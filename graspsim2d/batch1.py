@@ -56,7 +56,7 @@ def ctx() -> dict[str, Any]:
         from .objects import load_objects
         from .scenario import load_scenario
         sc = load_scenario(B1 / "scenario.yaml")
-        _CTX.update(sc=sc, b1=sc.raw["batch1"], lib=load_objects(CFG / "objects.yaml"),
+        _CTX.update(sc=sc, b1=sc.raw["batch1"], lib=load_objects(B1 / "objects.yaml"),
                     lay=yaml.safe_load((B1 / "layouts.yaml").read_text()), marks=load_marks(B1 / "marked_faces.yaml"),
                     jaws={})
     return _CTX

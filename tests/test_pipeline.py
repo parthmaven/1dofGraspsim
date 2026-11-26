@@ -1,7 +1,5 @@
 import dataclasses
 import math
-import shutil
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -15,22 +13,7 @@ from graspsim2d.pads import compression_modulus, shore_a_to_E
 from graspsim2d.scenario import load_scenario
 from graspsim2d.schema import SCHEMA, load_concepts, load_design_space
 
-CFG_SRC = Path(__file__).resolve().parents[1] / "config"
-
-
-def _first_pass_config() -> Path:
-    """The config directory without batch 1's `enabled:` filter, so the first pass's library boxes load."""
-    d = Path(tempfile.mkdtemp(prefix="graspsim_cfg_"))
-    for p in CFG_SRC.iterdir():
-        if p.is_file():
-            shutil.copy(p, d / p.name)
-    raw = yaml.safe_load((d / "objects.yaml").read_text())
-    raw.pop("enabled", None)
-    (d / "objects.yaml").write_text(yaml.safe_dump(raw, sort_keys=False))
-    return d
-
-
-CFG = _first_pass_config()
+CFG = Path(__file__).resolve().parents[1] / "config"
 
 
 @pytest.fixture(scope="module")
@@ -510,8 +493,6 @@ def test_bed_limit_applies_only_below_the_fill_line(setup):
     assert shallow.ok and "pressure" not in shallow.margins and "panel" in shallow.margins
     assert shallow.info["bed_pressure_kPa"] == 0.0 < shallow.info["peak_pressure_kPa"]
 
-
-B1 = CFG_SRC / "batch1"
 
 
 @pytest.fixture(scope="module")
