@@ -818,11 +818,12 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
     assert r["A_thumb_peak_N"] >= r["A_thumb_N_hold"] > 0.0 and r["A_thumb_peak_at"]
     # The stop along W drives the case outward onto A's hub; the run's peak covers the stop's.
     assert r["A_hub_peak_N"] >= r["A_hub_stop_peak_N"] > 0.0 and r["A_hub_stop_out_N"] > 0.0 and r["A_hub_peak_phase"]
-    # Revision 2.34: sustained over the final hold's last 1 s; peak the largest 5 ms average from the end of the close
-    # to 5 s after the stop, so it covers revision 2.21's, read from the stop on.
-    assert r["hub_peak_from"] == "end of the close" and r["hub_peak_event"] == "stop"
+    # Revision 2.35: sustained over the final hold's last 1 s; peak the largest 5 ms average from the run's first
+    # contact to 5 s after the stop, so it covers revision 2.34's, from the end of the close, and 2.21's, from the stop.
+    assert r["hub_peak_from"] == "first contact" and r["hub_peak_event"] == "stop"
     assert r["A_hub_peak_5ms_after_s"] <= 5.0 and r["A_hub_peak_5ms_phase"]
-    assert r["A_hub_window_peak_N"] >= r["A_hub_peak_5ms_N"] >= r["A_hub_peak_5ms_from_event_N"] > 0.0
+    assert r["A_hub_window_peak_N"] >= r["A_hub_peak_5ms_N"] >= r["A_hub_peak_5ms_from_close_N"]
+    assert r["A_hub_peak_5ms_from_close_N"] >= r["A_hub_peak_5ms_from_event_N"] > 0.0
     assert r["A_hub_stop_peak_N"] >= r["A_hub_peak_5ms_from_event_N"] >= r["A_hub_sustained_N"] > 0.0
     assert r["A_hub_peak_5ms_out_N"] > 0.0 and r["B_hub_sustained_N"] > 0.0
     # Revision 2.31's window: from the end of the close to the power cut, through every phase, as the largest 5 ms average.
@@ -840,8 +841,19 @@ def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
             assert {"settle", "lift", "stop", "power"} <= set(by) <= phases
             assert max(by.values()) == pytest.approx(r[f"{g}_{part}_5ms_N"], abs=0.01)
         assert set(r[f"{g}_hub_phase_5ms_N"]) <= phases
-        assert max(r[f"{g}_hub_phase_5ms_N"].values()) == pytest.approx(r[f"{g}_hub_peak_5ms_N"], abs=0.01)
+        # Revision 2.35's close window, from the first contact through the squeeze, joins the window at the squeeze.
+        close = {"approach", "close", "squeeze"}
+        for part in ("out", "thumb", "hub"):
+            by = r[f"{g}_{part}_close_phase_5ms_N"]
+            assert set(by) <= close and r[f"{g}_{part}_close_5ms_phase"] in close
+            assert max(by.values()) == pytest.approx(r[f"{g}_{part}_close_5ms_N"], abs=0.01)
+        assert r[f"{g}_hub_peak_5ms_from_close_N"] == pytest.approx(max(r[f"{g}_hub_phase_5ms_N"].values()), abs=0.01)
+        assert r[f"{g}_hub_peak_5ms_N"] == pytest.approx(
+            max(r[f"{g}_hub_close_5ms_N"], *r[f"{g}_hub_phase_5ms_N"].values()), abs=0.01)
         assert r[f"{g}_window_peak_Nm"] >= r[f"{g}_window_5ms_Nm"] > 0.0
+        # SIM round 17: the actuator torque over the whole run, every sample over the drive's 25 N.m peak flagged.
+        assert r[f"{g}_drive_max_Nm"] >= r[f"{g}_window_peak_Nm"] - 1e-9 and r[f"{g}_drive_max_phase"]
+        assert r[f"{g}_drive_over_cap_s"] == 0.0
         assert r[f"{g}_window_5ms_Nm_phase"] in phases
         # The wrist sensor: the case's weight share and the arms' squeeze, at least, in the final hold.
         assert r[f"{g}_sensor_F_N_hold"] > 0.5 * case.mass * 9.81 / 2
@@ -1032,11 +1044,12 @@ def test_t5_on_stainless_keeps_the_printed_hub(batch1):
         r = simulate_t5(j, case, c["sc"], {**c["b1"], "shake_s": 0.0}, stop_g=0.0, power_s=0.2)
     assert r["ok"] and r["finger_material"] == "stainless" and r["finger_density_kg_m3"] == 8000.0
     assert r["mu_bare"] == pytest.approx(0.30) and r["mu_hub"] == pytest.approx(0.35)
-    # The hub's peak window opens at the end of the close, so the settle and the lift count.
-    assert r["hub_peak_from"] == "end of the close" and r["hub_peak_event"] == "power cut"
+    # The hub's peak window opens at the run's first contact, so the close, the settle and the lift count.
+    assert r["hub_peak_from"] == "first contact" and r["hub_peak_event"] == "power cut"
     by = r["A_hub_phase_5ms_N"]
     assert {"squeeze", "settle", "lift", "power"} <= set(by)
-    assert r["A_hub_peak_5ms_N"] == pytest.approx(max(by.values()), abs=0.01)
+    assert r["A_hub_peak_5ms_from_close_N"] == pytest.approx(max(by.values()), abs=0.01)
+    assert r["A_hub_peak_5ms_N"] == pytest.approx(max(r["A_hub_close_5ms_N"], *by.values()), abs=0.01)
     assert r["A_hub_peak_5ms_N"] >= max(by["settle"], by["lift"]) - 0.01
     for g in "AB":
         assert r[f"{g}_sensor_F_N_hold"] > 0.0 and r[f"{g}_sensor_Mb_Nm_hold"] > 0.0
@@ -1059,11 +1072,24 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
     # The record only reads the run.
     assert json.dumps(on, sort_keys=True, default=str) == json.dumps(off, sort_keys=True, default=str)
     s = d["samples"]
-    assert d["complete"] and d["from_s"] < d["t_approach_s"] < d["t_close_s"] < d["to_s"]
-    assert d["to_s"] == pytest.approx(d["t_close_s"] + d["margin_s"], abs=2 * d["sample_s"])
-    assert set(s["phase"]) == {"approach", "close", "squeeze"}
+    assert d["complete"] and d["from_s"] < d["t_first_contact_s"] <= d["t_approach_s"] < d["t_close_s"]
+    assert d["t_close_s"] < d["t_squeeze_end_s"] < d["to_s"]
+    assert d["to_s"] == pytest.approx(d["t_squeeze_end_s"] + d["margin_s"], abs=2 * d["sample_s"])
+    assert set(s["phase"]) == {"approach", "close", "squeeze", "settle"}
     assert len(s["t"]) == len(s["AL_N"]) == len(s["A_drive_Nm"]) == len(d["faces"]["AL"]["tooth"])
     assert np.all(np.diff(s["t"]) > 0) and max(s["A_drive_Nm"]) > 0.0
+    # Revision 2.35's close window in the row is the dump's largest 5 ms average from the first contact through
+    # the squeeze; the arm's servo releases its lead into the case on the hub path, so the hub's falls in the close.
+    t, n = np.array(s["t"]), round(0.005 / d["sample_s"])
+    sel = (t >= d["t_first_contact_s"] - 1e-9) & (t <= d["t_squeeze_end_s"] + 1e-9)
+    for col, key in ((d["fingers"]["A"]["out"], "A_out"), (d["fingers"]["A"]["thumb"], "A_thumb"), ("A_hub", "A_hub")):
+        v = np.array(s[f"{col}_N"])[sel]
+        assert np.convolve(v, np.ones(n) / n, "valid").max() == pytest.approx(on[f"{key}_close_5ms_N"], rel=1e-3)
+    assert on["A_hub_close_5ms_phase"] == "close" and on["A_hub_peak_5ms_N"] >= on["A_hub_close_5ms_N"] - 0.01
+    # The whole window is scored: the settle's and the lift's samples reach the single-sample peaks.
+    assert on["A_hub_peak_N"] >= on["A_hub_phase_5ms_N"]["lift"] - 0.01
+    assert on["A_drive_max_Nm"] >= max(on["A_window_peak_Nm"], max(s["A_drive_Nm"]) - 1e-3)
+    assert not on["drive_over_cap"] and on["drive_cap_Nm"] == 25.0
     # On the hub path the hub meets the case on the arm's approach, and each finger in the close at the closing speed.
     fc = d["first_contact"]
     assert fc["A_hub"]["phase"] == "approach"
@@ -1083,7 +1109,8 @@ def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
     with gzip.open(path, "rt") as fh:
         d = json.load(fh)
     assert d["job"]["design"] == "S4" and "dump_dir" not in d["job"] and d["row"]["finger_material"] == "stainless"
-    assert d["approach"] == "seated" and set(d["samples"]["phase"]) == {"approach", "seat", "squeeze"}
+    assert d["approach"] == "seated" and set(d["samples"]["phase"]) == {"approach", "seat", "squeeze", "settle"}
+    assert row["A_thumb_close_5ms_phase"] in ("approach", "seat", "squeeze") and row["A_thumb_close_5ms_N"] > 0.0
     # The thumb meets the wall on the arm's approach; the outside finger meets the case's bottom as the cradle rises.
     fc = d["first_contact"]
     assert fc["AL"]["phase"] == "approach" and fc["AL"]["closing_before_m_s"] == pytest.approx(d["approach_m_s"], rel=0.1)

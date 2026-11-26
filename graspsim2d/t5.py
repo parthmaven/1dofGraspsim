@@ -212,8 +212,8 @@ def simulate_t5(jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict[str, Any], *
     removed, so its moment crosses the mesh to the thumb's); with the stops the drive is off, on gear friction.
 
     `close_dump` adds `close_dump` to the result: each contact's samples from the run's first contact through the end
-    of the close (or the seat), each finger's and hub's speed at its first contact and the drive torque. It reads the
-    run without changing it, and nothing in it is scored."""
+    of the squeeze, each finger's and hub's speed at its first contact and the drive torque. It reads the run without
+    changing it; the rows score the same window themselves (`*_close_*`, revision 2.35)."""
     if approach not in ("close", "seated") or hold not in ("servo", "stops", "thumb_stop"):
         raise ValueError(f"unknown T5 approach {approach!r} or hold {hold!r}")
     cfg = b1.get("t5", {}) or {}
@@ -359,15 +359,17 @@ def _geom_points(model, data, i: int) -> np.ndarray:
 
 
 def _hub_readings(g: str, sustained: list[float], t: list[float], forces: list[np.ndarray], phases: list[str],
-                  event: tuple[str, float], sample_s: float, avg_s: float) -> dict[str, Any]:
-    """Revision 2.34's hub force for one gripper: sustained, the mean over the final hold's last 1 s; peak, the
-    largest `avg_s` average from the end of the close to 5 s after the stop (or, with no stop, the power cut), so
-    settle and lift peaks count, with that window's mean push outward along W and down, its start after the event
-    (negative before it) and its phase. Revision 2.21's peak, from the event on, is kept beside it."""
+                  event: tuple[str, float], sample_s: float, avg_s: float, t_close: float = -math.inf) -> dict[str, Any]:
+    """Revision 2.35's hub force for one gripper: sustained, the mean over the final hold's last 1 s; peak, the
+    largest `avg_s` average from the run's first contact to 5 s after the stop (or, with no stop, the power cut), so
+    the seat, the settle and the lift count, with that window's mean push outward along W and down, its start after
+    the event (negative before it) and its phase. Revision 2.34's peak, from the end of the close (`t_close`), and
+    revision 2.21's, from the event on, are kept beside it."""
     out = {f"{g}_hub_sustained_N": float(np.mean(sustained)) if sustained else math.nan,
            f"{g}_hub_peak_5ms_N": math.nan, f"{g}_hub_peak_5ms_out_N": math.nan, f"{g}_hub_peak_5ms_down_N": math.nan,
            f"{g}_hub_peak_5ms_after_s": math.nan, f"{g}_hub_peak_5ms_phase": "", f"{g}_hub_window_peak_N": math.nan,
-           f"{g}_hub_peak_5ms_from_event_N": math.nan, "hub_peak_from": "end of the close", "hub_peak_event": event[0]}
+           f"{g}_hub_peak_5ms_from_close_N": math.nan, f"{g}_hub_peak_5ms_from_event_N": math.nan,
+           "hub_peak_from": "first contact", "hub_peak_event": event[0]}
     n = max(1, int(round(avg_s / sample_s)))
     if len(forces) < n:
         return out
@@ -380,9 +382,10 @@ def _hub_readings(g: str, sustained: list[float], t: list[float], forces: list[n
     out.update({f"{g}_hub_peak_5ms_N": float(avg[k]), f"{g}_hub_peak_5ms_out_N": sgn * float(F[k:k + n, 0].mean()),
                 f"{g}_hub_peak_5ms_down_N": -float(F[k:k + n, 2].mean()), f"{g}_hub_peak_5ms_after_s": float(T[k] - event[1]),
                 f"{g}_hub_peak_5ms_phase": phases[k + n // 2], f"{g}_hub_window_peak_N": float(mag.max())})
-    after = T[:len(avg)] >= event[1]
-    if after.any():
-        out[f"{g}_hub_peak_5ms_from_event_N"] = float(avg[after].max())
+    for key, t0 in (("from_close", t_close), ("from_event", event[1])):
+        after = T[:len(avg)] >= t0
+        if after.any():
+            out[f"{g}_hub_peak_5ms_{key}_N"] = float(avg[after].max())
     return out
 
 
@@ -629,6 +632,14 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     w_tau5 = {g: (0.0, "") for g in G_}
     # Rev 2.34: every contact's 5 ms peak in each phase, the cut included.
     roll = {(g, part): Rolling(n5) for g in G_ for part in ("out", "thumb", "hub")}
+    # Rev 2.35's close window: each contact's 5 ms peak from the run's first finger or hub contact through the
+    # approach, the close or the seat, and the squeeze, where it joins the window above.
+    croll = {(g, part): Rolling(n5) for g in G_ for part in ("out", "thumb", "hub")}
+    t_first = math.nan
+    # SIM round 17: each gripper's actuator torque over the whole run, every sample over the cap flagged.
+    drive_cap = float((b1.get("drive_Nm_per_gripper") or {}).get("peak", 25.0))
+    drive_max = {g: (0.0, "") for g in G_}
+    drive_over = {g: 0 for g in G_}
 
     def face_tilt(f: str, nm: str) -> float:
         """The face's angle (deg) to the nearer of the case's axes at this instant, or nan for a one-element face."""
@@ -676,8 +687,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                             face_res_end_mm=min(s - lo, hi - s), face_tilt_deg=face_tilt(f, names[k]))
             w_best[f] = best
 
-    # The close, recorded but not scored (the coordinator, 10:35 AM PST): every sample from the run's first contact
-    # through the end of the close or the seat, a margin either side, so SIM can score a close window without reruns.
+    # The close record (the coordinator, 10:35 AM PST): every sample from the run's first contact through the
+    # approach, the close or the seat, and the squeeze, a margin either side: revision 2.35's close window.
     d_margin = float(cfg.get("close_dump_margin_s", 0.01))
     d_pre: collections.deque = collections.deque(maxlen=max(1, int(round(d_margin / (every * dt)))))
     d_rows: list[dict[str, Any]] = []
@@ -776,7 +787,7 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             d_rows.append(row)
         else:
             d_pre.append(row)
-        if math.isfinite(t_close_end) and t > t_close_end + d_margin:
+        if math.isfinite(t_sq_end) and t > t_sq_end + d_margin:
             d_state["done"] = True
 
     def dump_result() -> dict[str, Any]:
@@ -787,8 +798,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 if not k.endswith("_faces")}
         faces = {f: {nm: [sig(r[f"{f}_faces"][i]) for r in d_rows] for i, nm in enumerate(faces_of[f][0])} for f in body_of}
         return {"from_s": d_rows[0]["t"] if d_rows else math.nan, "to_s": d_rows[-1]["t"] if d_rows else math.nan,
-                "complete": d_state["done"], "sample_s": every * dt, "margin_s": d_margin,
-                "t_approach_s": t_app_end, "t_close_s": t_close_end, "approach": approach,
+                "complete": d_state["done"], "sample_s": every * dt, "margin_s": d_margin, "t_first_contact_s": t_first,
+                "t_approach_s": t_app_end, "t_close_s": t_close_end, "t_squeeze_end_s": t_sq_end, "approach": approach,
                 "preset_deg": math.degrees(preset), "close_rad_s": w_close, "approach_m_s": v_app, "seat_m_s": v_seat,
                 "contact_N": CONTACT_N, "fingers": fingers,
                 "first_contact": {nm: {k: sig(v) for k, v in d.items()} for nm, d in d_first.items()},
@@ -922,9 +933,24 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             continue
         t = data.time
         ms = measure()
+        ph_now = phase if tl is None else tl.phase(t)
         if not d_state["done"]:
-            dump_sample(t, phase, ms)
+            dump_sample(t, ph_now, ms)
         load = {g: ms["N"][fingers[g]["out"]] + ms["N"][fingers[g]["thumb"]] + float(np.linalg.norm(ms["hub"][g])) for g in G_}
+        if not math.isfinite(t_first) and max(load.values()) > CONTACT_N:
+            t_first = t
+        if math.isfinite(t_first) and phase in ("approach", "close", "seat", "squeeze"):
+            for g in G_:
+                croll[(g, "out")].add(ms["N"][fingers[g]["out"]], phase)
+                croll[(g, "thumb")].add(ms["N"][fingers[g]["thumb"]], phase)
+                croll[(g, "hub")].add(float(np.linalg.norm(ms["hub"][g])), phase)
+        for g in G_:
+            tq = abs(float(data.actuator_force[a_drive[fingers[g]["out"]]])
+                     + float(data.actuator_force[a_drive[fingers[g]["thumb"]]]))
+            if tq > drive_max[g][0]:
+                drive_max[g] = (tq, ph_now)
+            if tq > drive_cap:
+                drive_over[g] += 1
         if phase in ("squeeze", "timeline"):
             ph_s = "squeeze" if tl is None else tl.phase(t)
             for g in G_:
@@ -932,11 +958,11 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 roll[(g, "out")].add(ms["N"][fingers[g]["out"]], ph_s)
                 roll[(g, "thumb")].add(ms["N"][fingers[g]["thumb"]], ph_s)
                 roll[(g, "hub")].add(float(np.linalg.norm(ms["hub"][g])), ph_s)
-            if t <= hub_peak_end:
-                hub_pk["t"].append(t)
-                hub_pk["ph"].append(ph_s)
-                for g in G_:
-                    hub_pk[g].append(ms["hub"][g].copy())
+        if math.isfinite(t_first) and t <= hub_peak_end:
+            hub_pk["t"].append(t)
+            hub_pk["ph"].append(ph_now)
+            for g in G_:
+                hub_pk[g].append(ms["hub"][g].copy())
         if phase in ("squeeze", "timeline") and (brake_on is None or cut_before_stop):
             # Through the cut on revision 2.18's mid-move cut, as its damage limits are.
             window(t, "squeeze" if tl is None else tl.phase(t), ms)
@@ -1007,8 +1033,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 tl = T5Timeline(sc, t, shake_g, (sc.shake_lateral_hz, sc.shake_vertical_hz), float(b1.get("shake_s", 3.0)),
                                 stop_g, power_s, cut_before_stop, final_s=cfg.get("final_hold_s"))
                 t_end = tl.t_end
-                # The hub: sustained over the final hold's last 1 s; peak from the end of the close to 5 s after the
-                # stop (or, with no stop, the power cut), revision 2.34.
+                # The hub: sustained over the final hold's last 1 s; peak from the run's first contact to 5 s after
+                # the stop (or, with no stop, the power cut), revision 2.35.
                 hub_win = (tl.t_final - float(cfg.get("hub_sustained_s", 1.0)), tl.t_final)
                 hub_from = ("stop", tl.stop[0]) if tl.stop is not None else ("power cut", tl.t_power)
                 hub_peak_end = hub_from[1] + float(cfg.get("hub_peak_window_s", 5.0))
@@ -1031,13 +1057,13 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
         if brake_on is None:
             # The thumb's slide on the print: the case against the arms from the end of the squeeze to the cut.
             stats["print_slip"] = max(stats["print_slip"], float(np.linalg.norm(rel - ref_print)))
-        if ph in ("settle", "lift"):
-            continue
-        if ref is None:
+        # The whole window is scored, the settle and the lift included (SIM rounds 12, 15 and 17). Only the slip waits
+        # for the hold: it is measured from where the case sits once lifted, with the jaw's angle off its stops.
+        if ref is None and ph not in ("settle", "lift"):
             ref = rel.copy()
             for f in body_of:
                 stats["off_stop"][f] = math.degrees(stop_phi - float(data.qpos[q_f[f]]))
-        slip = float(np.linalg.norm(rel - ref))
+        slip = float(np.linalg.norm(rel - ref)) if ref is not None else 0.0
         tilt = abs(math.degrees(float(data.qpos[q_cth])))
         stats["slip_all"] = max(stats["slip_all"], slip)
         if brake_on is None:
@@ -1143,8 +1169,9 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                            "mu_hub": float(model.geom_friction[gid(hub_names["A"][0]), 0]) if hub_names["A"] else math.nan,
                            "finger_material": b1.get("finger_material", "pa12"),
                            "finger_density_kg_m3": builders["A"].density,
-                           "dropped_in": dropped_in, "t_approach_s": t_app_end, "t_close_s": t_close_end,
-                           "contact_average_s": n5 * every * dt}
+                           "dropped_in": dropped_in, "t_first_contact_s": t_first, "t_approach_s": t_app_end,
+                           "t_close_s": t_close_end, "t_squeeze_end_s": t_sq_end, "contact_average_s": n5 * every * dt,
+                           "drive_cap_Nm": drive_cap, "drive_over_cap": any(drive_over.values())}
     for g in G_:
         f_o, f_t = fingers[g]["out"], fingers[g]["thumb"]
         hub = np.array(stats["hold"]["hub"][g]) if stats["hold"]["hub"][g] else np.zeros((1, 3))
@@ -1172,10 +1199,17 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             f"{g}_out_peak_N": stats["peak_N"][f_o], f"{g}_thumb_peak_N": stats["peak_N"][f_t],
         })
         res.update(_hub_readings(g, hub_sus[g], hub_pk["t"], hub_pk[g], hub_pk["ph"], hub_from, every * dt,
-                                 float(cfg.get("hub_peak_avg_s", 0.005))))
+                                 float(cfg.get("hub_peak_avg_s", 0.005)), t_close_end))
         res.update(sensors[g].readings(f"{g}_"))
         for part in ("out", "thumb", "hub"):
             res[f"{g}_{part}_phase_5ms_N"] = roll[(g, part)].phases()
+            cp = croll[(g, part)].by_phase
+            k = max(cp, key=cp.get) if cp else ""
+            res[f"{g}_{part}_close_5ms_N"] = cp[k] if k else 0.0
+            res[f"{g}_{part}_close_5ms_phase"] = k
+            res[f"{g}_{part}_close_phase_5ms_N"] = croll[(g, part)].phases()
+        res[f"{g}_drive_max_Nm"], res[f"{g}_drive_max_phase"] = drive_max[g]
+        res[f"{g}_drive_over_cap_s"] = drive_over[g] * every * dt
         n_hub = res[f"{g}_hub_hold_N"]
         n_all = n_hub + res[f"{g}_out_N_hold"] + res[f"{g}_thumb_N_hold"]
         res[f"{g}_hub_share"] = n_hub / n_all if n_all > 1e-9 else math.nan
