@@ -31,7 +31,8 @@ python -m graspsim2d describe                      # design space, concepts, obj
 python -m graspsim2d screen crowned                # analytic screen of a concept's nominal design
 python -m graspsim2d simulate self_aligning --objects hbo_28oz,b_flute_3mm --plot traces.png
 python -m graspsim2d search --out runs/first_pass  # the full ideate / simulate / iterate loop
-python -m graspsim2d search --quick --out runs/smoke   # tiny budget, about 2 minutes
+python -m graspsim2d search --quick --out runs/smoke   # tiny budget, one round, about 2 minutes
+python -m graspsim2d search --quick --rounds 2 --out runs/smoke2   # tiny budget, two rounds
 python -m graspsim2d figures runs/first_pass       # redraw the figures of a finished run
 ```
 
@@ -205,7 +206,9 @@ Each round:
    score alone, starting from the archive's best design for it.
 3. **Simulate.** The top `finalists_per_concept` distinct designs of every
    concept and each object's specialist are run through the MuJoCo check on
-   every object.
+   every object. A design already checked in an earlier round (typically a
+   specialist the new round could not beat) is not run again; it keeps its
+   results, and the new reason is added to its `why` list.
 4. **Learn.** Per object and criterion, the ratio of dynamic to analytic margin
    (25th percentile of all runs so far, clipped to [0.25, 2]) corrects the
    screen in the next round. The dynamic check's slip is a displacement, so the
@@ -226,11 +229,11 @@ the finalist with the highest dynamic margin on that object.
 | file | contents |
 |---|---|
 | `results.json` | the all-rounder, best design per object, best per concept, and every finalist with its per-object dynamic and analytic results |
-| `round1.json`, `round2.json`, ... | per-round summaries and the learned corrections |
-| `archive.json` | every analytic evaluation (concept, variables, per-object scores) |
+| `round1.json`, `round2.json`, ... | per-round summaries, the learned corrections, and the earlier designs each round reselected (`carried`) |
+| `archive.json` | the analytic evaluations kept from each round (concept, variables, per-object scores): every Latin hypercube sample, the final evolved population and each per-object result; intermediate differential-evolution evaluations are not stored |
 | `search.log` | progress and the final report |
 | `*.yaml` | the inputs of the run |
-| `figures/` | `first-pass-best-designs.png` (all-rounder and per-object best, closed on each object), `concepts-nominal.png`, `concepts-best.png`, `object-library.png`, `pass-matrix.png`, `iteration-progress.png`, `designs-in-bounds.png`, `shake-traces.png` |
+| `figures/` | `first-pass-best-designs.png` (all-rounder and per-object best, closed on each object), `concepts-nominal.png` (analytic screen results), `concepts-best.png` (MuJoCo results), `object-library.png`, `pass-matrix.png`, `iteration-progress.png`, `designs-in-bounds.png`, `shake-traces.png` (all-rounder time histories, including the share of available friction used) |
 
 ## Tests
 

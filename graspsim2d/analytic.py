@@ -416,7 +416,8 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
         "pitch_demand_Nm": m_dem,
         "pitch_capacity_Nm": m_cap,
         "pads": ",".join(p.name for p in used_pads),
-        "pad_rotation_deg": math.degrees(rot),
+        "pad_align_deg": math.degrees(_pad_rotation(ld) - math.radians(d.pad_angle)) if pivot_pad is not None else 0.0,
+        "pad_pitch_rotation_deg": math.degrees(rot),
         "max_pad_strain": float(ld.pad_strain.max()),
     }
     return GripResult(d, obj.id, ok=True, margins=margins, info=info)
