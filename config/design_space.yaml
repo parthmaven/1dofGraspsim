@@ -1,0 +1,41 @@
+# Bounding box of design variables for the 2D 1-DoF two-finger gripper.
+#
+# PLACEHOLDER RANGES. They bracket the nominal gripper (finger pivots 38 mm
+# apart, fingertip 150 mm forward of the pivots) until Parth sends his own
+# variables and ranges. To use his bounding box, edit the ranges below and
+# rerun; nothing else changes.
+#
+# Per variable:
+#   range: [lower, upper]   searched interval (set lower == upper, or use
+#                           `value: x`, to fix a variable)
+#   unit:                   optional; mm, cm, m, in, deg, rad, N*m, lbf*in, ...
+#                           values are converted to the schema unit
+#   nominal:                optional; used for inactive variables
+#   placeholder: true       marks a range that nobody has confirmed yet
+# Variables left out are fixed at the schema nominal (graspsim2d/schema.py).
+
+variables:
+  pivot_spacing:      {range: [30, 46],   unit: mm,      nominal: 38,   placeholder: true}
+  finger_reach:       {range: [130, 170], unit: mm,      nominal: 150,  placeholder: true}
+  finger_thickness:   {range: [8, 18],    unit: mm,      nominal: 12,   placeholder: true}
+  crank_offset:       {range: [0, 24],    unit: mm,      nominal: 0,    placeholder: true}
+  crank_position:     {range: [0.25, 0.6], unit: "1",    nominal: 0.45, placeholder: true}
+  pad_length:         {range: [15, 70],   unit: mm,      nominal: 40,   placeholder: true}
+  pad_thickness:      {range: [2, 12],    unit: mm,      nominal: 6,    placeholder: true}
+  pad_angle:          {range: [-15, 15],  unit: deg,     nominal: 0,    placeholder: true}
+  pad_tip_margin:     {range: [0, 30],    unit: mm,      nominal: 5,    placeholder: true}
+  pad_width:          {range: [20, 80],   unit: mm,      nominal: 40,   placeholder: true}
+  pad_shore:          {range: [30, 70],   unit: shoreA,  nominal: 40,   placeholder: true}
+  pad_crown_curvature: {range: [0, 33],   unit: 1/m,     nominal: 0,    placeholder: true,
+                        note: "0 = flat face; 33 1/m = 30 mm crown radius"}
+  finger_torque:      {range: [1, 12],    unit: N*m,     nominal: 5,    placeholder: true,
+                        note: "per finger, at the pivot; a 1-DoF drive with one torque limit for every object"}
+  max_opening:        {value: 35,         unit: deg,     placeholder: true,
+                        note: "fixed: the search has no cost for a longer stroke"}
+  pad2_offset:        {range: [35, 75],   unit: mm,      nominal: 55,   placeholder: true}
+  pad2_length:        {range: [15, 40],   unit: mm,      nominal: 30,   placeholder: true}
+  pad2_angle:         {range: [-5, 15],   unit: deg,     nominal: 6,    placeholder: true}
+  pad2_protrusion:    {range: [-6, 6],    unit: mm,      nominal: 0,    placeholder: true}
+  pivot_depth:        {range: [4, 20],    unit: mm,      nominal: 8,    placeholder: true}
+  pivot_stiffness:    {range: [0.02, 3],  unit: N*m/rad, nominal: 0.3,  placeholder: true}
+  pivot_range:        {range: [3, 20],    unit: deg,     nominal: 8,    placeholder: true}

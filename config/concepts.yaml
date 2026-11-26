@@ -1,0 +1,69 @@
+# Distinct finger-shape concepts. Each one is a topology (pad style and finger
+# form) plus the subset of design variables it searches. Ranges come from
+# design_space.yaml; `narrow` can only tighten them.
+#
+# Shared problem: an angular jaw closes about 15 degrees further on a thin
+# sheet than on a 60 mm cereal box, so one flat pad cannot lie flat on both.
+# Each concept answers that differently.
+
+concepts:
+  straight_flat:
+    label: "C1 straight finger, flat angled pad"
+    pad_style: flat
+    idea: >
+      Baseline. One flat elastomer pad on a straight finger; the pad angle is
+      a single compromise between box and sheet closing angles.
+    active: [pivot_spacing, finger_reach, finger_thickness, pad_length, pad_thickness,
+             pad_angle, pad_tip_margin, pad_width, pad_shore, finger_torque]
+    fixed: {crank_offset: 0, pad_crown_curvature: 0}
+
+  cranked_flat:
+    label: "C2 cranked finger, flat pad"
+    pad_style: flat
+    idea: >
+      Crank the distal finger inward so the fingers are parallel when closed
+      on thin board (lit review section 8.2), then angle the pad for boxes.
+    active: [pivot_spacing, finger_reach, finger_thickness, crank_offset, crank_position,
+             pad_length, pad_thickness, pad_angle, pad_tip_margin, pad_width, pad_shore,
+             finger_torque]
+    fixed: {pad_crown_curvature: 0}
+    narrow: {crank_offset: [6, 24]}
+
+  crowned:
+    label: "C3 crowned (convex) pad"
+    pad_style: crowned
+    idea: >
+      A convex pad face rolls its contact point along the pad as the closing
+      angle changes, so the contact normal stays square to any object face.
+      Costs contact length (pressure, pitch stiffness).
+    active: [pivot_spacing, finger_reach, finger_thickness, crank_offset, crank_position,
+             pad_length, pad_thickness, pad_angle, pad_tip_margin, pad_width, pad_shore,
+             pad_crown_curvature, finger_torque]
+    narrow: {pad_crown_curvature: [2.5, 33]}
+
+  dual_zone:
+    label: "C4 dual-zone finger (tip pad + box pad)"
+    pad_style: dual
+    idea: >
+      Two pads with their own angles. Closing on a box the fingers diverge,
+      so the proximal box pad touches first; closing on a sheet they
+      converge, so the distal tip pad touches first. The jaw angle selects
+      the zone.
+    active: [pivot_spacing, finger_reach, finger_thickness, crank_offset, crank_position,
+             pad_length, pad_thickness, pad_angle, pad_tip_margin, pad_width, pad_shore,
+             finger_torque, pad2_offset, pad2_length, pad2_angle, pad2_protrusion]
+    fixed: {pad_crown_curvature: 0}
+    narrow: {pad_length: [10, 30], pad_tip_margin: [0, 10]}
+
+  self_aligning:
+    label: "C5 sprung self-aligning pad"
+    pad_style: pivoting
+    idea: >
+      The pad sits on a passive pin with a centring spring and stops, like a
+      carton-clamp pad, so it lies flat on any face. Adds a passive joint per
+      finger; resists pitch only through friction and the spring until it
+      reaches its stop.
+    active: [pivot_spacing, finger_reach, finger_thickness, crank_offset, crank_position,
+             pad_length, pad_thickness, pad_angle, pad_tip_margin, pad_width, pad_shore,
+             finger_torque, pivot_depth, pivot_stiffness, pivot_range]
+    fixed: {pad_crown_curvature: 0}

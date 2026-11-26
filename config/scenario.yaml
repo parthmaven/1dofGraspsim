@@ -1,0 +1,80 @@
+# How each object is presented, the motion sequence, and what counts as a
+# successful grasp. Defaults until Parth says otherwise; every value is
+# configurable.
+
+presentation:
+  box:
+    # Cereal box standing upright on a table. The gripper comes straight down,
+    # centred, and the jaw closes across the box depth (front to back panel).
+    # How far the box goes into the jaw is the robot's choice per known object:
+    #   best:           try insertion_scan depths from the pad-registered depth
+    #                   down to max_insertion_mm and keep the best grasp
+    #   pad_registered: box top sits clearance_mm above the proximal end of the
+    #                   box-gripping pad, so the whole pad meets the box
+    #   fixed:          insertion_depth_mm for every design
+    fixture: table
+    insertion: best
+    insertion_scan: 5
+    clearance_mm: 5
+    insertion_depth_mm: 70    # fixed mode: box top this far above the fingertip line
+    max_insertion_mm: 110     # never deeper than this
+    lateral_offset_mm: 0
+  sheet:
+    # Sheet held edge-up in a holder; the jaw pinches near the free top edge,
+    # the way the old box flaps were pinched (lit review 8.1: 20-40 mm, 30 ref).
+    # The holder lets go once the jaw has closed, and the sheet then hangs.
+    fixture: holder
+    insertion: fixed
+    insertion_depth_mm: 30
+    lateral_offset_mm: 0
+
+gripper:
+  count: 1                    # one gripper grasps each object (not a mirrored pair)
+  torque_mode: fixed          # one drive torque (design variable) for every object
+  closing_speed_rad_s: 1.0    # free closing speed; sets drive damping
+  closed_limit_deg: -25       # finger angle at full close (negative = converging)
+
+sequence:
+  close_s: 0.9                # sheets are released from the holder at the end of closing
+  settle_s: 0.25
+  lift_height_mm: 80
+  lift_s: 0.5                 # minimum-jerk lift
+  hold_s: 0.3
+  shake:
+    duration_s: 2.0           # sinusoids with 0.25 s ramps at each end
+    lateral:  {peak_accel_g: 0.5, freq_hz: 2.0}
+    vertical: {peak_accel_g: 0.5, freq_hz: 3.0}
+  final_hold_s: 0.5
+
+pass_criteria:
+  # A grasp passes if the object is lifted and held through the shake without
+  # slipping, crushing, or creasing the board.
+  max_slip_mm: 2.0            # pad-to-object tangential slip after the grip settles
+  max_rotation_deg: 10.0      # object rotation relative to the gripper
+  # Crushing: peak pad pressure must stay below each object's allowable
+  # (objects.yaml), and a box must not be squeezed in its unsupported headspace
+  # harder than its panel force limit.
+  # Creasing (sheets): bending moment where the sheet leaves the pinch must
+  # stay below bending strength x width / safety factor.
+  pressure_safety_factor: 1.0
+  crease_safety_factor: 1.0
+  crease_width: pad           # pad: only the pinched strip carries the moment (conservative)
+
+# Multiplies every pad-on-object friction coefficient in objects.yaml
+# (e.g. 0.8 for a low-friction sensitivity run).
+friction_scale: 1.0
+
+analytic:
+  # Level 0 screen only; the dynamic check applies the criteria above directly.
+  friction_safety_factor: 1.5
+  pitch_safety_factor: 1.5
+
+sim:
+  timestep_s: 0.0001
+  contact_timeconst_s: 0.0002 # contacts several times stiffer than the pad element springs
+  pad_element_pitch_mm: 4.0   # pad faces are split into spring elements this long
+  element_frequency_hz: 250   # pad element springs are given armature to sit at this frequency
+  element_damping_ratio: 0.3
+  sheet_segment_mm: 50        # sheets are hinged chains; hinge stiffness = D * width / length
+  servo_kp: 2.0e6             # gripper base position servo, N/m
+  record_hz: 200
