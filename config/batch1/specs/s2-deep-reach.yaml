@@ -3,6 +3,7 @@
 # Frame: graspsim2d finger-local, mm. u along the finger, v inward; the face plane is v = 17.75.
 # Geometry check: internal/gripper-review/scripts/sr-spec-check.py.
 # The lane is reworked (see notes): the box pads go on the tooth beyond the undercut, and the arm is set back.
+# The brief's S2 is r2 p0 12 (r1 080), plan item 9's search pick, at finger_reach 159.36, pad_thickness 5.01, pad_shore 42.7, arm_offset 29.99, tooth_wedge 1.63, ramp_len 10.54, tooth_len 28.99, chisel_len 17.92 and tip_land 1.05, the rest as drawn; the nominals below stay the drawn S2's (internal/gripper-review/batch-1-rerun-reports.md, "Item 2 on S2").
 
 id: S2
 name: Deep reach claw
@@ -189,6 +190,10 @@ notes: >
   bending limit [A]. As built, on the printed mount and today's bearings, it rates about 5 kg
   for a short lift (the mount's arm with K_t 2, 5.4 kg) and about 3 kg held, and the bearing next
   to the gear reaches s0 0.95 at 12 kg, so trials follow GM's cap (SR memo, hinge check).
+  Hooking the 15 kg bin is the tighter case as built: at the drive's 12.5 N m per finger, the
+  claw's hook load and the gear's push put about 1.0 kN on the bearing next to the gear, against
+  its 0.84 kN rating (s0 0.83), while the next phase's 6002-2RS carries it at s0 about 2.8, or
+  2.3 in stainless (SR memo, the gear force at the hinge).
   Out-of-plane envelope: the arm and tooth are 100 to 110 mm tall and sit top-aligned with the
   platform root (z -1.6 to -112 in the platform frame), inside the 161 mm finger and the
   gripper's 170 mm stack (z -171 to -1), so T5's slot is 210 by 120 mm. G2, foreign material:
