@@ -687,9 +687,42 @@ def block_t3() -> list[dict[str, Any]]:
     return jobs
 
 
+TORQUE_PASS_DESIGNS = ("S1", "S2", "S3", "S5", "S6", "S4")
+# The torque pass's T3 squeeze is aimed at 12.8 - 15 N per finger, scaled from each design's stainless T3 squeeze at
+# its spec torque: S1 23.8 N and S2 21.0 N at 3 N m, S6 14.6 N at 2 N m.
+T3_TORQUE_PASS_NM = {"S1": (1.65, 1.75, 1.85), "S2": (1.85, 2.0, 2.1), "S6": (1.75, 1.9, 2.0)}
+
+
+def block_torque() -> list[dict[str, Any]]:
+    """Block C's per-product torque pass: each rigid design at the 45 deg reading over the platform's torque band
+    (0.25 - 6 N m per finger), T1 nominal on the boxes at catalog fill and T2 at the 30 mm pinch on the sheets, as the
+    platform's band was run. S2's grips are judged on MuJoCo's friction x0.8 run, so its boxes and sheets add that run
+    at every torque. S4 comes last."""
+    boxes, sheets = _boxes_sheets()
+    x08 = float(ctx()["b1"].get("robust_friction", 0.8))
+    jobs = []
+    for d in TORQUE_PASS_DESIGNS:
+        judged = {"x08_only": True} if d == "S2" else {"nominal_only": True}
+        for tau in TORQUE_BAND:
+            v = {"finger_torque": tau}
+            jobs += t1_jobs("torque", d, 45.0, boxes, fills=("catalog",), values=v, nobrake=False, **judged)
+            t2 = t2_jobs("torque", d, 45.0, sheets, pinches=(30.0,), extras=False, values=v)
+            if d == "S2":
+                t2 += [{**j, "case": "friction x0.8", "friction_scale": x08, "power_s": 1.0} for j in t2 if j["job"] == "mj"]
+            jobs += t2
+    return jobs
+
+
+def block_t3_torque() -> list[dict[str, Any]]:
+    """The torque pass's T3: S1, S2 and S6 at the torques that aim their squeeze at 12.8 - 15 N per finger."""
+    return [{**j, "block": "t3torque", "values": {"finger_torque": tau}}
+            for j in block_t3() if j["design"] in T3_TORQUE_PASS_NM for tau in T3_TORQUE_PASS_NM[j["design"]]]
+
+
 BLOCKS = {"refs": block_refs, "s2": block_s2, "s4": block_s4, "s5": block_s5, "s3p0": block_s3_sheets_platform,
           "s1s6": block_s1_s6, "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose,
-          "t5cut": block_t5_cut, "t5": block_t5, "t5tips": block_t5_tips, "t3": block_t3}
+          "t5cut": block_t5_cut, "t5": block_t5, "t5tips": block_t5_tips, "t3": block_t3, "torque": block_torque,
+          "t3torque": block_t3_torque}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:
@@ -738,11 +771,15 @@ def add_verdicts(rows: list[dict[str, Any]]) -> None:
             done[_job_key(r)] = r
     x08 = {}
     t3: dict[tuple, list[dict[str, Any]]] = {}
+
+    def t3_key(r: dict[str, Any]) -> tuple:
+        return r.get("block"), r.get("design"), r.get("reading"), json.dumps(r.get("values") or {}, sort_keys=True)
+
     for r in done.values():
         if r.get("case") == "friction x0.8":
             x08[_job_key({**r, "case": None, "friction_scale": None, "power_s": None}, ("lateral_mm",))] = r
         if r.get("test") == "T3" and r.get("rated"):
-            t3.setdefault((r.get("block"), r.get("design"), r.get("reading"), r.get("values")), []).append(r)
+            t3.setdefault(t3_key(r), []).append(r)
     for r in rows:
         if r.get("kind") != "mujoco" or r.get("case") not in ("nominal", "pinch 30"):
             continue
@@ -753,7 +790,7 @@ def add_verdicts(rows: list[dict[str, Any]]) -> None:
         if r.get("test") == "T3":
             # Revision 2.23: the centred runs, the gap sensitivities and the first box out; the corners and the 20 mm
             # entry are reported only.
-            rated = t3.get((r.get("block"), r.get("design"), r.get("reading"), r.get("values")), [])
+            rated = t3.get(t3_key(r), [])
             fails = sorted(x["case"] for x in rated if not x.get("passed"))
             r.update(verdict=not fails, verdict_basis=(f"rated rows fail: {', '.join(fails)}" if fails else
                                                        f"all {len(rated)} rated rows pass"))

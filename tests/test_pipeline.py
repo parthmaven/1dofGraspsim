@@ -910,6 +910,34 @@ def test_t4_torque_is_set_per_task(batch1):
     assert c["b1"]["drive_duty"] == {"peak_event_s": 10.0, "cycle_rms_Nm": 7.0}
 
 
+def test_batch1_torque_pass_runs_the_platform_band(batch1):
+    # Block C's per-product torque pass: S1 - S6 over the platform's band, T1 nominal at catalog fill and T2 at the
+    # 30 mm pinch, S4 last. S2's grips are judged on MuJoCo's friction x0.8 run, on its boxes and its sheets.
+    jobs = batch1.block_torque()
+    band = batch1.TORQUE_BAND
+    assert band[0] == 0.25 and band[-1] == 6.0 and len(band) == 24
+    assert jobs[-1]["design"] == "S4" and {j["design"] for j in jobs} == {"S1", "S2", "S3", "S4", "S5", "S6"}
+    scans = [j for j in jobs if j["job"] == "scan"]
+    assert len(scans) == 6 * 24 * 13 and {j["fill"] for j in scans} == {"catalog"}
+    assert all(j["nobrake"] is False and j["values"]["finger_torque"] in band for j in scans)
+    assert all(bool(j.get("x08_only")) == (j["design"] == "S2") != bool(j.get("nominal_only")) for j in scans)
+    t2 = [j for j in jobs if j["job"] == "mj"]
+    assert {j["test"] for j in t2} == {"T2"} and {j["depth_mm"] for j in t2} == {30.0}
+    assert len(t2) == 6 * 24 * 7 + 24 * 7 and {j["design"] for j in t2 if j["case"] == "friction x0.8"} == {"S2"}
+    scan = {**next(j for j in scans if j["design"] == "S2"), "simulate": True, "depth_mm": 20.0, "table_cap_mm": 200.0,
+            "stop_mm": None}
+    assert [f["case"] for f in batch1.t1_followups(scan)] == ["nominal", "friction x0.8"]
+    assert batch1.get_jaw("S6", 45.0, {"finger_torque": 0.25}).torque == pytest.approx(0.25)
+    # Its T3 aims S1's, S2's and S6's squeeze at 12.8 - 15 N per finger, each torque its own verdict.
+    t3 = batch1.block_t3_torque()
+    assert {j["design"] for j in t3} == {"S1", "S2", "S6"} and len(t3) == 3 * 3 * 7
+    rows = [{**j, "kind": "mujoco", "passed": j["values"]["finger_torque"] == 1.75 or j["case"].startswith("corner")}
+            for j in t3 if j["design"] == "S1"]
+    batch1.add_verdicts(rows)
+    assert {r["values"]["finger_torque"]: r["verdict"] for r in rows if r["case"] == "nominal"} == {
+        1.65: False, 1.75: True, 1.85: False}
+
+
 def test_batch1_rescore_uses_the_first_pass_objects(batch1):
     lib = batch1.fp_library()
     assert len(lib.objects) == 14 and lib.by_id("b_flute_3mm").material.bare_friction == pytest.approx(0.35)
