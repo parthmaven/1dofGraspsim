@@ -75,18 +75,26 @@ def root_margins(b1: dict[str, Any], static_MPa: float, hold_MPa: float, factor:
 
 def footprint(best: dict[str, Any], allow_kPa: float, humid_kPa: float, pitch_mm: float, flush_mm: float) -> dict[str, Any]:
     """SIM round 12's footprint rule on a 5 ms window's loaded face, with the contact's whole normal force: a flush
-    face (tilt x length at most `flush_mm`) is read over its whole area when the resultant lies in its middle third,
-    else over three times the resultant's distance from the loaded end at twice the mean; anything else is an edge,
-    read as force per width against the pressure limit x the board's flute pitch."""
+    face (tilt x length at most `flush_mm`) is read over its whole drawn area when the resultant lies in its middle
+    third, else over three times the resultant's distance from the loaded end at twice the mean; anything else is an
+    edge, read as force per width against the pressure limit x the board's flute pitch. Revision 2.41: a floor read
+    whole (S4's) is read over its ruled area while its resultant lies in its band and under the ruled share of the load
+    sits off it; otherwise its loaded face is read as above."""
     out: dict[str, Any] = {"footprint": "", "footprint_mm2": math.nan, "rated": math.nan, "rated_unit": "",
                            "rated_margin": math.nan, "rated_margin_humid": math.nan}
     N, L, w = float(best.get("N", 0.0)), best.get("face_len_mm", math.nan), best.get("face_w_mm", math.nan)
+    if best.get("floor_in_band"):
+        area = float(best["floor_mm2"])
+        p = N / area * 1e3
+        out.update(footprint="floor, in its band", footprint_mm2=area, rated=p, rated_unit="kPa",
+                   rated_margin=allow_kPa / max(p, 1e-9), rated_margin_humid=humid_kPa / max(p, 1e-9))
+        return out
     if not best.get("face") or not (math.isfinite(L) and math.isfinite(w) and w > 0):
         return out
     tilt, frac, e = best.get("face_tilt_deg", math.nan), best.get("face_res_frac", math.nan), best.get("face_res_end_mm", 0.0)
     if math.isfinite(tilt) and math.radians(tilt) * L <= flush_mm:
         whole = 1.0 / 3.0 <= frac <= 2.0 / 3.0
-        area = L * w if whole else 3.0 * max(e, 1e-6) * w
+        area = float(best.get("face_mm2", L * w)) if whole else 3.0 * max(e, 1e-6) * w
         p = (1.0 if whole else 2.0) * N / area * 1e3
         out.update(footprint="flush" if whole else "flush, off its middle third", footprint_mm2=area, rated=p,
                    rated_unit="kPa", rated_margin=allow_kPa / max(p, 1e-9), rated_margin_humid=humid_kPa / max(p, 1e-9))
@@ -670,7 +678,12 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
     n5 = max(1, int(round(float(cfg.get("contact_average_s", 0.005)) / dt)))
     faces_of: dict[str, tuple[list[str], list[np.ndarray]]] = {}
     el_s = np.zeros(n_el)
-    face_ext: dict[tuple[str, str], tuple[float, float, float]] = {}
+    el_u = np.array([e.u for _, _, e, _ in els])
+    face_ext: dict[tuple[str, str], tuple[float, float, float, float]] = {}
+    # Revision 2.41: a design whose outside finger's floor is read whole (S4's: `bare9`, the land `bare5` and the land
+    # corner's element on `bare6`, over 4,965 mm^2 while the resultant lies in u 76.0 - 104.0).
+    floor = (cfg.get("floors") or {}).get(jaw.concept)
+    floor_of = {fingers[g]["out"] for g in G_} if floor else set()
 
     def axis(P: np.ndarray) -> np.ndarray | None:
         """The principal direction of a face's element centres, or None for a one-element face."""
@@ -691,7 +704,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                 s = (P - P.mean(axis=0)) @ d if d is not None else np.zeros(len(ix))
                 el_s[ix] = s
                 seg = np.array([els[i][2].seg for i in ix])
-                face_ext[(f, nm)] = (float((s - seg / 2).min()), float((s + seg / 2).max()), float(els[ix[0]][2].w * 1e3))
+                face_ext[(f, nm)] = (float((s - seg / 2).min()), float((s + seg / 2).max()), float(els[ix[0]][2].w * 1e3),
+                                     builders[g].drawn[(els[ix[0]][2].side, nm)])
     w_buf = {f: collections.deque(maxlen=n5) for f in body_of}
     w_best: dict[str, dict[str, Any]] = {f: {"N": 0.0} for f in body_of}
     w_one = {f: (0.0, "") for f in body_of}
@@ -747,7 +761,8 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             if N > w_one[f][0]:
                 w_one[f] = (N, ph)
             buf = w_buf[f]
-            buf.append((t, ph, N, N * r if math.isfinite(r) else 0.0, fF, fM))
+            fU = np.array([(Fc[ix] * el_u[ix]).sum() for ix in groups]) if f in floor_of else None
+            buf.append((t, ph, N, N * r if math.isfinite(r) else 0.0, fF, fM, fU))
             if len(buf) < n5:
                 continue
             avg = sum(b[2] for b in buf) / n5
@@ -760,10 +775,20 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
                     "face": names[k] if k >= 0 else "", "face_N": float(fFa[k]) if k >= 0 else 0.0,
                     "faces": {names[i]: round(float(fFa[i]), 2) for i in range(len(names)) if fFa[i] > 0.5}}
             if k >= 0 and fFa[k] > 1e-9:
-                lo, hi, w_mm = face_ext[(f, names[k])]
+                lo, hi, w_mm, a_mm2 = face_ext[(f, names[k])]
                 s = float(fMa[k] / fFa[k])
-                best.update(face_len_mm=hi - lo, face_w_mm=w_mm, face_res_frac=(s - lo) / max(hi - lo, 1e-9),
+                best.update(face_len_mm=hi - lo, face_w_mm=w_mm, face_mm2=a_mm2, face_res_frac=(s - lo) / max(hi - lo, 1e-9),
                             face_res_end_mm=min(s - lo, hi - s), face_tilt_deg=face_tilt(f, names[k]))
+            if f in floor_of:
+                on = [i for i, nm in enumerate(names) if nm in floor["faces"]]
+                fUa = sum(b[6] for b in buf) / n5
+                F_fl = float(sum(fFa[i] for i in on))
+                u_fl = float(sum(fUa[i] for i in on)) / F_fl if F_fl > 1e-9 else math.nan
+                lo_u, hi_u = (float(x) for x in floor["band_u_mm"])
+                off = max(avg - F_fl, 0.0)
+                best.update(floor_N=F_fl, floor_u_mm=u_fl, floor_off_N=off, floor_mm2=float(floor["area_mm2"]),
+                            floor_in_band=bool(F_fl > 1e-9 and lo_u <= u_fl <= hi_u
+                                               and off < float(floor.get("off_share", 0.02)) * avg))
             w_best[f] = best
 
     # The close record (the coordinator, 10:35 AM PST): every sample from the run's first contact through the
@@ -1371,8 +1396,12 @@ def _run_t5(model, data, jaw: Jaw, case: GraspObject, sc: Scenario, b1: dict, cf
             res[f"{g}_{part}_5ms_s"] = wb.get("t", math.nan)
             res[f"{g}_{part}_5ms_r_mm"] = wb.get("r_mm", math.nan)
             res[f"{g}_{part}_5ms_faces"] = wb.get("faces", {})
-            for k in ("face", "face_N", "face_len_mm", "face_w_mm", "face_res_frac", "face_res_end_mm", "face_tilt_deg"):
+            for k in ("face", "face_N", "face_len_mm", "face_w_mm", "face_mm2", "face_res_frac", "face_res_end_mm",
+                      "face_tilt_deg"):
                 res[f"{g}_{part}_5ms_{k}"] = wb.get(k, "" if k == "face" else math.nan)
+            if f in floor_of:
+                for k in ("floor_N", "floor_u_mm", "floor_off_N", "floor_mm2", "floor_in_band"):
+                    res[f"{g}_{part}_5ms_{k}"] = wb.get(k, False if k == "floor_in_band" else math.nan)
             res[f"{g}_{part}_window_peak_N"], res[f"{g}_{part}_window_peak_phase"] = w_one[f]
             res[f"{g}_{part}_contact_mm"] = mean(stats["hold"]["span"][f]) * 1e3
             res[f"{g}_{part}_off_stop_deg"] = stats["off_stop"][f]

@@ -335,6 +335,12 @@ def element_layout(face: Face, pitch: float, fine_pitch: float, short: float = S
     return {"c": centres, "n": normals, "seg": seg, "th": th, "w": widths}
 
 
+def drawn_area(face: Face, cap: float = math.inf, n: int = 801) -> float:
+    """A face's drawn area (mm^2): its out-of-plane width, at most `cap`, integrated along it."""
+    pts, _, ds, _ = face.pad.face_samples(n)
+    return float(sum(min(face.width_at(float(p[0])), cap) * d for p, d in zip(pts, ds)))
+
+
 def convex_corners(js: JawSide, gap: float = 0.6, min_turn_deg: float = 30.0) -> dict[tuple[str, int], tuple]:
     """Each face end that meets another face's end at a convex corner of the finger, keyed (face name, 0 for its
     first sample or -1 for its last), to (the other face, its end, its outward normal there, the corner point).

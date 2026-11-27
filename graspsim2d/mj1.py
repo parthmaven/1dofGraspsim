@@ -32,7 +32,7 @@ import mujoco
 import numpy as np
 
 from .geometry import to_view
-from .jaw import Jaw, JawSide, convex_corners, convex_pieces, element_layout
+from .jaw import Jaw, JawSide, convex_corners, convex_pieces, drawn_area, element_layout
 from .objects import G, GraspObject
 from .pads import foundation_stiffness, series, shear_stiffness
 from .scenario import Scenario
@@ -120,6 +120,28 @@ class _El:
     depth: float = 0.0  # mm along the sensor's axis below the top datum, from the element's layer
     joint2: str = ""  # a convex-corner element's second slide, along the adjacent face's normal
     adj: str = ""  # the face beyond that corner
+    u: float = math.nan  # mm, finger-local: the element's centre along the finger from its pivot
+    v: float = math.nan  # mm, finger-local: across it
+
+
+class _Roll:
+    """Each column's largest n-sample running mean."""
+
+    def __init__(self, n: int, m: int):
+        self.n = max(1, int(n))
+        self.buf = np.zeros((self.n, m))
+        self.acc = np.zeros(m)
+        self.best = np.zeros(m)
+        self.k = 0
+        self.full = False
+
+    def add(self, v: np.ndarray) -> None:
+        self.acc += v - self.buf[self.k]
+        self.buf[self.k] = v
+        self.k = (self.k + 1) % self.n
+        self.full = self.full or self.k == 0
+        if self.full:
+            np.maximum(self.best, self.acc / self.n, out=self.best)
 
 
 def body_mass(js: JawSide, density: float) -> tuple[float, float]:
@@ -198,6 +220,7 @@ class _Builder:
         self.body_geoms: dict[str, int] = {}
         self.density = finger_density(b1)
         self.geom_depth: dict[str, float] = {}  # every finger geom, for the sensor's bending
+        self.drawn: dict[tuple[int, str], float] = {}  # (side, face): its drawn area against the object, mm^2
         cs = b1.get("corner_slide", {"gap_mm": 0.6, "min_turn_deg": 30.0})
         self.corner_cfg = None if not cs else {"gap": float(cs.get("gap_mm", 0.6)),
                                                "min_turn_deg": float(cs.get("min_turn_deg", 30.0))}
@@ -242,6 +265,7 @@ class _Builder:
         parts, close = [], []
         mu = self.mu_bare if face.rigid else self.mu_pad
         w_obj = self.obj.width
+        self.drawn[(side, pad.name)] = drawn_area(face, w_obj * 1e3)
         if not face.rigid:
             w = min(face.width * 1e-3, w_obj)
             t_n = pad.normal_thickness
@@ -315,7 +339,8 @@ class _Builder:
             tz_view = abs(float(np.cos(phi) * nv - np.sin(phi) * nu))  # |dz| per unit length along the face
             depth = layer_depth(self.b1, self.jaw.sides[side], float(cu), float(cv), float(lay["w"][j]))
             self.geom_depth[jn] = depth
-            self.elements.append(_El(jn, jn, side, face.kind, pad.name, area, seg, w, seg * max(tz_view, 0.05), depth, jn2, adj))
+            self.elements.append(_El(jn, jn, side, face.kind, pad.name, area, seg, w, seg * max(tz_view, 0.05), depth, jn2, adj,
+                                     float(cu), float(cv)))
         return "".join(parts) + "".join(close)
 
 
@@ -623,10 +648,30 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
     box_H = obj.height
     fill_rel = -obj.headspace if box else -math.inf
     band = lim.band_mm * 1e-3
-    every = 4 * b.substeps
+    # Revision 2.36: every physics step is read, for the first touch and every 5 ms average (100 steps at 0.05 ms):
+    # the model's first impacts last about 0.25 ms. The rated single-sample peaks keep one sample every
+    # `peak_sample_s` (0.4 ms), as they were rated; their every-step maxima are kept beside them, not rated.
+    every = max(1, int(round(float(b1.get("peak_sample_s", 4 * b.substeps * dt)) / dt)))
     n_mean = max(1, int(round(float(b1.get("friction_mean_ms", 10.0)) * 1e-3 / (every * dt))))
     fric_win: deque = deque(maxlen=n_mean)
     cone_run = {1: 0, -1: 0}
+    n_avg = max(1, int(round(float(b1.get("contact_average_s", 0.005)) / dt)))
+    # Revision 2.31's edge rule, over the main phase: a grip face whose contact sits more than `edge_off_normal_deg`
+    # off its normal is an edge, read as its contact force over its width as a 5 ms average; a flush face keeps its
+    # rated reading, an element's spring over its area, or at its stop the face's contact force over the face's area.
+    edge_deg = float(b1.get("edge_off_normal_deg", 1.0))
+    g_faces = list(dict.fromkeys((int(s), str(f)) for s, f, g in zip(el_side, el_face, el_grip) if g))
+    el_fid = np.full(n_el, len(g_faces), dtype=int)
+    for k, (s, f) in enumerate(g_faces):
+        el_fid[(el_side == s) & (el_face == f) & el_grip] = k
+    nF = len(g_faces)
+    f_w = np.array([el_w[el_fid == k][0] * 1e3 for k in range(nF)])
+    f_area = np.array([el_area[el_fid == k].sum() * 1e6 for k in range(nF)])
+    # Per finger (R then L): band force, panel force, bed pressure, all-grip pressure, body load.
+    roll = {"close": _Roll(n_avg, 10), "main": _Roll(n_avg, 10), "edge": _Roll(n_avg, nF)}
+    pk_step = {"close": np.zeros(10), "main": np.zeros(10)}
+    edge_single = np.zeros(nF)
+    flush = (0.0, "")
 
     def contacts():
         n = data.ncon
@@ -641,17 +686,20 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
 
     def measure():
         """Per element: load from its spring, or from the contact force at its stop (pads and marked faces;
-        test conditions 2.16) and always for unmarked bare faces, which count as body contact. Per finger: body
-        load, friction use, and the tangential force and friction capacity behind it."""
+        test conditions 2.16) and always for unmarked bare faces, which count as body contact; its contact force times
+        that contact's angle (deg) off the element's normal; whether it reads its spring. Per finger: body load,
+        friction use, and the tangential force and friction capacity behind it."""
         c = contacts()
         Fc = np.zeros(n_el)
+        Fa = np.zeros(n_el)
         body = {1: 0.0, -1: 0.0}
         fric = {1: 0.0, -1: 0.0}
         tang = {1: 0.0, -1: 0.0}
         caps = {1: 0.0, -1: 0.0}
         spring = spring_loads(data, el_sp, el_grip)
+        sprung = ~np.isnan(spring)
         if c is None:
-            return np.where(np.isnan(spring), 0.0, spring), Fc, body, fric, tang, caps
+            return np.where(sprung, spring, 0.0), Fc, body, fric, tang, caps, Fa, sprung
         con, n, g1, g2, adr, ok, fn = c
         e1, e2 = el_of_geom[g1], el_of_geom[g2]
         o1, o2 = is_obj[g1], is_obj[g2]
@@ -659,7 +707,13 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         s2 = (e2 >= 0) & o1 & ok
         np.add.at(Fc, e1[s1], fn[s1])
         np.add.at(Fc, e2[s2], fn[s2])
-        F = np.where(np.isnan(spring), Fc, spring)
+        hit = np.concatenate([np.nonzero(s1)[0], np.nonzero(s2)[0]])
+        if len(hit):
+            ge = np.concatenate([g1[s1], g2[s2]])
+            nz = data.geom_xmat[ge].reshape(-1, 3, 3)[:, :, 2]
+            cosv = np.abs(np.sum(nz * con.frame[:n][hit, :3], axis=1))
+            np.add.at(Fa, np.concatenate([e1[s1], e2[s2]]), fn[hit] * np.degrees(np.arccos(np.minimum(cosv, 1.0))))
+        F = np.where(sprung, spring, Fc)
         for sd in (1, -1):
             bsel = (((body_side[g1] == sd) | (unmarked_side[g1] == sd)) & o2 & ok) | \
                    (((body_side[g2] == sd) | (unmarked_side[g2] == sd)) & o1 & ok)
@@ -679,7 +733,7 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
                 tang[sd], caps[sd] = float(np.linalg.norm(tw.sum(axis=0))), cap
                 if cap > 1e-6:
                     fric[sd] = tang[sd] / cap
-        return F, Fc, body, fric, tang, caps
+        return F, Fc, body, fric, tang, caps, Fa, sprung
 
     def zones(F: np.ndarray):
         """Per finger: band force, panel force, bed pressure (below the fill line only), all-grip pressure."""
@@ -779,22 +833,43 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
             unstable = True
             unstable_s = t_step
             break
-        if i % every:
-            continue
+        keep = i % every == 0
         t = data.time
         phase = tl.phase(t)
-        F, Fc, body, fric, tang, caps = measure()
+        F, Fc, body, fric, tang, caps, Fa, sprung = measure()
         if not math.isfinite(first_contact) and Fc.sum() + body[1] + body[-1] > 1e-3:
             first_contact, contact_w = float(data.qpos[a_jR]), -float(data.qvel[d_jR])
         zn = zones(F)
+        if phase in ("close", "main"):
+            zv = np.array([*zn[1], body[1], *zn[-1], body[-1]])
+            roll[phase].add(zv)
+            np.maximum(pk_step[phase], zv, out=pk_step[phase])
+        if phase == "main" and nF:
+            Ff = np.bincount(el_fid, weights=Fc, minlength=nF + 1)[:nF]
+            ang = np.divide(np.bincount(el_fid, weights=Fa, minlength=nF + 1)[:nF], Ff, out=np.zeros(nF), where=Ff > 1e-9)
+            q = np.where(ang > edge_deg, Ff / f_w, 0.0)
+            roll["edge"].add(q)
+            if keep:
+                np.maximum(edge_single, q, out=edge_single)
+                on = np.nonzero((Fc > 0.0) & (el_fid < nF))[0]
+                if len(on):
+                    fk = el_fid[on]
+                    rd = np.where(sprung[on], F[on] / el_area[on] / 1e3, Ff[fk] / f_area[fk] * 1e3)
+                    rd = np.where(ang[fk] <= edge_deg, rd, 0.0)
+                    j = int(np.argmax(rd))
+                    if rd[j] > flush[0]:
+                        flush = (float(rd[j]), els[on[j]].geom)
         if phase == "close":
-            for sd in (1, -1):
-                peaks["i_band"] = max(peaks["i_band"], zn[sd][0])
-                peaks["i_panel"] = max(peaks["i_panel"], zn[sd][1])
-                peaks["i_bed"] = max(peaks["i_bed"], zn[sd][2])
-                peaks["i_body"] = max(peaks["i_body"], body[sd])
-            if t >= tl.t_settle - 0.02 - every * dt and ref is None:
-                pass
+            if keep:
+                for sd in (1, -1):
+                    peaks["i_band"] = max(peaks["i_band"], zn[sd][0])
+                    peaks["i_panel"] = max(peaks["i_panel"], zn[sd][1])
+                    peaks["i_bed"] = max(peaks["i_bed"], zn[sd][2])
+                    peaks["i_body"] = max(peaks["i_body"], body[sd])
+                if t >= tl.t_settle - 0.02 - every * dt and ref is None:
+                    pass
+            continue
+        if not keep:
             continue
         if ref is None:
             loaded = F > 1e-3
@@ -901,7 +976,8 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
                            "contact_rad_s": contact_w, "close_brakes": brake_floor < 0.0,
                            "close_s": tl.t_close, "finger_torque_Nm": tau,
                            "mount_fatigue_flag": bool(tau >= float(b1.get("mount_fatigue_Nm_per_finger", 4.0)) - 1e-9),
-                           "substeps": b.substeps, "reset_flag": bool(unstable)}
+                           "substeps": b.substeps, "reset_flag": bool(unstable), "sample_s": dt,
+                           "peak_sample_s": every * dt, "contact_average_s": n_avg * dt}
     if unstable:
         # Test conditions 2.15: a run that blows up is flagged and rerun, never scored as a fail.
         row.update(reason=f"simulation went unstable at {unstable_s:.4f} s in {phase}; flagged, not scored",
@@ -998,6 +1074,19 @@ def _run(model, data, jaw: Jaw, obj: GraspObject, sc: Scenario, b1: dict, lim: L
         "element_faces": {f: int(np.sum((el_side == 1) & (el_face == f))) for f in dict.fromkeys(el_face[el_side == 1].tolist())},
         "element_pitch_mm": {"long": b.pitch, "short_or_curved": b.fine},
     })
+    for ph, pre in (("main", ""), ("close", "impact_")):
+        for j, (k, unit, scale) in enumerate((("band", "N", 1.0), ("panel", "N", 1.0), ("bed", "kPa", 1e-3),
+                                              ("pressure", "kPa", 1e-3), ("body", "N", 1.0))):
+            row[f"{pre}{k}_step_{unit}"] = float(max(pk_step[ph][j], pk_step[ph][j + 5])) * scale
+            row[f"{pre}{k}_5ms_{unit}"] = float(max(roll[ph].best[j], roll[ph].best[j + 5])) * scale
+    e5 = roll["edge"].best
+    f_name = [els[int(np.nonzero(el_fid == k)[0][0])].geom.rsplit("_e", 1)[0] for k in range(nF)]
+    k5 = int(np.argmax(e5)) if nF else -1
+    row.update({"edge_off_normal_deg": edge_deg, "edge_5ms_N_per_mm": float(e5[k5]) if nF else 0.0,
+                "edge_5ms_face": f_name[k5] if nF and e5[k5] > 0.0 else "",
+                "edge_faces_5ms_N_per_mm": {f_name[k]: round(float(e5[k]), 4) for k in range(nF) if e5[k] > 0.0},
+                "edge_single_N_per_mm": float(edge_single.max()) if nF else 0.0,
+                "flush_kPa": flush[0], "flush_element": flush[1]})
     if record:
         row["trace"] = {k: np.asarray(v) for k, v in trace.items()}
     return row

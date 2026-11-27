@@ -19,13 +19,14 @@ Built on the first pass's screen (analytic.py, which PR #2's pipeline keeps), wi
   pressure couple only up to that couple's stiffness times the rotation limit (SIM, round 9).
 * At a sheet's 20 mm pinch, "pads bottom out" is reported for MuJoCo, not as a verdict.
 
-Symmetric jaws only: an asymmetric jaw (S4) runs in MuJoCo alone.
+Symmetric jaws only: an asymmetric jaw (S4) is scored in MuJoCo alone. Its insertion scan screens each finger as a
+mirrored pair, and the jaw's grip at a depth is the worse finger's, stopped where either finger stops.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 import numpy as np
@@ -508,15 +509,26 @@ class BoxScan:
         return out
 
 
+def finger_pair(jaw: Jaw, side: int) -> Jaw:
+    """One finger of a jaw as a mirrored pair (each side's geometry is drawn in its own mirrored view)."""
+    return replace(jaw, sides={1: jaw.sides[side], -1: jaw.sides[side]}, symmetric=True)
+
+
 def scan_box(jaw: Jaw, obj: GraspObject, sc: Scenario, lim: Limits, tau: float | None = None) -> BoxScan:
-    S = _side(jaw.right, obj, lim.friction_scale)
+    pairs = [jaw] if jaw.symmetric else [finger_pair(jaw, s) for s in (1, -1)]
+    sides = [_side(p.right, obj, lim.friction_scale) for p in pairs]
+
+    def solve_at(depth: float) -> Grip:
+        gs = [solve(p, obj, sc, lim, depth, S, tau) for p, S in zip(pairs, sides)]
+        return next((g for g in gs if g.status == "stop"), None) or min(gs, key=lambda g: (g.ok, g.score))
+
     cap, cap_why = insertion_cap(jaw, obj, sc)
     step = lim.step
     grid: dict[float, Grip] = {}
     ended = f"reached the cap ({cap_why}, {cap:.0f} mm)"
     d = step
     while d <= cap + 1e-6:
-        g = solve(jaw, obj, sc, lim, d, S, tau)
+        g = solve_at(d)
         grid[round(d, 3)] = g
         if g.status == "stop":
             ended = f"depth stop at {d:.0f} mm: {g.reason}"
@@ -536,7 +548,7 @@ def scan_box(jaw: Jaw, obj: GraspObject, sc: Scenario, lim: Limits, tau: float |
         why = grid[round(last, 3)].reason
         for _ in range(4):
             mid = 0.5 * (lo + hi)
-            g = solve(jaw, obj, sc, lim, mid, S, tau)
+            g = solve_at(mid)
             if g.status == "stop":
                 hi, why = mid, g.reason
             else:
@@ -544,21 +556,21 @@ def scan_box(jaw: Jaw, obj: GraspObject, sc: Scenario, lim: Limits, tau: float |
         stop_at = round(lo, 3)
         ended = f"depth stop at {stop_at:.1f} mm: {why}"
         if stop_at > 0:
-            grid.setdefault(stop_at, solve(jaw, obj, sc, lim, stop_at, S, tau))
+            grid.setdefault(stop_at, solve_at(stop_at))
             x_stop = round(stop_at - lim.placement, 3)
             if x_stop > 0:
-                grid.setdefault(x_stop, solve(jaw, obj, sc, lim, x_stop, S, tau))
+                grid.setdefault(x_stop, solve_at(x_stop))
         deepest = min(cap, stop_at - lim.placement)
         depths = sorted(grid)
     elif depths:
         extra = round(last + lim.placement, 3)
         if extra not in grid:
-            grid[extra] = solve(jaw, obj, sc, lim, extra, S, tau)
+            grid[extra] = solve_at(extra)
 
     def sc_of(x: float) -> float:
         g = grid.get(round(x, 3))
         if g is None and x > 0:
-            g = grid[round(x, 3)] = solve(jaw, obj, sc, lim, x, S, tau)
+            g = grid[round(x, 3)] = solve_at(x)
         return g.score if (g is not None and g.ok) else 0.0
 
     best = None

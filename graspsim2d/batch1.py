@@ -208,6 +208,8 @@ def job_scan(job: dict[str, Any]) -> dict[str, Any]:
     g = r.nominal
     row["status"] = g.status if g is not None else "nogrip"
     row["simulate"] = bool(g is not None and g.status != "nogrip" and math.isfinite(r.depth) and (g.ok or g.status == "mujoco"))
+    if not j.symmetric:
+        row["scan_basis"] = "each finger as a mirrored pair, the worse at each depth; the depth only, scored in MuJoCo"
     if not row["simulate"]:
         row["not_simulated"] = (g.reason if g is not None else "") or r.ended
     return {**row, **_torque_flag(j)}
@@ -479,6 +481,13 @@ def block_s2() -> list[dict[str, Any]]:
             + t2_jobs("s2", "S2", 45.0, sheets))
 
 
+def block_s4() -> list[dict[str, Any]]:
+    """Block C: S4's pinches at the 45 deg reading (plan item 8), boxes and its sheets. Its jaw is asymmetric, so the
+    boxes' placement corners run on both sides."""
+    boxes, sheets = _boxes_sheets()
+    return t1_jobs("s4", "S4", 45.0, boxes) + t2_jobs("s4", "S4", 45.0, sheets)
+
+
 def block_s3_sheets_platform() -> list[dict[str, Any]]:
     """Block 4: S3 at the 15 N top band with its sensitivities, the sheets for S1, S3 and S5, and the
     platform as built."""
@@ -678,9 +687,9 @@ def block_t3() -> list[dict[str, Any]]:
     return jobs
 
 
-BLOCKS = {"refs": block_refs, "s2": block_s2, "s5": block_s5, "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6,
-          "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose, "t5cut": block_t5_cut,
-          "t5": block_t5, "t5tips": block_t5_tips, "t3": block_t3}
+BLOCKS = {"refs": block_refs, "s2": block_s2, "s4": block_s4, "s5": block_s5, "s3p0": block_s3_sheets_platform,
+          "s1s6": block_s1_s6, "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose,
+          "t5cut": block_t5_cut, "t5": block_t5, "t5tips": block_t5_tips, "t3": block_t3}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:

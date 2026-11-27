@@ -277,7 +277,7 @@ def simulate_t4(jaw: Jaw, sc: Scenario, b1: dict[str, Any], case: str = "t4b", w
     cfg = b1.get("t4", {}) or {}
     lip = t4_lip(b1)
     ct = container(b1, case, which)
-    tau = jaw.torque if tau is None else float(tau)
+    tau = float((cfg.get("torque_Nm_per_finger") or {}).get(case, jaw.torque)) if tau is None else float(tau)
     shake_g = float((b1.get("shake_g") or {}).get("T4", 0.25)) if shake_g is None else float(shake_g)
     stop_g = float(cfg.get("stop_g", 1.0)) if stop_g is None else float(stop_g)
     pc = b1.get("power_cut") or {}
@@ -485,7 +485,7 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
     body_f = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"finger{nm}") for nm in names_f]
     el_s = np.zeros(len(els))
     faces_of: dict[int, tuple[list[str], list[np.ndarray]]] = {}
-    face_ext: dict[tuple[int, str], tuple[float, float, float]] = {}
+    face_ext: dict[tuple[int, str], tuple[float, float, float, float]] = {}
     el_f = np.array([f for f, _ in els], dtype=int)
     for f in range(nf):
         idx = np.nonzero(el_f == f)[0]
@@ -499,7 +499,8 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
             s = (P - P.mean(axis=0)) @ d if d is not None else np.zeros(len(ix))
             el_s[ix] = s
             seg = np.array([els[k][1].seg for k in ix])
-            face_ext[(f, nm)] = (float((s - seg / 2).min()), float((s + seg / 2).max()), float(els[ix[0]][1].w * 1e3))
+            face_ext[(f, nm)] = (float((s - seg / 2).min()), float((s + seg / 2).max()), float(els[ix[0]][1].w * 1e3),
+                                 builders[gs[f // 2]].drawn[(els[ix[0]][1].side, nm)])
     flush_mm = float(cfg.get("flush_mm", (b1.get("t5") or {}).get("flush_mm", 0.25)))
 
     def contacts():
@@ -556,9 +557,9 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
                     "face": fnames[k] if k >= 0 else "", "face_N": float(fFa[k]) if k >= 0 else 0.0,
                     "faces": {fnames[i]: round(float(fFa[i]), 2) for i in range(len(fnames)) if fFa[i] > 0.5}}
             if k >= 0 and fFa[k] > 1e-9:
-                lo, hi, w_mm = face_ext[(f, fnames[k])]
+                lo, hi, w_mm, a_mm2 = face_ext[(f, fnames[k])]
                 s = float(fMa[k] / fFa[k])
-                best.update(face_len_mm=hi - lo, face_w_mm=w_mm, face_res_frac=(s - lo) / max(hi - lo, 1e-9),
+                best.update(face_len_mm=hi - lo, face_w_mm=w_mm, face_mm2=a_mm2, face_res_frac=(s - lo) / max(hi - lo, 1e-9),
                             face_res_end_mm=min(s - lo, hi - s), face_tilt_deg=face_tilt(f, fnames[k]))
             w_best[f] = best
 
@@ -682,12 +683,18 @@ def _run(model, data, sc: Scenario, b1: dict, cfg: dict, builders: dict, gs: lis
         best = w_best[f]
         row[f"{nm}_5ms_N"], row[f"{nm}_5ms_phase"] = best["N"], best.get("phase", "")
         row[f"{nm}_5ms_face"], row[f"{nm}_5ms_faces"] = best.get("face", ""), best.get("faces", {})
-        for k in ("face_N", "face_len_mm", "face_w_mm", "face_res_frac", "face_res_end_mm", "face_tilt_deg"):
+        for k in ("face_N", "face_len_mm", "face_w_mm", "face_mm2", "face_res_frac", "face_res_end_mm", "face_tilt_deg"):
             row[f"{nm}_5ms_{k}"] = best.get(k, math.nan)
         fp = footprint(best, math.nan, math.nan, 8.0, flush_mm)
         row.update({f"{nm}_5ms_{k}": fp[k] for k in ("footprint", "footprint_mm2", "rated", "rated_unit")})
+    # Rev 2.42's duty limit, for information: the drive holds its set torque from the close to the power cut, as one
+    # event; the RMS limit sets the shortest work cycle that event allows.
+    duty = b1.get("drive_duty") or {}
+    event_s = tl.t_power - t_close0
     row.update({"ok": not unstable and ref is not None, "reset_flag": bool(unstable), "sample_s": dt,
-                "seat_average_s": n_avg * dt, "close_brakes": brake_floor < 0.0})
+                "seat_average_s": n_avg * dt, "close_brakes": brake_floor < 0.0, "drive_event_s": event_s,
+                "drive_event_ok": bool(event_s <= float(duty.get("peak_event_s", 10.0))),
+                "drive_cycle_min_s": event_s * (2.0 * tau / float(duty.get("cycle_rms_Nm", 7.0))) ** 2})
     if unstable:
         row.update(reason=f"simulation went unstable at {unstable_s:.4f} s; flagged, not scored", unstable_s=unstable_s,
                    passed=None, score=None, limiting=None)

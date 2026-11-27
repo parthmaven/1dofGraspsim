@@ -781,6 +781,15 @@ def test_batch1_brake_holds_the_power_cut(batch1):
     assert held["substeps"] == 2  # r2-09's short faces split at the 1.5 mm fine pitch
     assert 0.0 < held["friction_use"] <= held["friction_use_sample_peak"] + 1e-9
     assert held["pressure_kPa"] > 0.0 and held["pressure_kPa_contact_sample"] > 0.0
+    # Revision 2.36: contacts are read at every physics step. The rated peaks keep one sample per 0.4 ms; the
+    # every-step maxima and the largest 5 ms averages sit beside them.
+    assert held["sample_s"] < held["peak_sample_s"] == pytest.approx(4e-4)
+    assert held["contact_average_s"] == pytest.approx(0.005)
+    for k in ("band", "panel", "body"):
+        assert held[f"{k}_step_N"] >= max(held[f"{k}_N"], held[f"{k}_5ms_N"]) - 1e-9
+        assert held[f"impact_{k}_step_N"] >= max(held[f"impact_{k}_N"], held[f"impact_{k}_5ms_N"]) - 1e-9
+    assert held["pressure_step_kPa"] >= max(held["pressure_kPa"], held["pressure_5ms_kPa"]) - 1e-6
+    assert held["pressure_5ms_kPa"] > 0.0
     loose = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5, brake=1.0, friction_scale=0.8)
     assert not loose["power_cut_held"] and loose["pass_rule"] == "holds: slip and rotation"
     hold = loose["dropped_in"] != "main" and loose["margins"]["slip"] >= 1.0 and loose["margins"]["rotation"] >= 1.0
@@ -803,6 +812,11 @@ def test_batch1_close_brakes_to_the_slow_speed(batch1):
     assert on["approach_opening_deg"] - on["touch_plan_deg"] > cl["slow_deg"]
     assert on["contact_rad_s"] == pytest.approx(cl["slow_rad_s"], rel=0.15)
     assert off["contact_rad_s"] == pytest.approx(cl["fast_rad_s"], rel=0.1)
+    # Revision 2.31's edge rule, read at every step over the main phase: each grip face's largest 5 ms average of its
+    # contact force over its width while more than 1 deg off its normal, and the flush faces' rated reading.
+    assert on["edge_off_normal_deg"] == 1.0 and on["contact_average_s"] == pytest.approx(0.005)
+    assert on["edge_5ms_N_per_mm"] == pytest.approx(max(on["edge_faces_5ms_N_per_mm"].values(), default=0.0), abs=1e-3)
+    assert on["flush_kPa"] >= 0.0 and isinstance(on["flush_element"], str)
 
 
 def test_batch1_blown_up_runs_stop_instead_of_restarting(batch1, monkeypatch):
@@ -858,6 +872,42 @@ def test_batch1_select_runs_part_of_a_block(batch1):
     assert len(platform) + len(batch1.select(jobs, ["r2-09"])) == len(jobs)
     one = batch1.select(jobs, ["r2-09"], ["gm_016000163492"])
     assert one and {(j["design"], j["object"]) for j in one} == {("r2-09", "gm_016000163492")}
+
+
+def test_batch1_s4_block_scans_each_finger(batch1):
+    from graspsim2d.screen1 import Limits, finger_pair, scan_box
+
+    c = batch1.ctx()
+    jobs = batch1.block_s4()
+    scans = [j for j in jobs if j["job"] == "scan"]
+    assert len(scans) == 13 * len(batch1.FILLS) and {j["design"] for j in jobs} == {"S4"}
+    assert len([j for j in jobs if j["job"] == "mj"]) == len([j for j in batch1.block_s2() if j["job"] == "mj"]) == 32
+    # An asymmetric jaw's insertion scan screens each finger as a mirrored pair, the worse finger at each depth,
+    # stopped where either stops. It sets the depth only: the jaw is scored in MuJoCo, with the placement corners on
+    # both sides.
+    row = batch1.run_job(next(j for j in scans if j["object"] == "gm_cheerios_family_18oz" and j["fill"] == "catalog"))
+    assert row["simulate"] and row["scan_basis"].startswith("each finger as a mirrored pair")
+    assert row["depth_mm"] <= row["stop_mm"] - 3.0 + 1e-6
+    cases = {f["case"] for f in batch1.t1_followups(row, False)}
+    assert cases == {"nominal", "corner deep+", "corner shallow+", "corner deep-", "corner shallow-", "friction x0.8"}
+    # A symmetric jaw's mirrored pair is the jaw itself.
+    j2 = batch1.get_jaw("S2", 45.0)
+    o = batch1.get_obj("gm_cheerios_family_18oz", "catalog")
+    lim = Limits.from_config(c["b1"], "T1")
+    a, b = scan_box(j2, o, c["sc"], lim), scan_box(finger_pair(j2, 1), o, c["sc"], lim)
+    assert a.depth == b.depth and a.robust == pytest.approx(b.robust)
+
+
+def test_t4_torque_is_set_per_task(batch1):
+    from graspsim2d.t4 import simulate_t4
+
+    # Revision 2.42: T4a and the bin runs at the drive's 25 N m peak per gripper, T4b at 8 N m per finger. S1's T4a
+    # fails on geometry before any MuJoCo run.
+    c = batch1.ctx()
+    assert c["b1"]["t4"]["torque_Nm_per_finger"] == {"t4a": 12.5, "t4b": 8.0}
+    r = simulate_t4(batch1.get_jaw("S1", 45.0), c["sc"], c["b1"], "t4a")
+    assert r["finger_torque_Nm"] == 12.5 and r["limiting"] == "geometry"
+    assert c["b1"]["drive_duty"] == {"peak_event_s": 10.0, "cycle_rms_Nm": 7.0}
 
 
 def test_batch1_rescore_uses_the_first_pass_objects(batch1):
@@ -1000,9 +1050,16 @@ def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
         assert r[p + "face"] == face and r[p + "face_N"] >= 0.9 * r[p + "N"] > 0.0
         assert r[p + "footprint"].startswith("flush") and r[p + "rated_unit"] == "kPa"
         whole = r[p + "footprint"] == "flush"
-        area = r[p + "face_w_mm"] * (r[p + "face_len_mm"] if whole else 3 * r[p + "face_res_end_mm"])
+        area = r[p + "face_mm2"] if whole else r[p + "face_w_mm"] * 3 * r[p + "face_res_end_mm"]
         assert r[p + "footprint_mm2"] == pytest.approx(area)
         assert r[p + "rated"] == pytest.approx((1 if whole else 2) * r[p + "N"] / area * 1e3)
+    # A whole face's area is its drawn area: the thumb's step is an even 70 mm wide, and the floor narrows to 48.5 mm.
+    assert r["A_thumb_5ms_face_mm2"] == pytest.approx(r["A_thumb_5ms_face_w_mm"] * r["A_thumb_5ms_face_len_mm"], rel=1e-3)
+    assert r["A_out_5ms_face_mm2"] == pytest.approx(4497.0, rel=1e-3)
+    # Revision 2.41: the floor is read whole over 4,965 mm² while its resultant lies in u 76 - 104 with under 2 % of the
+    # load off it. Seated on its stops with no shake, the floor carries the load at about u 62, so the face rule reads it.
+    assert r["A_out_5ms_floor_mm2"] == 4965.0 and r["A_out_5ms_floor_N"] == pytest.approx(r["A_out_5ms_N"], rel=0.02)
+    assert r["A_out_5ms_floor_u_mm"] < 76.0 and not r["A_out_5ms_floor_in_band"]
     # The drive's 25 N*m peak caps each gripper, 12.5 N*m a finger motor; the root is rated against PA12's allowables.
     assert r["drive_capped_at_Nm"] == pytest.approx(25.0) and r["root_fatigue_factor"] == pytest.approx(1.5)
     for g in "AB":
@@ -1098,6 +1155,10 @@ def test_t4b_s4_seats_both_lips_on_the_tote(batch1):
     assert p["outside_below_lip_mm"] <= lip["free_wall_mm"] and p["inside_below_rim_mm"] <= 50.0
     r = simulate_t4(j, c["sc"], {**c["b1"], "shake_s": 0.0}, "t4b", "tote", tau=8.0, stop_g=0.0, power_s=0.2)
     assert r["ok"] and not r["reset_flag"] and r["finger_torque_Nm"] == 8.0 and r["close_brakes"]
+    # Revision 2.42's duty limit, for information: one event from the close to the power cut, and the shortest work
+    # cycle the 7 N m RMS limit allows at 16 N m per gripper.
+    assert 0.0 < r["drive_event_s"] <= 10.0 and r["drive_event_ok"]
+    assert r["drive_cycle_min_s"] == pytest.approx(r["drive_event_s"] * (16.0 / 7.0) ** 2)
     assert r["sample_s"] < 1e-4 and r["seat_average_s"] == pytest.approx(0.005)
     # Each gripper's outside finger seats its own lip, A's right on the +x lip and B's left (the mirrored jaw's
     # outside finger) on the -x lip, each carrying half the 15 kg.
@@ -1207,6 +1268,25 @@ def test_t5_root_margins_and_footprint_rule(batch1):
     assert fp["footprint"] == "edge" and fp["rated_unit"] == "N/mm" and fp["rated"] == pytest.approx(27.2 / 70.0)
     assert fp["rated_margin"] == pytest.approx(0.84 / (27.2 / 70.0))
     assert footprint({"N": 0.0}, 105.0, 63.0, 8.0, 0.25)["footprint"] == ""
+    # A flush face's whole area is its drawn area, where the builder drew one ...
+    assert footprint({**best, "face_mm2": 1800.0}, 105.0, 63.0, 8.0, 0.25)["footprint_mm2"] == 1800.0
+    # ... and revision 2.41 reads S4's floor whole, over its ruled 4,965 mm², while its resultant sits in its band.
+    fp = footprint({**best, "N": 239.0, "floor_in_band": True, "floor_mm2": 4965.0}, 105.0, 63.0, 8.0, 0.25)
+    assert fp["footprint"] == "floor, in its band" and fp["footprint_mm2"] == 4965.0
+    assert fp["rated_margin_humid"] == pytest.approx(63.0 / (239.0 / 4965.0 * 1e3))
+    cfg = batch1.ctx()["b1"]["t5"]["floors"]["S4"]
+    assert cfg["area_mm2"] == 4965.0 and cfg["band_u_mm"] == [76.0, 104.0] and set(cfg["faces"]) == {"bare9", "bare5", "bare6"}
+
+
+def test_drawn_area_integrates_the_face_width(batch1):
+    from graspsim2d.jaw import drawn_area
+
+    # S4's floor, 48.5 - 97 mm wide over its 62 mm, against SIM's 4,497 mm², and its 10 mm land at 60 mm, the
+    # worker's 600; a narrower object caps the width.
+    faces = {f.name: f for f in batch1.get_jaw("S4", 45.0).right.faces}
+    assert drawn_area(faces["bare9"]) == pytest.approx(4497.0, rel=1e-3)
+    assert drawn_area(faces["bare5"]) == pytest.approx(600.0, rel=1e-3)
+    assert drawn_area(faces["bare5"], cap=5.0) == pytest.approx(50.0, rel=1e-3)
 
 
 def test_t5_on_stainless_keeps_the_printed_hub(batch1):
