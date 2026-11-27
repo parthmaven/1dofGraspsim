@@ -920,7 +920,10 @@ def test_batch1_torque_pass_runs_the_platform_band(batch1):
     scans = [j for j in jobs if j["job"] == "scan"]
     assert len(scans) == 6 * 24 * 13 and {j["fill"] for j in scans} == {"catalog"}
     assert all(j["nobrake"] is False and j["values"]["finger_torque"] in band for j in scans)
-    assert all(bool(j.get("x08_only")) == (j["design"] == "S2") != bool(j.get("nominal_only")) for j in scans)
+    judged = {d: {(bool(j.get("x08_only")), bool(j.get("nominal_only")), j.get("depth_rule")) for j in scans if j["design"] == d}
+              for d in batch1.TORQUE_PASS_DESIGNS}
+    assert judged == {"S2": {(True, False, None)}, "S4": {(False, False, "2.43")},
+                      **{d: {(False, True, None)} for d in ("S1", "S3", "S5", "S6")}}
     t2 = [j for j in jobs if j["job"] == "mj"]
     assert {j["test"] for j in t2} == {"T2"} and {j["depth_mm"] for j in t2} == {30.0}
     assert len(t2) == 6 * 24 * 7 + 24 * 7 and {j["design"] for j in t2 if j["case"] == "friction x0.8"} == {"S2"}
@@ -936,6 +939,39 @@ def test_batch1_torque_pass_runs_the_platform_band(batch1):
     batch1.add_verdicts(rows)
     assert {r["values"]["finger_torque"]: r["verdict"] for r in rows if r["case"] == "nominal"} == {
         1.65: False, 1.75: True, 1.85: False}
+
+
+def test_batch1_s4_depth_rule_rates_the_best_held_depth(batch1):
+    # Revision 2.43: S4's T1 nominal at (a) the mirrored-pair scan's robust depth, (b) the stop less 3 mm and (c) the
+    # best depth with the contact below the fill line, coinciding depths once. The rated depth is the best-held nominal
+    # whose x0.8 run and corners hold too, then the next, then (a).
+    jobs = batch1.block_s4_depth()
+    assert len(jobs) == 13 * len(batch1.FILLS) and all(j["depth_rule"] == "2.43" and j["nobrake"] is False for j in jobs)
+    scan = {**jobs[0], "fill": "catalog", "kind": "screen", "test": "T1", "simulate": True, "depth_mm": 27.0,
+            "stop_mm": 46.5, "cap_mm": 110.5, "table_cap_mm": 269.0, "deep_depth_mm": math.nan}
+    assert batch1.t1_depth_candidates(scan) == [("a", 27.0), ("b", 43.5)]
+    assert batch1.t1_depth_candidates({**scan, "depth_mm": 43.5, "deep_depth_mm": 30.0}) == [("a=b", 43.5), ("c", 30.0)]
+    assert batch1.t1_depth_candidates({**scan, "stop_mm": math.nan}) == [("a", 27.0), ("b", 110.5)]
+    noms = batch1.t1_followups(scan, False)
+    assert [(f["case"], f["depth_mm"], f["depth_candidate"]) for f in noms] == [("nominal", 27.0, "a"), ("nominal", 43.5, "b")]
+    # The follow-ups run only where a nominal holds: x0.8 at catalog fill and the corners on both sides, the deep ones
+    # on the stop.
+    held = [{**noms[0], "kind": "mujoco", "passed": False, "score": 0.0}, {**noms[1], "kind": "mujoco", "passed": True, "score": 1.4}]
+    fu = batch1.t1_depth_followups(scan, held, False)
+    assert {f["depth_candidate"] for f in fu} == {"b"} and sorted(f["case"] for f in fu) == [
+        "corner deep+", "corner deep-", "corner shallow+", "corner shallow-", "friction x0.8"]
+    assert {f["depth_mm"] for f in fu if f["case"].startswith("corner deep")} == {46.5}
+
+    def rated(failing: str = "") -> list[dict]:
+        rows = [dict(r) for r in held] + [{**f, "kind": "mujoco", "passed": f["case"] != failing} for f in fu]
+        batch1.add_verdicts(rows)
+        return rows[:2]
+
+    a, b = rated()
+    assert (a["verdict"], b["verdict"]) == (None, True) and b["verdict_basis"].startswith("rev 2.43: rated at (b)")
+    a, b = rated("corner shallow-")
+    assert (a["verdict"], b["verdict"]) == (False, None) and a["depth_rule_alt"] == "b"
+    assert "no candidate whose nominal holds also holds its x0.8 run and corners" in a["verdict_basis"]
 
 
 def test_batch1_rescore_uses_the_first_pass_objects(batch1):

@@ -393,6 +393,9 @@ def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str,
     if scan.get("stop_mm") is not None and math.isfinite(scan["stop_mm"] or math.nan):
         deep = min(deep, float(scan["stop_mm"]))
     deep = min(deep, table)
+    if scan.get("depth_rule") == DEPTH_RULE:
+        return [{**keep, "job": "mj", "test": "T1", "case": "nominal", "depth_mm": x, "lateral_mm": 0.0,
+                 "depth_rule": DEPTH_RULE, "depth_candidate": tag} for tag, x in t1_depth_candidates(scan)]
     out = [{**keep, "job": "mj", "test": "T1", "case": "nominal", "depth_mm": d, "lateral_mm": 0.0}]
     x08 = {**keep, "job": "mj", "test": "T1", "case": "friction x0.8", "depth_mm": d, "lateral_mm": 0.0,
            "friction_scale": float(c["b1"].get("robust_friction", 0.8)), "power_s": 1.0}
@@ -412,6 +415,51 @@ def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str,
             out.append({**keep, "job": "mj", "test": "T1", "case": case, "depth_mm": d, "lateral_mm": 0.0, "power_s": 1.0,
                         **over})
     return out
+
+
+DEPTH_RULE = "2.43"
+
+
+def t1_depth_candidates(scan: dict[str, Any]) -> list[tuple[str, float]]:
+    """Revision 2.43's T1 depths: (a) the mirrored-pair scan's robust depth, (b) the deepest the robust rule allows, the
+    stop less the placement error, and (c) the scan's best depth with the contact all below the fill line, where one
+    exists. A depth that coincides with an earlier one runs once, under both labels."""
+    place = float(ctx()["b1"].get("placement_mm", 3.0))
+
+    def finite(x: Any) -> float | None:
+        return float(x) if x is not None and math.isfinite(float(x)) else None
+
+    stop = finite(scan.get("stop_mm"))
+    deepest = min(x for x in (finite(scan.get("cap_mm")), finite(scan.get("table_cap_mm")),
+                              None if stop is None else stop - place) if x is not None)
+    out: list[tuple[str, float]] = []
+    for tag, x in (("a", finite(scan["depth_mm"])), ("b", deepest), ("c", finite(scan.get("deep_depth_mm")))):
+        if x is None:
+            continue
+        i = next((k for k, (_, y) in enumerate(out) if abs(y - x) < 0.05), None)
+        if i is None:
+            out.append((tag, x))
+        else:
+            out[i] = (f"{out[i][0]}={tag}", out[i][1])
+    return out
+
+
+def t1_depth_followups(scan: dict[str, Any], nominals: list[dict[str, Any]], symmetric: bool) -> list[dict[str, Any]]:
+    """Revision 2.43, once every candidate's nominal is in: the friction x0.8 run (where T1 runs one) and the +-3 mm
+    corners at each candidate whose nominal holds, so the rule's choice reads from runs already made."""
+    out = []
+    for r in nominals:
+        if r.get("kind") != "mujoco" or r.get("reset_flag") or not r.get("passed"):
+            continue
+        at = {**scan, "depth_mm": r["depth_mm"], "depth_rule": None, "nominal_only": False, "x08_only": False}
+        out += [{**f, "depth_rule": DEPTH_RULE, "depth_candidate": r["depth_candidate"]}
+                for f in t1_followups(at, symmetric)[1:]]
+    return out
+
+
+def _depth_group(r: dict[str, Any]) -> str:
+    return _job_key({**r, "test": "T1", "case": None, "depth_mm": None, "lateral_mm": None, "friction_scale": None,
+                     "power_s": None})
 
 
 def t2_jobs(block: str, design: str, reading: float, sheets: Iterable[str], pinches: Iterable[float] = PINCHES,
@@ -486,6 +534,12 @@ def block_s4() -> list[dict[str, Any]]:
     boxes' placement corners run on both sides."""
     boxes, sheets = _boxes_sheets()
     return t1_jobs("s4", "S4", 45.0, boxes) + t2_jobs("s4", "S4", 45.0, sheets)
+
+
+def block_s4_depth() -> list[dict[str, Any]]:
+    """Revision 2.43: S4's T1 boxes at every fill at its 4.0 N m, each rated at the depth rule's candidate."""
+    boxes, _ = _boxes_sheets()
+    return t1_jobs("s4depth", "S4", 45.0, boxes, depth_rule=DEPTH_RULE, nobrake=False)
 
 
 def block_s3_sheets_platform() -> list[dict[str, Any]]:
@@ -697,12 +751,12 @@ def block_torque() -> list[dict[str, Any]]:
     """Block C's per-product torque pass: each rigid design at the 45 deg reading over the platform's torque band
     (0.25 - 6 N m per finger), T1 nominal on the boxes at catalog fill and T2 at the 30 mm pinch on the sheets, as the
     platform's band was run. S2's grips are judged on MuJoCo's friction x0.8 run, so its boxes and sheets add that run
-    at every torque. S4 comes last."""
+    at every torque. S4 comes last, its boxes rated by revision 2.43's depth rule."""
     boxes, sheets = _boxes_sheets()
     x08 = float(ctx()["b1"].get("robust_friction", 0.8))
     jobs = []
     for d in TORQUE_PASS_DESIGNS:
-        judged = {"x08_only": True} if d == "S2" else {"nominal_only": True}
+        judged = {"x08_only": True} if d == "S2" else {"depth_rule": DEPTH_RULE} if d == "S4" else {"nominal_only": True}
         for tau in TORQUE_BAND:
             v = {"finger_torque": tau}
             jobs += t1_jobs("torque", d, 45.0, boxes, fills=("catalog",), values=v, nobrake=False, **judged)
@@ -719,10 +773,10 @@ def block_t3_torque() -> list[dict[str, Any]]:
             for j in block_t3() if j["design"] in T3_TORQUE_PASS_NM for tau in T3_TORQUE_PASS_NM[j["design"]]]
 
 
-BLOCKS = {"refs": block_refs, "s2": block_s2, "s4": block_s4, "s5": block_s5, "s3p0": block_s3_sheets_platform,
-          "s1s6": block_s1_s6, "pr2": block_pr2, "pr2depth": block_pr2_depths, "fsloose": block_fs_loose,
-          "t5cut": block_t5_cut, "t5": block_t5, "t5tips": block_t5_tips, "t3": block_t3, "torque": block_torque,
-          "t3torque": block_t3_torque}
+BLOCKS = {"refs": block_refs, "s2": block_s2, "s4": block_s4, "s4depth": block_s4_depth, "s5": block_s5,
+          "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6, "pr2": block_pr2, "pr2depth": block_pr2_depths,
+          "fsloose": block_fs_loose, "t5cut": block_t5_cut, "t5": block_t5, "t5tips": block_t5_tips, "t3": block_t3,
+          "torque": block_torque, "t3torque": block_t3_torque}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:
@@ -762,9 +816,47 @@ def _job_key(r: dict[str, Any], drop: tuple[str, ...] = ()) -> str:
     return json.dumps({k: r.get(k) for k in keys if k not in drop}, sort_keys=True, default=str)
 
 
+def rate_depth_rule(rows: list[dict[str, Any]]) -> None:
+    """Revision 2.43: each box is rated at the candidate whose nominal holds with the largest least margin, where its
+    friction x0.8 run (where T1 runs one) and its +-3 mm corners on both sides hold too; failing those, the next
+    candidate whose nominal holds; with none, (a). Every candidate's nominal stays in the rows, and only the rated
+    one gets a verdict. `depth_rule_alt` is the choice with the corners reported only, as test conditions 2.16 has them."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        if r.get("depth_rule") == DEPTH_RULE and r.get("kind") in ("mujoco", "error") and not r.get("reset_flag"):
+            groups.setdefault(_depth_group(r), []).append(r)
+    for rs in groups.values():
+        noms = [r for r in rs if r.get("case") == "nominal"]
+        a = next((r for r in noms if r["depth_candidate"].split("=")[0] == "a"), None)
+        holders = sorted((r for r in noms if r.get("kind") == "mujoco" and r.get("passed")),
+                         key=lambda r: (-(r.get("score") or 0.0), r["depth_candidate"]))
+
+        def runs(r: dict[str, Any], case: str | None = None) -> list[dict[str, Any]]:
+            return [f for f in rs if f.get("depth_candidate") == r["depth_candidate"] and f.get("case") != "nominal"
+                    and (case is None or f.get("case") == case)]
+
+        rated = next((r for r in holders
+                      if runs(r) and all(f.get("kind") == "mujoco" and f.get("passed") for f in runs(r))), None)
+        alt = next((r for r in holders if all(f.get("passed") for f in runs(r, "friction x0.8"))), a)
+        if rated is not None:
+            basis = (f"rev 2.43: rated at ({rated['depth_candidate']}), {rated['depth_mm']:g} mm, the first candidate by "
+                     f"least margin whose nominal holds to hold its x0.8 run and corners too")
+        else:
+            rated = a
+            basis = ("rev 2.43: no candidate's nominal holds; rated at (a)" if not holders else
+                     "rev 2.43: no candidate whose nominal holds also holds its x0.8 run and corners; rated at (a)")
+        if rated is None:
+            continue
+        for r in rs:
+            r.update(depth_rated=r["depth_candidate"] == rated["depth_candidate"], depth_rule_choice=rated["depth_candidate"],
+                     depth_rule_basis=basis, depth_rule_alt=None if alt is None else alt["depth_candidate"])
+
+
 def add_verdicts(rows: list[dict[str, Any]]) -> None:
     """Test conditions 2.16: a nominal run's verdict is its own pass and, where a friction x0.8 run exists (T1 at
-    catalog fill, T2 at 30 mm), that run holding. A run that blew up counts through its rerun, or not at all."""
+    catalog fill, T2 at 30 mm), that run holding. A run that blew up counts through its rerun, or not at all. Under
+    revision 2.43's depth rule, only the rated candidate's nominal gets a verdict."""
+    rate_depth_rule(rows)
     done = {}
     for r in rows:
         if r.get("kind") == "mujoco" and not r.get("reset_flag"):
@@ -795,6 +887,10 @@ def add_verdicts(rows: list[dict[str, Any]]) -> None:
             r.update(verdict=not fails, verdict_basis=(f"rated rows fail: {', '.join(fails)}" if fails else
                                                        f"all {len(rated)} rated rows pass"))
             continue
+        if r.get("depth_rule") == DEPTH_RULE and not r.get("depth_rated"):
+            r.update(verdict=None, verdict_basis=f"rev 2.43 candidate ({r['depth_candidate']}), not rated: "
+                                                 f"{r.get('depth_rule_basis') or 'its box has no rated candidate'}")
+            continue
         f = x08.get(_job_key({**r, "case": None, "friction_scale": None, "power_s": None}, ("lateral_mm",)))
         if f is None:
             r.update(verdict=bool(r.get("passed")), verdict_basis="nominal only: no friction x0.8 run")
@@ -802,6 +898,8 @@ def add_verdicts(rows: list[dict[str, Any]]) -> None:
             r.update(verdict=bool(r.get("passed")) and bool(f.get("passed")),
                      verdict_basis=f"nominal {'passes' if r.get('passed') else 'fails'}, x0.8 "
                                    f"{'holds' if f.get('passed') else 'does not hold'}")
+        if r.get("depth_rule") == DEPTH_RULE:
+            r["verdict_basis"] = f"{r['depth_rule_basis']}; {r['verdict_basis']}"
 
 
 def run(jobs: list[dict[str, Any]], workers: int, log) -> list[dict[str, Any]]:
@@ -811,6 +909,7 @@ def run(jobs: list[dict[str, Any]], workers: int, log) -> list[dict[str, Any]]:
         mj = [j for j in jobs if j["job"] == "mj"]
         pending.update({ex.submit(run_job, j): j for j in mj})
         done_designs: set[str] = set()
+        depth_groups: dict[str, dict[str, Any]] = {}
         while pending:
             for fut in as_completed(list(pending)):
                 job = pending.pop(fut)
@@ -822,8 +921,19 @@ def run(jobs: list[dict[str, Any]], workers: int, log) -> list[dict[str, Any]]:
                     pending[ex.submit(run_job, again)] = again
                 if r.get("job") == "scan":
                     sym = get_jaw(r["design"], r["reading"], r.get("values"), r.get("reach_cap")).symmetric
-                    for f in t1_followups(r, sym):
+                    follow = t1_followups(r, sym)
+                    if r.get("depth_rule") == DEPTH_RULE and follow:
+                        depth_groups[_depth_group(r)] = {"scan": r, "sym": sym, "left": len(follow), "rows": []}
+                    for f in follow:
                         pending[ex.submit(run_job, f)] = f
+                elif job.get("depth_rule") == DEPTH_RULE and job.get("case") == "nominal" and again is None:
+                    g = depth_groups.get(_depth_group(job))
+                    if g is not None:
+                        g["rows"].append(r)
+                        g["left"] -= 1
+                        if g["left"] == 0:
+                            for f in t1_depth_followups(g["scan"], g["rows"], g["sym"]):
+                                pending[ex.submit(run_job, f)] = f
                 scans_left = any(p.get("job") == "scan" and p.get("design") == r.get("design") for p in pending.values())
                 if r.get("job") == "scan" and not scans_left and r["design"] not in done_designs:
                     done_designs.add(r["design"])
