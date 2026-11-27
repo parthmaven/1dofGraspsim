@@ -34,6 +34,9 @@ SPEC_FILES = {"P0": "p0-platform-step", "S1": "s1-platform-plus", "S2": "s2-deep
 FILLS = ("catalog", "loose", "settled")
 PINCHES = (20.0, 30.0, 50.0)
 BLANKS = ("chipboard_0p5mm", "chipboard_0p5mm_short")
+# T2's edge rule reads an edge against the pressure limit times the board's flute pitch (mm); the double wall reads its
+# B side. Chipboard has no flutes and keeps its as-run reading.
+T2_PITCH_MM = {"b_flute_3mm": 6.5, "c_flute_4mm": 7.8, "e_flute_1p6mm": 3.4, "bc_double_6p8mm": 6.5}
 # The regression cases (results check, line 2): PR #2's own numbers at f510113 for the first pass's
 # r2-09 and the 45 deg re-run's padded platform, on Cheerios Family Size and the unchanged flutes.
 REGRESSION = [("r2-09", 35.0, "gm_cheerios_family_18oz", 37.348), ("platform-padded", 45.0, "gm_cheerios_family_18oz", 74.3)]
@@ -393,12 +396,24 @@ def t1_followups(scan: dict[str, Any], symmetric: bool = True) -> list[dict[str,
     if scan.get("stop_mm") is not None and math.isfinite(scan["stop_mm"] or math.nan):
         deep = min(deep, float(scan["stop_mm"]))
     deep = min(deep, table)
+    if scan.get("corners_only"):
+        # Revision 2.44: the corners at a settable box's set torque; under the depth rule, at each candidate's depth.
+        depths = t1_depth_candidates(scan) if scan.get("depth_rule") == DEPTH_RULE else [(None, d)]
+        out = []
+        for tag, x in depths:
+            at = {**scan, "depth_mm": x, "corners_only": False, "depth_rule": None, "x08_if_held": False,
+                  "nominal_only": False, "x08_only": False}
+            out += [{**f, **({"depth_candidate": tag} if tag else {})} for f in t1_followups(at, symmetric)
+                    if f["case"].startswith("corner")]
+        return out
     if scan.get("depth_rule") == DEPTH_RULE:
         return [{**keep, "job": "mj", "test": "T1", "case": "nominal", "depth_mm": x, "lateral_mm": 0.0,
                  "depth_rule": DEPTH_RULE, "depth_candidate": tag} for tag, x in t1_depth_candidates(scan)]
     out = [{**keep, "job": "mj", "test": "T1", "case": "nominal", "depth_mm": d, "lateral_mm": 0.0}]
     x08 = {**keep, "job": "mj", "test": "T1", "case": "friction x0.8", "depth_mm": d, "lateral_mm": 0.0,
            "friction_scale": float(c["b1"].get("robust_friction", 0.8)), "power_s": 1.0}
+    if scan.get("x08_if_held"):
+        return [{**out[0], "x08_if_held": True}]
     if scan.get("nominal_only"):
         return out
     if scan.get("x08_only"):
@@ -423,7 +438,8 @@ DEPTH_RULE = "2.43"
 def t1_depth_candidates(scan: dict[str, Any]) -> list[tuple[str, float]]:
     """Revision 2.43's T1 depths: (a) the mirrored-pair scan's robust depth, (b) the deepest the robust rule allows, the
     stop less the placement error, and (c) the scan's best depth with the contact all below the fill line, where one
-    exists. A depth that coincides with an earlier one runs once, under both labels."""
+    exists. A depth that coincides with an earlier one runs once, under both labels. In the torque band (revision
+    2.44) only (a) and (b) run."""
     place = float(ctx()["b1"].get("placement_mm", 3.0))
 
     def finite(x: Any) -> float | None:
@@ -434,7 +450,7 @@ def t1_depth_candidates(scan: dict[str, Any]) -> list[tuple[str, float]]:
                               None if stop is None else stop - place) if x is not None)
     out: list[tuple[str, float]] = []
     for tag, x in (("a", finite(scan["depth_mm"])), ("b", deepest), ("c", finite(scan.get("deep_depth_mm")))):
-        if x is None:
+        if x is None or (tag == "c" and scan.get("depth_ab_only")):
             continue
         i = next((k for k, (_, y) in enumerate(out) if abs(y - x) < 0.05), None)
         if i is None:
@@ -452,9 +468,42 @@ def t1_depth_followups(scan: dict[str, Any], nominals: list[dict[str, Any]], sym
         if r.get("kind") != "mujoco" or r.get("reset_flag") or not r.get("passed"):
             continue
         at = {**scan, "depth_mm": r["depth_mm"], "depth_rule": None, "nominal_only": False, "x08_only": False}
+        # In the torque band (revision 2.44) the corners run only at a settable box's set torque.
         out += [{**f, "depth_rule": DEPTH_RULE, "depth_candidate": r["depth_candidate"]}
-                for f in t1_followups(at, symmetric)[1:]]
+                for f in t1_followups(at, symmetric)[1:]
+                if scan.get("depth_corners", True) or not f["case"].startswith("corner")]
     return out
+
+
+def t2_edge_rule(r: dict[str, Any]) -> dict[str, Any]:
+    """Revision 2.31's T2 reading, as block C read it: an edge (a face more than 1 deg off its normal) on its 5 ms face
+    force per width against the pressure limit times the board's pitch, a flush face by the footprint rule, the row's
+    other margins as run, and the sheet held or dropped only in the power cut. Chipboard keeps its as-run reading."""
+    pitch = T2_PITCH_MM.get(r.get("object"))
+    p = r.get("pressure_kPa") or 0.0
+    if pitch is None or r.get("m_pressure") is None or p <= 1e-9:
+        return {"rule": "as run", "passed": bool(r.get("passed")), "score": r.get("score"),
+                "limiting": r.get("limiting") or r.get("reason")}
+    lim = r["m_pressure"] * p
+    e = r.get("edge_5ms_N_per_mm") or 0.0
+    m = {"edge": lim * pitch / 1e3 / e if e > 1e-9 else 99.0,
+         "flush": lim / r["flush_kPa"] if (r.get("flush_kPa") or 0.0) > 1e-9 else 99.0,
+         **{k[2:]: v for k, v in r.items() if k.startswith("m_") and k != "m_pressure" and isinstance(v, (int, float))}}
+    by = min(m, key=m.get)
+    held = r.get("dropped_in") in (None, "", "power")
+    return {"rule": "edge rule", "passed": bool(m[by] >= 1.0 and held), "score": m[by], "limiting": by}
+
+
+def x08_after(job: dict[str, Any], row: dict[str, Any]) -> dict[str, Any] | None:
+    """Revision 2.44: the friction x0.8 run after a band step's nominal that holds (T1 as run, T2 as run or by the edge
+    rule)."""
+    if not job.get("x08_if_held") or row.get("kind") != "mujoco" or row.get("reset_flag"):
+        return None
+    if not (row.get("passed") or (row.get("test") == "T2" and t2_edge_rule(row)["passed"])):
+        return None
+    base = {k: v for k, v in job.items() if k not in ("x08_if_held", "rerun_of_reset")}
+    return {**base, "case": "friction x0.8", "friction_scale": float(ctx()["b1"].get("robust_friction", 0.8)),
+            "power_s": 1.0}
 
 
 def _depth_group(r: dict[str, Any]) -> str:
@@ -751,19 +800,134 @@ def block_torque() -> list[dict[str, Any]]:
     """Block C's per-product torque pass: each rigid design at the 45 deg reading over the platform's torque band
     (0.25 - 6 N m per finger), T1 nominal on the boxes at catalog fill and T2 at the 30 mm pinch on the sheets, as the
     platform's band was run. S2's grips are judged on MuJoCo's friction x0.8 run, so its boxes and sheets add that run
-    at every torque. S4 comes last, its boxes rated by revision 2.43's depth rule."""
+    at every torque; by revision 2.44 the other designs add it at every step where the nominal holds. S4 comes last,
+    its boxes at revision 2.43's candidates (a) and (b) chosen per torque, the corners left to each settable box's set
+    torque (block_torque_extras)."""
     boxes, sheets = _boxes_sheets()
     x08 = float(ctx()["b1"].get("robust_friction", 0.8))
     jobs = []
     for d in TORQUE_PASS_DESIGNS:
-        judged = {"x08_only": True} if d == "S2" else {"depth_rule": DEPTH_RULE} if d == "S4" else {"nominal_only": True}
+        judged = ({"x08_only": True} if d == "S2" else {"x08_if_held": True} if d != "S4"
+                  else {"depth_rule": DEPTH_RULE, "depth_ab_only": True, "depth_corners": False})
         for tau in TORQUE_BAND:
             v = {"finger_torque": tau}
             jobs += t1_jobs("torque", d, 45.0, boxes, fills=("catalog",), values=v, nobrake=False, **judged)
-            t2 = t2_jobs("torque", d, 45.0, sheets, pinches=(30.0,), extras=False, values=v)
             if d == "S2":
+                t2 = t2_jobs("torque", d, 45.0, sheets, pinches=(30.0,), extras=False, values=v)
                 t2 += [{**j, "case": "friction x0.8", "friction_scale": x08, "power_s": 1.0} for j in t2 if j["job"] == "mj"]
+            else:
+                t2 = t2_jobs("torque", d, 45.0, sheets, pinches=(30.0,), extras=False, values=v, x08_if_held=True)
             jobs += t2
+    return jobs
+
+
+SETTABLE_RATIO = 1.222
+GRIP_TIERS = ((3.5, "at or below 3.5 N m"), (3.9, "below 3.9 N m"), (math.inf, "the whole run"))
+
+
+def _span(ts: list[float]) -> str:
+    return f"{ts[0]:g}" if len(ts) == 1 else f"{ts[0]:g}-{ts[-1]:g}"
+
+
+def settable_grip(passes: dict[float, bool], step: float = 0.25) -> dict[str, Any]:
+    """Revision 2.44's settable grip from a product's band steps (True where the nominal and its friction x0.8 run both
+    hold). A run is a contiguous stretch of passing steps; a failing or unrun step splits it. A run tau_a - tau_b is
+    settable if tau_b >= 1.222 tau_a, set at its midpoint, tried on its part at or below 3.5 N m, then below 3.9, then
+    whole; of several runs, the one settable at the lowest tier (then the lowest set torque). 1.1 x the set torque over
+    3.5 N m flags the 7 N m sizing, and at 3.9 or more the mount's fatigue."""
+    taus = sorted(t for t, ok in passes.items() if ok)
+    runs: list[list[float]] = []
+    for t in taus:
+        if runs and t - runs[-1][-1] <= step + 1e-9:
+            runs[-1].append(t)
+        else:
+            runs.append([t])
+    best = None
+    for run_ in runs:
+        for i, (cap, name) in enumerate(GRIP_TIERS):
+            part = [t for t in run_ if (t <= cap + 1e-9 if i == 0 else t < cap - 1e-9)]
+            if len(part) >= 2 and part[-1] >= SETTABLE_RATIO * part[0] - 1e-9:
+                cand = (i, 0.5 * (part[0] + part[-1]), part, name)
+                if best is None or cand[:2] < best[:2]:
+                    best = cand
+                break
+    out = {"passes_at": [_span(r) for r in runs]}
+    if best is None:
+        why = f"passes at {', '.join(out['passes_at'])}, not settable" if runs else "fails at every step"
+        return {**out, "settable": False, "label": why}
+    _, tau, part, name = best
+    return {**out, "settable": True, "set_torque": tau, "part": [part[0], part[-1]], "tier": name,
+            "label": f"settable at {tau:g} N m ({_span(part)}, {name})",
+            "flag_7Nm": 1.1 * tau > 3.5 + 1e-9, "flag_fatigue": 1.1 * tau >= 3.9 - 1e-9}
+
+
+def torque_steps(rows: list[dict[str, Any]]) -> dict[tuple[str, str, str], dict[float, dict[str, Any]]]:
+    """Each band step's reading per (design, test, product): "pass" where the nominal and its friction x0.8 run both
+    hold, "nominal" where only the nominal does, else "fail"; T1 as run (S4 at its rated candidate, a nominal-only pass
+    at any candidate reading "nominal"), T2 by the edge rule. Each step keeps its nominal and x0.8 rows."""
+    def holds(r: dict[str, Any] | None) -> bool:
+        if r is None or r.get("kind") != "mujoco" or r.get("reset_flag"):
+            return False
+        return t2_edge_rule(r)["passed"] if r.get("test") == "T2" else bool(r.get("passed"))
+
+    def at(r: dict[str, Any]) -> tuple:
+        return r["design"], r["test"], r["object"], float((r.get("values") or {}).get("finger_torque"))
+
+    nom: dict[tuple, list[dict[str, Any]]] = {}
+    x08: dict[tuple, list[dict[str, Any]]] = {}
+    for r in rows:
+        if r.get("block") != "torque" or r.get("kind") not in ("mujoco", "error") or r.get("reset_flag"):
+            continue
+        if r.get("test") == "T1" and r.get("fill", "catalog") != "catalog":
+            continue
+        if r.get("case") in ("nominal", "pinch 30"):
+            nom.setdefault(at(r), []).append(r)
+        elif r.get("case") == "friction x0.8":
+            x08.setdefault(at(r), []).append(r)
+    out: dict[tuple[str, str, str], dict[float, dict[str, Any]]] = {}
+    for k, ns in nom.items():
+        pairs = [(n, next((f for f in x08.get(k, []) if f.get("depth_candidate") == n.get("depth_candidate")
+                           and abs(f["depth_mm"] - n["depth_mm"]) < 1e-6), None)) for n in ns]
+        rated = next((p for p in pairs if p[0].get("depth_rated")), pairs[0])
+        if holds(rated[0]) and holds(rated[1]):
+            label = "pass"
+        else:
+            label = "nominal" if any(holds(n) for n, _ in pairs) else "fail"
+        out.setdefault(k[:3], {})[k[3]] = {"label": label, "nominal": rated[0], "x08": rated[1],
+                                            "candidate": rated[0].get("depth_candidate")}
+    return out
+
+
+def best_2hz_step(steps: dict[float, dict[str, Any]]) -> float:
+    """A product's best step at the 2 Hz shake: its nominal's highest score by the edge rule (the lower torque on a
+    tie)."""
+    def score(s: dict[str, Any]) -> float:
+        v = t2_edge_rule(s["nominal"])["score"]
+        return float(v) if v is not None and math.isfinite(float(v)) else -math.inf
+    return min(steps, key=lambda t: (-score(steps[t]), t))
+
+
+def block_torque_extras(rows: list[dict[str, Any]] = ()) -> list[dict[str, Any]]:
+    """Revision 2.44, after a design's band (its rows passed in): T1's +-3 mm corners at each settable box's set torque,
+    as in batch 1 (S4 at both candidates' depths, both sides), and each carton blank's shake at 1.5 and 3 Hz at its set
+    torque, or at its best 2 Hz step where it has none."""
+    c = ctx()
+    hz = [float(h) for h in c["b1"].get("sheet_shake_hz", [1.5, 2.0, 3.0])
+          if abs(float(h) - c["sc"].shake_lateral_hz) > 1e-6]
+    jobs = []
+    for (design, test, obj), steps in sorted(torque_steps(list(rows)).items()):
+        grip = settable_grip({t: s["label"] == "pass" for t, s in steps.items()})
+        reading = next(iter(steps.values()))["nominal"]["reading"]
+        if test == "T1" and grip["settable"]:
+            depth = {"depth_rule": DEPTH_RULE, "depth_ab_only": True} if any(s["candidate"] for s in steps.values()) else {}
+            jobs.append({**_base("torquex", design, reading, values={"finger_torque": grip["set_torque"]}, nobrake=False,
+                                 corners_only=True, **depth), "job": "scan", "object": obj, "fill": "catalog"})
+        if test == "T2" and obj in BLANKS:
+            tau = grip["set_torque"] if grip["settable"] else best_2hz_step(steps)
+            jobs += [{**_base("torquex", design, reading, values={"finger_torque": tau},
+                              set_torque=bool(grip["settable"])),
+                      "job": "mj", "test": "T2", "object": obj, "depth_mm": 30.0, "case": f"shake {h:g} Hz",
+                      "shake_hz": h, "power_s": 1.0} for h in hz]
     return jobs
 
 
@@ -776,7 +940,7 @@ def block_t3_torque() -> list[dict[str, Any]]:
 BLOCKS = {"refs": block_refs, "s2": block_s2, "s4": block_s4, "s4depth": block_s4_depth, "s5": block_s5,
           "s3p0": block_s3_sheets_platform, "s1s6": block_s1_s6, "pr2": block_pr2, "pr2depth": block_pr2_depths,
           "fsloose": block_fs_loose, "t5cut": block_t5_cut, "t5": block_t5, "t5tips": block_t5_tips, "t3": block_t3,
-          "torque": block_torque, "t3torque": block_t3_torque}
+          "torque": block_torque, "t3torque": block_t3_torque, "torquex": block_torque_extras}
 
 
 def nobrake_job(rows: list[dict[str, Any]], block: str, design: str) -> list[dict[str, Any]]:
@@ -838,13 +1002,14 @@ def rate_depth_rule(rows: list[dict[str, Any]]) -> None:
         rated = next((r for r in holders
                       if runs(r) and all(f.get("kind") == "mujoco" and f.get("passed") for f in runs(r))), None)
         alt = next((r for r in holders if all(f.get("passed") for f in runs(r, "friction x0.8"))), a)
+        what = "x0.8 run and corners" if any(str(f.get("case")).startswith("corner") for f in rs) else "x0.8 run"
         if rated is not None:
             basis = (f"rev 2.43: rated at ({rated['depth_candidate']}), {rated['depth_mm']:g} mm, the first candidate by "
-                     f"least margin whose nominal holds to hold its x0.8 run and corners too")
+                     f"least margin whose nominal holds to hold its {what} too")
         else:
             rated = a
             basis = ("rev 2.43: no candidate's nominal holds; rated at (a)" if not holders else
-                     "rev 2.43: no candidate whose nominal holds also holds its x0.8 run and corners; rated at (a)")
+                     f"rev 2.43: no candidate whose nominal holds also holds its {what}; rated at (a)")
         if rated is None:
             continue
         for r in rs:
@@ -919,10 +1084,13 @@ def run(jobs: list[dict[str, Any]], workers: int, log) -> list[dict[str, Any]]:
                 again = rerun_job(job, r)
                 if again is not None:
                     pending[ex.submit(run_job, again)] = again
+                x08 = x08_after(job, r)
+                if x08 is not None:
+                    pending[ex.submit(run_job, x08)] = x08
                 if r.get("job") == "scan":
                     sym = get_jaw(r["design"], r["reading"], r.get("values"), r.get("reach_cap")).symmetric
                     follow = t1_followups(r, sym)
-                    if r.get("depth_rule") == DEPTH_RULE and follow:
+                    if r.get("depth_rule") == DEPTH_RULE and follow and not r.get("corners_only"):
                         depth_groups[_depth_group(r)] = {"scan": r, "sym": sym, "left": len(follow), "rows": []}
                     for f in follow:
                         pending[ex.submit(run_job, f)] = f
@@ -976,12 +1144,17 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--designs", default="", help="comma-separated designs to run (default: the whole block)")
     ap.add_argument("--objects", default="", help="comma-separated object ids to run (default: all)")
     ap.add_argument("--name", default="", help="output file stem (default: the block name)")
+    ap.add_argument("--rows", default="", help="torquex: comma-separated result files of the band it follows")
     a = ap.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     sha = commit()
     designs, objects = [s for s in a.designs.split(",") if s], [s for s in a.objects.split(",") if s]
-    jobs = select(BLOCKS[a.block](), designs, objects)
+    if a.block == "torquex":
+        band = [r for p in a.rows.split(",") if p for r in json.loads(Path(p).read_text())["rows"]]
+        jobs = select(block_torque_extras(band), designs, objects)
+    else:
+        jobs = select(BLOCKS[a.block](), designs, objects)
     stem = a.name or a.block
     t0 = time.time()
     logf = (out / f"{stem}.log").open("w")

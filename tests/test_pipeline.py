@@ -912,7 +912,8 @@ def test_t4_torque_is_set_per_task(batch1):
 
 def test_batch1_torque_pass_runs_the_platform_band(batch1):
     # Block C's per-product torque pass: S1 - S6 over the platform's band, T1 nominal at catalog fill and T2 at the
-    # 30 mm pinch, S4 last. S2's grips are judged on MuJoCo's friction x0.8 run, on its boxes and its sheets.
+    # 30 mm pinch, S4 last. S2's grips are judged on MuJoCo's friction x0.8 run, on its boxes and its sheets; by
+    # revision 2.44 the others run it wherever the nominal holds, and S4's corners wait for the set torque.
     jobs = batch1.block_torque()
     band = batch1.TORQUE_BAND
     assert band[0] == 0.25 and band[-1] == 6.0 and len(band) == 24
@@ -920,16 +921,20 @@ def test_batch1_torque_pass_runs_the_platform_band(batch1):
     scans = [j for j in jobs if j["job"] == "scan"]
     assert len(scans) == 6 * 24 * 13 and {j["fill"] for j in scans} == {"catalog"}
     assert all(j["nobrake"] is False and j["values"]["finger_torque"] in band for j in scans)
-    judged = {d: {(bool(j.get("x08_only")), bool(j.get("nominal_only")), j.get("depth_rule")) for j in scans if j["design"] == d}
-              for d in batch1.TORQUE_PASS_DESIGNS}
-    assert judged == {"S2": {(True, False, None)}, "S4": {(False, False, "2.43")},
-                      **{d: {(False, True, None)} for d in ("S1", "S3", "S5", "S6")}}
+    judged = {d: {(bool(j.get("x08_only")), bool(j.get("nominal_only")), bool(j.get("x08_if_held")), j.get("depth_rule"),
+                   j.get("depth_corners", True)) for j in scans if j["design"] == d} for d in batch1.TORQUE_PASS_DESIGNS}
+    assert judged == {"S2": {(True, False, False, None, True)}, "S4": {(False, False, False, "2.43", False)},
+                      **{d: {(False, False, True, None, True)} for d in ("S1", "S3", "S5", "S6")}}
     t2 = [j for j in jobs if j["job"] == "mj"]
     assert {j["test"] for j in t2} == {"T2"} and {j["depth_mm"] for j in t2} == {30.0}
     assert len(t2) == 6 * 24 * 7 + 24 * 7 and {j["design"] for j in t2 if j["case"] == "friction x0.8"} == {"S2"}
+    assert {j["design"] for j in t2 if j.get("x08_if_held")} == {"S1", "S3", "S4", "S5", "S6"}
     scan = {**next(j for j in scans if j["design"] == "S2"), "simulate": True, "depth_mm": 20.0, "table_cap_mm": 200.0,
             "stop_mm": None}
     assert [f["case"] for f in batch1.t1_followups(scan)] == ["nominal", "friction x0.8"]
+    s1 = batch1.t1_followups({**next(j for j in scans if j["design"] == "S1"), "simulate": True, "depth_mm": 20.0,
+                              "table_cap_mm": 200.0, "stop_mm": None})
+    assert [(f["case"], f.get("x08_if_held")) for f in s1] == [("nominal", True)]
     assert batch1.get_jaw("S6", 45.0, {"finger_torque": 0.25}).torque == pytest.approx(0.25)
     # Its T3 aims S1's, S2's and S6's squeeze at 12.8 - 15 N per finger, each torque its own verdict.
     t3 = batch1.block_t3_torque()
@@ -972,6 +977,83 @@ def test_batch1_s4_depth_rule_rates_the_best_held_depth(batch1):
     a, b = rated("corner shallow-")
     assert (a["verdict"], b["verdict"]) == (False, None) and a["depth_rule_alt"] == "b"
     assert "no candidate whose nominal holds also holds its x0.8 run and corners" in a["verdict_basis"]
+
+
+def test_batch1_torque_pass_settable_grip_and_extras(batch1):
+    # Revision 2.44: a product is settable on a contiguous run of steps passing nominal and x0.8 with
+    # tau_b >= 1.222 tau_a, set at the run's midpoint, the run read at or below 3.5 N m, then below 3.9, then whole.
+    g = batch1.settable_grip
+
+    def ok(*ts: float) -> dict:
+        return {t: True for t in ts}
+
+    a = g({**ok(2.0, 2.25, 2.5), 2.75: False})
+    assert a["settable"] and (a["set_torque"], a["part"], a["tier"]) == (2.25, [2.0, 2.5], "at or below 3.5 N m")
+    assert not (a["flag_7Nm"] or a["flag_fatigue"])
+    assert g(ok(2.0, 2.25))["label"] == "passes at 2-2.25, not settable"
+    assert g({**ok(2.0, 2.5), 2.25: False})["label"] == "passes at 2, 2.5, not settable"
+    assert g({2.0: False})["label"] == "fails at every step"
+    b = g(ok(2.75, 3.0, 3.25, 3.5, 3.75, 4.0))
+    assert (b["set_torque"], b["part"], b["flag_7Nm"]) == (3.125, [2.75, 3.5], False)
+    c = g(ok(3.0, 3.25, 3.5, 3.75))
+    assert (c["set_torque"], c["tier"], c["flag_7Nm"], c["flag_fatigue"]) == (3.375, "below 3.9 N m", True, False)
+    d = g(ok(3.25, 3.5, 3.75, 4.0, 4.25))
+    assert (d["set_torque"], d["tier"], d["flag_7Nm"], d["flag_fatigue"]) == (3.75, "the whole run", True, True)
+    e = g({**ok(0.5, 0.75), 1.0: False, **ok(2.0, 2.25, 2.5)})
+    assert e["set_torque"] == 0.625 and e["passes_at"] == ["0.5-0.75", "2-2.5"]
+    # The x0.8 run follows a band nominal that holds: T1 as run, T2 as run or by the edge rule.
+    nom = {"block": "torque", "design": "S1", "reading": 45.0, "values": {"finger_torque": 2.0}, "job": "mj", "test": "T1",
+           "object": "gm_box", "fill": "catalog", "case": "nominal", "depth_mm": 20.0, "lateral_mm": 0.0,
+           "x08_if_held": True}
+    x = batch1.x08_after(nom, {**nom, "kind": "mujoco", "passed": True})
+    assert (x["case"], x["friction_scale"], x["power_s"], "x08_if_held" in x) == ("friction x0.8", 0.8, 1.0, False)
+    assert batch1.x08_after(nom, {**nom, "kind": "mujoco", "passed": False}) is None
+    assert batch1.x08_after(nom, {**nom, "kind": "mujoco", "passed": True, "reset_flag": True}) is None
+    assert batch1.x08_after({**nom, "x08_if_held": False}, {**nom, "kind": "mujoco", "passed": True}) is None
+    sheet = {**nom, "test": "T2", "object": "b_flute_3mm", "case": "pinch 30", "depth_mm": 30.0, "kind": "mujoco",
+             "passed": False, "pressure_kPa": 100.0, "m_pressure": 0.5, "edge_5ms_N_per_mm": 0.2, "flush_kPa": 40.0,
+             "m_slip": 1.1, "dropped_in": ""}
+    er = batch1.t2_edge_rule(sheet)
+    assert er["passed"] and er["limiting"] == "slip" and er["score"] == pytest.approx(1.1)
+    assert batch1.t2_edge_rule({**sheet, "edge_5ms_N_per_mm": 0.4})["limiting"] == "edge"
+    assert not batch1.t2_edge_rule({**sheet, "dropped_in": "main"})["passed"]
+    assert batch1.t2_edge_rule({**sheet, "object": "chipboard_0p5mm"})["rule"] == "as run"
+    assert batch1.x08_after(sheet, sheet)["case"] == "friction x0.8"
+    # After the band: the corners at each settable box's set torque, and the carton blanks' 1.5 and 3 Hz shakes at
+    # theirs, or at their best 2 Hz step.
+    rows = []
+    for tau in (2.0, 2.25, 2.5, 2.75):
+        at = {**nom, "values": {"finger_torque": tau}, "kind": "mujoco"}
+        rows += [{**at, "passed": True, "score": 1.3}, {**at, "case": "friction x0.8", "passed": tau < 2.6}]
+    for tau, score in ((1.0, 0.9), (1.25, 1.2)):
+        at = {**nom, "test": "T2", "object": "chipboard_0p5mm", "case": "pinch 30", "depth_mm": 30.0,
+              "values": {"finger_torque": tau}, "kind": "mujoco"}
+        rows += [{**at, "passed": score > 1.0, "score": score}, {**at, "case": "friction x0.8", "passed": False}]
+    for tau in (2.0, 2.25, 2.5):
+        at = {**nom, "design": "S4", "values": {"finger_torque": tau}, "kind": "mujoco", "depth_rule": "2.43"}
+        rows += [{**at, "depth_candidate": "a", "passed": True, "score": 1.2},
+                 {**at, "depth_candidate": "b", "depth_mm": 43.5, "passed": True, "score": 1.5},
+                 {**at, "depth_candidate": "a", "case": "friction x0.8", "passed": True},
+                 {**at, "depth_candidate": "b", "depth_mm": 43.5, "case": "friction x0.8", "passed": False}]
+    batch1.add_verdicts(rows)
+    steps = batch1.torque_steps(rows)
+    assert [s["label"] for s in steps[("S1", "T1", "gm_box")].values()] == ["pass", "pass", "pass", "nominal"]
+    assert [s["label"] for s in steps[("S1", "T2", "chipboard_0p5mm")].values()] == ["fail", "nominal"]
+    assert {s["candidate"] for s in steps[("S4", "T1", "gm_box")].values()} == {"a"}
+    assert "rated at (a)" in rows[-4]["depth_rule_basis"] and "x0.8 run too" in rows[-4]["depth_rule_basis"]
+    ex = batch1.block_torque_extras(rows)
+    scans = {j["design"]: j for j in ex if j["job"] == "scan"}
+    assert {d: (j["values"]["finger_torque"], j["corners_only"], j.get("depth_rule")) for d, j in scans.items()} == {
+        "S1": (2.25, True, None), "S4": (2.25, True, "2.43")}
+    shakes = [(j["case"], j["values"]["finger_torque"], j["set_torque"]) for j in ex if j["job"] == "mj"]
+    assert shakes == [("shake 1.5 Hz", 1.25, False), ("shake 3 Hz", 1.25, False)]
+    s4 = {**scans["S4"], "simulate": True, "depth_mm": 27.0, "stop_mm": 46.5, "cap_mm": 110.5, "table_cap_mm": 269.0,
+          "deep_depth_mm": 30.0}
+    corners = batch1.t1_followups(s4, False)
+    assert {(f["depth_candidate"], f["case"]) for f in corners} == {
+        (t, f"corner {k}{s}") for t in "ab" for k in ("deep", "shallow") for s in "+-"}
+    sym = batch1.t1_followups({**scans["S1"], "simulate": True, "depth_mm": 20.0, "table_cap_mm": 200.0, "stop_mm": None})
+    assert [(f["case"], f["depth_mm"]) for f in sym] == [("corner deep+", 23.0), ("corner shallow+", 17.0)]
 
 
 def test_batch1_rescore_uses_the_first_pass_objects(batch1):
