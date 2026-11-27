@@ -884,6 +884,63 @@ def settable_grip(passes: dict[float, bool], step: float = 0.25) -> dict[str, An
             "flag_7Nm": 1.1 * tau > 3.5 + 1e-9, "flag_fatigue": 1.1 * tau >= 3.9 - 1e-9}
 
 
+def refine_plan(passes: dict[float, bool], refined: dict[float, bool] | None = None) -> list[dict[str, Any]]:
+    """Revision 2.46's near-miss refinement of a product's runs. `passes`: the band's steps and the set torques run as
+    steps (True where the nominal and x0.8 both hold); `refined`: the near-miss points run so far. A run of passing
+    steps tau_a - tau_b short of 1.222 is refined where its failing neighbours allow a settable run,
+    (tau_b + 0.25) >= 1.222 (tau_a - 0.25), with the band's end itself where a neighbour would be past it and a failed
+    set torque where one bounds the run. At each edge whose neighbour is a failing band step: 0.125 N m out towards it,
+    then 0.0625 N m further out if that point passed, or 0.0625 N m out from the old edge if it failed. Per run: the
+    grid run, its points, those still to run (`todo`), and the refined run (its outermost passing points)."""
+    known = {**passes, **(refined or {})}
+    pts = sorted(passes)
+    runs: list[list[float]] = []
+    cur: list[float] = []
+    for t in pts:
+        if passes[t] and cur and t - cur[-1] <= 0.25 + 1e-9:
+            cur.append(t)
+        elif passes[t]:
+            cur = [t]
+            runs.append(cur)
+        else:
+            cur = []
+    plans = []
+    for run_ in runs:
+        a, b = run_[0], run_[-1]
+        if b >= SETTABLE_RATIO * a - 1e-9:
+            continue
+        sides = []
+        for edge, sgn in ((a, -1.0), (b, 1.0)):
+            nb = round(edge + sgn * 0.25, 4)
+            if not TORQUE_BAND[0] - 1e-9 <= nb <= TORQUE_BAND[-1] + 1e-9:
+                sides.append((edge, sgn, edge, False))
+                continue
+            near = [t for t in pts if not passes[t] and 1e-9 < sgn * (t - edge) <= 0.25 + 1e-9]
+            f = min(near, key=lambda t: abs(t - edge)) if near else nb
+            sides.append((edge, sgn, f, abs(f - nb) < 1e-6))
+        lo, hi = sides[0][2], sides[1][2]
+        if hi < SETTABLE_RATIO * lo - 1e-9:
+            continue
+        points: list[float] = []
+        todo: list[float] = []
+        ends = []
+        for edge, sgn, _, refine in sides:
+            end = edge
+            if refine:
+                seq = [round(edge + sgn * 0.125, 4)]
+                if seq[0] in known:
+                    seq.append(round((seq[0] if known[seq[0]] else edge) + sgn * 0.0625, 4))
+                points += seq
+                todo += [p for p in seq if p not in known]
+                for p in sorted(seq, key=lambda p: abs(p - edge)):
+                    if not known.get(p):
+                        break
+                    end = p
+            ends.append(end)
+        plans.append({"run": [a, b], "bounds": [lo, hi], "points": sorted(points), "todo": todo, "refined": ends})
+    return plans
+
+
 def _holds(r: dict[str, Any] | None) -> bool:
     if r is None or r.get("kind") != "mujoco" or r.get("reset_flag"):
         return False
@@ -931,11 +988,12 @@ def torque_steps(rows: list[dict[str, Any]]) -> dict[tuple[str, str, str], dict[
         out.setdefault(k[:3], {})[k[3]] = {
             "label": label, "nominal": rated[0], "x08": rated[1], "candidate": rated[0].get("depth_candidate"),
             "scan": scans.get(k), "candidates": {n.get("depth_candidate"): {"depth_mm": n["depth_mm"], "nominal": _holds(n),
-                                                                             "x08": _holds(x)} for n, x in pairs}}
+                                                                             "x08": _holds(x)} for n, x in pairs},
+            "refine": bool((scans.get(k) or {}).get("refine_step") or any(n.get("refine_step") for n in ns))}
     for k, s in scans.items():
         if k not in nom:
             out.setdefault(k[:3], {})[k[3]] = {"label": "fail", "nominal": None, "x08": None, "candidate": None,
-                                                "scan": s, "candidates": {},
+                                                "scan": s, "candidates": {}, "refine": bool(s.get("refine_step")),
                                                 "why": f"scan: {str(s.get('not_simulated') or s.get('status'))[:40]}"}
     return {k: dict(sorted(v.items())) for k, v in out.items()}
 
@@ -949,21 +1007,22 @@ def best_2hz_step(steps: dict[float, dict[str, Any]]) -> float:
     return min(steps, key=lambda t: (-score(steps[t]), t))
 
 
-def _set_step_jobs(design: str, test: str, obj: str, reading: float, tau: float, s4: bool) -> list[dict[str, Any]]:
+def _set_step_jobs(design: str, test: str, obj: str, reading: float, tau: float, s4: bool,
+                   refine: bool = False) -> list[dict[str, Any]]:
     """A set torque off the band's grid, run as a band step: T1's scan (its nominal and x0.8 follow as in the band),
-    T2's pinch at 30 mm with its x0.8."""
+    T2's pinch at 30 mm with its x0.8. A near-miss point (revision 2.46, `refine`) runs the same way, its x0.8 only
+    where its nominal holds, S2's too."""
     v = {"finger_torque": tau}
+    tag = {"refine_step": True} if refine else {"set_step": True}
     if test == "T1":
-        judged = ({"x08_only": True} if design == "S2" else {"x08_if_held": True} if not s4
-                  else {"depth_rule": DEPTH_RULE, "depth_ab_only": True, "depth_corners": False})
-        return t1_jobs("torquex", design, reading, [obj], fills=("catalog",), values=v, nobrake=False, set_step=True,
-                       **judged)
-    if design == "S2":
-        t2 = t2_jobs("torquex", design, reading, [obj], pinches=(30.0,), extras=False, values=v, set_step=True)
+        judged = ({"depth_rule": DEPTH_RULE, "depth_ab_only": True, "depth_corners": False} if s4
+                  else {"x08_only": True} if design == "S2" and not refine else {"x08_if_held": True})
+        return t1_jobs("torquex", design, reading, [obj], fills=("catalog",), values=v, nobrake=False, **tag, **judged)
+    if design == "S2" and not refine:
+        t2 = t2_jobs("torquex", design, reading, [obj], pinches=(30.0,), extras=False, values=v, **tag)
         x08 = float(ctx()["b1"].get("robust_friction", 0.8))
         return t2 + [{**j, "case": "friction x0.8", "friction_scale": x08, "power_s": 1.0} for j in t2 if j["job"] == "mj"]
-    return t2_jobs("torquex", design, reading, [obj], pinches=(30.0,), extras=False, values=v, set_step=True,
-                   x08_if_held=True)
+    return t2_jobs("torquex", design, reading, [obj], pinches=(30.0,), extras=False, values=v, x08_if_held=True, **tag)
 
 
 def _corner_jobs(scan: dict[str, Any], depth: float, tag: str | None, symmetric: bool) -> list[dict[str, Any]]:
@@ -976,6 +1035,8 @@ def _corner_jobs(scan: dict[str, Any], depth: float, tag: str | None, symmetric:
 def torque_extras(rows: list[dict[str, Any]] = ()) -> list[dict[str, Any]]:
     """Revision 2.45's extras after a design's band, a round at a time: the jobs that the rows so far (the band's and
     the earlier rounds') still need. Block torquex runs rounds until none is left.
+    - Revision 2.46: a run short of 1.222 whose failing neighbours allow a settable run is refined first (refine_plan),
+      each point run like a band step; the product's settable grip, set torque, corners and shakes wait for its points.
     - A settable product's set torque is treated as a band step. Off the band's grid it runs its scan (T2: its pinch),
       nominal and x0.8 there first, S4 at both candidates chosen by T1's Insertion row. A set torque that fails splits
       its run like a failing step, and the settable rule is applied again.
@@ -1002,6 +1063,15 @@ def torque_extras(rows: list[dict[str, Any]] = ()) -> list[dict[str, Any]]:
         first = next(iter(st.values()))
         reading = (first["nominal"] or first["scan"])["reading"]
         s4 = any(s["candidate"] for s in st.values())
+        todo = [p for g in refine_plan({t: s["label"] == "pass" for t, s in st.items() if not s.get("refine")},
+                                       {t: s["label"] == "pass" for t, s in st.items() if s.get("refine")})
+                for p in g["todo"]]
+        # A point whose run left no step (an error row) isn't run again; the product goes on without it.
+        pending = [j for p in dict.fromkeys(todo) for j in _set_step_jobs(design, test, obj, reading, p, s4, refine=True)
+                   if not done(j)]
+        if pending:
+            jobs += pending
+            continue
         grip = settable_grip({t: s["label"] == "pass" for t, s in st.items()})
         tau = round(grip["set_torque"], 4) if grip["settable"] else None
         if tau is not None and tau not in st:

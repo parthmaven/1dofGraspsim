@@ -1121,15 +1121,20 @@ def test_batch1_torque_extras_run_the_set_torque_as_a_step(batch1):
     step = next(j for j in batch1.torque_extras(rows) if j["job"] == "scan")
     assert (step["block"], step["fill"], step["x08_if_held"], step["set_step"], step["nobrake"]) == (
         "torquex", "catalog", True, True, False)
-    # S3's nominal holds at 1.375 and its x0.8 doesn't: the run splits, and 1-1.25 sets at 1.125. S4's (b) corners
-    # fail one, so (a)'s run, its nominal and x0.8 holding at 2.25.
+    # S3's nominal holds at 1.375 and its x0.8 doesn't: the run splits. Its 1.5-1.75 is a near miss (revision 2.46),
+    # refined towards 2.0 first (1.875 fails, 1.8125 holds), and then 1-1.25 sets at 1.125. S4's (b) corners fail one,
+    # so (a)'s run, its nominal and x0.8 holding at 2.25.
     rows += ran("S1", 2.25) + ran("S1", 1.25) + ran("S4", 2.25, fail="corner shallow-")
     rows += [{**r, "set_step": True} for r in t1("S3", 1.375, x08=False, block="torquex")]
     assert extras() == sorted([
-        ("S3", "T1", "scan", None, 1.125, None, None),
+        ("S3", "T1", "scan", None, 1.875, None, None),
         *[("S4", "T1", "mj", f"corner {k}{s}", 2.25, x, "a") for k, x in (("deep", 23.0), ("shallow", 17.0)) for s in "+-"]])
+    rows += [{**r, "refine_step": True} for r in t1("S3", 1.875, x08=False, block="torquex")]
+    assert [j[4] for j in extras() if j[0] == "S3"] == [1.8125]
+    rows += [{**r, "refine_step": True} for r in t1("S3", 1.8125, block="torquex")]
+    assert [j[2:5] for j in extras() if j[0] == "S3"] == [("scan", None, 1.125)]
     assert batch1.settable_grip({t: s["label"] == "pass" for t, s in batch1.torque_steps(rows)[
-        ("S3", "T1", "gm_box")].items()})["passes_at"] == ["1-1.25", "1.5-1.75"]
+        ("S3", "T1", "gm_box")].items()})["passes_at"] == ["1-1.25", "1.5-1.8125"]
     rows += ran("S4", 2.25) + [{**r, "set_step": True} for r in t1("S3", 1.125, block="torquex")]
     assert extras() == [("S3", "T1", "mj", "corner deep+", 1.125, 23.0, None),
                         ("S3", "T1", "mj", "corner shallow+", 1.125, 17.0, None)]
@@ -1146,6 +1151,51 @@ def test_batch1_torque_extras_run_the_set_torque_as_a_step(batch1):
     blank += [{**r, "values": {"finger_torque": 1.375}, "block": "torquex"} for r in blank[:2]]
     assert sorted((j["case"], j["values"]["finger_torque"], j["set_torque"]) for j in batch1.torque_extras(blank)) == [
         ("shake 1.5 Hz", 1.375, True), ("shake 3 Hz", 1.375, True)]
+
+
+def test_batch1_torque_extras_refine_near_misses(batch1):
+    # Revision 2.46: a run short of 1.222 whose failing neighbours allow a settable run, (tau_b + 0.25) >=
+    # 1.222 (tau_a - 0.25), a lone step too, is refined at each edge with a failing neighbour: 0.125 N m out, then
+    # 0.0625 N m further out if that passed or out from the old edge if it failed, never past the band's ends. Each
+    # point runs like a band step (its scan, its x0.8 only where its nominal holds); the settable rule then reads the
+    # refined run, with the set torque as a step and the corners there.
+    rp = batch1.refine_plan
+    band = {0.25 * k: False for k in range(1, 25)}
+    po = {**band, 1.5: True, 1.75: True}
+    assert rp(po) == [{"run": [1.5, 1.75], "bounds": [1.25, 2.0], "points": [1.375, 1.875], "todo": [1.375, 1.875],
+                       "refined": [1.5, 1.75]}]
+    p = rp(po, {1.375: True, 1.875: False})[0]
+    assert (p["todo"], p["refined"]) == ([1.3125, 1.8125], [1.375, 1.75])
+    assert rp(po, {1.375: True, 1.875: False, 1.3125: False, 1.8125: True})[0]["refined"] == [1.375, 1.8125]
+    assert rp({**band, 2.5: True})[0]["points"] == [2.375, 2.625] and rp({**band, 2.75: True}) == []
+    assert rp({**band, 0.25: True})[0]["points"] == [0.375] and rp({**band, 6.0: True}) == []
+    assert rp({**band, 2.0: True, 2.25: True, 2.5: True}) == []
+    assert rp({**band, 1.0: True, 1.25: True, 1.5: True, 1.75: True, 1.375: False})[0]["points"] == [1.875]
+
+    box = {"reading": 45.0, "test": "T1", "object": "gm_box", "fill": "catalog", "lateral_mm": 0.0}
+
+    def step(tau: float, nominal: bool, x08: bool, block: str = "torque", **tag: bool) -> list[dict]:
+        v = {"block": block, "design": "S2", "values": {"finger_torque": tau}}
+        mj = {**box, **v, "job": "mj", "kind": "mujoco", "depth_mm": 20.0}
+        return [{**box, **v, **tag, "job": "scan", "kind": "screen", "simulate": True, "depth_mm": 20.0, "stop_mm": None,
+                 "table_cap_mm": 200.0}, {**mj, "case": "nominal", "passed": nominal, "score": 1.3},
+                {**mj, "case": "friction x0.8", "passed": x08}]
+
+    rows = [r for t in band for r in step(t, t in (1.25, 1.5, 1.75), t in (1.5, 1.75))]
+
+    def extras() -> list[tuple]:
+        batch1.add_verdicts(rows)
+        return sorted((j["job"], j.get("case"), j["values"]["finger_torque"], j.get("x08_if_held"), j.get("refine_step"))
+                      for j in batch1.torque_extras(rows))
+
+    assert extras() == [("scan", None, 1.375, True, True), ("scan", None, 1.875, True, True)]
+    rows += step(1.375, True, True, "torquex", refine_step=True) + step(1.875, True, False, "torquex", refine_step=True)
+    assert extras() == [("scan", None, 1.3125, True, True), ("scan", None, 1.8125, True, True)]
+    rows += step(1.3125, False, False, "torquex", refine_step=True) + step(1.8125, True, True, "torquex", refine_step=True)
+    # 1.375 - 1.8125 is settable (1.318), at 1.59375 off the grid: a step first, then its corners.
+    assert extras() == [("scan", None, 1.5938, None, None)]
+    rows += step(1.5938, True, True, "torquex", set_step=True)
+    assert [(j[1], j[2]) for j in extras()] == [("corner deep+", 1.5938), ("corner shallow+", 1.5938)]
 
 
 def test_batch1_rescore_uses_the_first_pass_objects(batch1):
