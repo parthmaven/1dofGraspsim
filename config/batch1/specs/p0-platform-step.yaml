@@ -1,0 +1,64 @@
+# STEP-built platform baseline for batch 1 (test-conditions.md rev 2.8, "Platform baseline").
+# Written by the design-search worker from `Finger, Left, MV-UMI01-3DP-001 A.stp`
+# (cad/gripper-umi-platform-v0.1/), not by a concept author. Geometry only; no search.
+# Outline: the finger's silhouette in the jaw plane (u = y + 31, v = x + 19 for the left
+# finger), so the undercut is the notch clear through the arm's whole height: a V-notch
+# 8.72 mm deep at u 116.5 between face points at u 101.0 and 129.5 (walls fitted at 34 deg
+# near and 41 deg far, design-search doc section 8.7). The back tapers from v -20.95 at
+# u 46 to a 2.2 mm tip. The first 46 mm is the shared platform root.
+# body_width_mm: the face's contact width (within 0.5 mm of the face plane) along u, and
+# the arm's height across the notch. The paddle part (`Paddle, Gripper, MV-UMI01 A`) sits
+# behind the blade and never touches an object, so it is left out.
+id: P0
+name: Platform finger from the STEP (bare)
+author: design-search worker (from the STEP)
+batch: 1
+status: baseline
+moving_parts: none
+idea: The platform finger as drawn, bare PA12 at the friction table's bare values (0.3 on carton).
+fingers:
+  symmetric: true
+  asymmetric_for: []
+  outside:
+    root: platform
+    outline:
+      - [44.00, 17.75]
+      - [44.00, -21.07]
+      - [88.83, -18.48]
+      - [90.22, -18.30]
+      - [91.57, -17.93]
+      - [93.26, -17.16]
+      - [150.00, 15.60]
+      - [150.00, 17.75]
+      - [129.33, 17.75]
+      - [123.51, 11.93]
+      - [122.61, 11.15]
+      - [121.84, 10.61]
+      - [120.46, 9.87]
+      - [119.03, 9.36]
+      - [117.61, 9.09]
+      - [115.92, 9.04]
+      - [114.90, 9.14]
+      - [113.36, 9.51]
+      - [112.14, 10.00]
+      - [110.70, 10.81]
+      - [100.79, 17.75]
+    body_width_mm: [[46, 78.5], [50, 118.5], [55, 139], [60, 132], [70, 118], [80, 104], [85, 97], [88, 63.5], [90, 28.5], [95, 27.5], [100, 26.5], [101.5, 26], [105, 26], [110, 25], [116.5, 24], [120, 23.5], [125, 22.5], [129.5, 21.5], [135, 20.5], [140, 19.5], [145, 12.5], [150, 6]]
+    pads: []
+    features:
+      undercut: {u_from: 101.0, u_to: 129.5, depth_mm: 8.72, side: inner, purpose: "the STEP's V-notch: apex at u 116.5, near wall 34 deg, far wall 41 deg"}
+      tip: {thickness_profile_mm: [[150, 2.2], [140, 7.9], [129.5, 14.0]]}
+      hard_stop: {type: end_of_stroke, opening_deg: 90, where: "the platform's end of stroke"}
+  inside: same
+search:
+  base_concept: baseline
+  existing_variables:
+    active: [finger_torque]
+    fixed: {finger_reach: 150}
+    narrow: {finger_torque: [0.5, 8.0]}
+    nominal: {finger_torque: 3.0}
+  new_variables: {}
+stroke:
+  readings: [45, 90]
+materials:
+  finger: common

@@ -406,6 +406,11 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
     loaded = ld.fx > 0
     zc = ld.z[loaded]
     p_max = float(ld.p.max())
+    # On a box the bed limit holds only where cereal backs the wall, below the fill line; the empty
+    # panel above it takes the panel force limit alone (test conditions rev 2.11).
+    box = obj.kind == "box"
+    bed = loaded & (ld.z <= z_top - obj.headspace * 1000.0) if box else loaded
+    p_bed = float(ld.p[bed].max()) if bed.any() else 0.0
     cop_z = float(np.sum(ld.z * ld.fx) / N)  # mm
     contact_len = max(float(zc.max() - zc.min()), 0.5) * 1e-3  # m
     arm = tau / N
@@ -492,8 +497,9 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
 
     share = m_norm / m_cap if m_cap > 0 else 1.0
     m_pad = min(share * m_dem, m_cap) / 2
-    p_dem = p_max * n_dem / N + 6 * m_pad / (b * contact_len**2)
-    margins["pressure"] = obj.material.allow_pressure / (sc.pressure_sf * p_dem)
+    p_dem = (p_bed * n_dem / N + 6 * m_pad / (b * contact_len**2)) if p_bed > 0 else 0.0
+    if p_dem > 0:
+        margins["pressure"] = obj.material.allow_pressure / (sc.pressure_sf * p_dem)
 
     f_panel = 0.0
     if obj.kind == "box" and math.isfinite(obj.unsupported_force):
@@ -513,6 +519,7 @@ def _solve_at_depth(f: Finger, obj: GraspObject, sc: Scenario, depth: float, tau
         "normal_force_N": N,
         "normal_force_loaded_N": n_dem,
         "peak_pressure_kPa": p_max / 1e3,
+        "bed_pressure_kPa": p_bed / 1e3,
         "loaded_pressure_kPa": p_dem / 1e3,
         "contact_length_mm": contact_len * 1e3,
         "cop_below_top_mm": z_top - cop_z,

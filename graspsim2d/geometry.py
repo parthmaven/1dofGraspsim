@@ -121,6 +121,23 @@ class Pad:
     pivot_depth: float | None = None  # mm behind the face; None = rigid mount
     pivot_stiffness: float = 0.0  # N*m/rad
     pivot_range: float = 0.0  # rad
+    # A bare printed face marked as a contact face: rigid, at the bare friction for the object.
+    rigid: bool = False
+    # An even layer over a curved face: face points (u, v), proximal to distal. The chord
+    # sets face_u, face_v and angle; `length` is the arc length.
+    profile: tuple[tuple[float, float], ...] | None = None
+    # "square": a block square to its face. "drawn" (a spec's wedged flat pad, SR round 17): seated in its
+    # drawn pocket, the face shifted `thickness` along v toward the body with its ends square to the finger.
+    seat: str = "square"
+
+    @property
+    def drawn_seat(self) -> bool:
+        return self.seat == "drawn" and self.profile is None and not self.crowned
+
+    @property
+    def normal_thickness(self) -> float:
+        """The elastomer's depth square to the face: `thickness` on a square block, t cos(a) on a drawn seat."""
+        return self.thickness * abs(math.cos(self.angle)) if self.drawn_seat else self.thickness
 
     @property
     def tangent(self) -> np.ndarray:
@@ -136,7 +153,7 @@ class Pad:
 
     @property
     def crowned(self) -> bool:
-        return math.isfinite(self.crown_radius)
+        return math.isfinite(self.crown_radius) and self.profile is None
 
     @property
     def pivot(self) -> np.ndarray | None:
@@ -154,13 +171,25 @@ class Pad:
         """Points on the face (proximal to distal), inward normals, arc length per
         point (mm) and local elastomer thickness (mm)."""
         t, nn, c = self.tangent, self.normal, self.centre
+        if self.profile is not None:
+            P = np.asarray(self.profile, dtype=float)
+            seg = np.hypot(*np.diff(P, axis=0).T)
+            s_knots = np.concatenate([[0.0], np.cumsum(seg)])
+            s = np.linspace(0.0, s_knots[-1], n)
+            pts = np.stack([np.interp(s, s_knots, P[:, 0]), np.interp(s, s_knots, P[:, 1])], axis=1)
+            d = np.gradient(pts, axis=0)
+            d /= np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-12)[:, None]
+            normals = np.stack([-d[:, 1], d[:, 0]], axis=1)
+            ds = np.full(n, s_knots[-1] / (n - 1))
+            ds[[0, -1]] *= 0.5
+            return pts, normals, ds, np.full(n, self.thickness)
         if not self.crowned:
             s = np.linspace(-self.length / 2, self.length / 2, n)
             pts = c + s[:, None] * t
             normals = np.repeat(nn[None, :], n, axis=0)
             ds = np.full(n, self.length / (n - 1))
             ds[[0, -1]] *= 0.5
-            thick = np.full(n, self.thickness)
+            thick = np.full(n, self.normal_thickness)
             return pts, normals, ds, thick
         r = self.crown_radius
         th_max = math.asin(min(self.length / (2 * r), 1.0))
@@ -175,7 +204,13 @@ class Pad:
 
     def outline(self, n: int = 24) -> np.ndarray:
         """Closed outline of the pad block (face plus a flat back), CCW."""
+        if self.profile is not None:
+            pts, nrm, _, _ = self.face_samples(max(n, 2 * len(self.profile)))
+            return np.vstack([pts, (pts - self.thickness * nrm)[::-1]])
         pts, _, _, _ = self.face_samples(n)
+        if self.drawn_seat:
+            shift = np.array([0.0, self.thickness * math.copysign(1.0, self.normal[1])])
+            return np.vstack([pts, [pts[-1] - shift, pts[0] - shift]])
         back_c = self.centre - self.thickness * self.normal
         t = self.tangent
         half = self.length / 2

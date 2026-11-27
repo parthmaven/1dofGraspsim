@@ -1,6 +1,7 @@
 import dataclasses
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -582,3 +583,1175 @@ def test_run_directory_keeps_its_box_tables(tmp_path):
     save_inputs(tmp_path / "run", paths)
     assert yaml.safe_load((tmp_path / "run" / "objects.yaml").read_text())["box_tables"][0]["file"] == "general_mills_cereal_boxes.csv"
     assert "gm_cheerios_family_18oz" in load_objects(tmp_path / "run" / "objects.yaml").ids()
+
+
+def test_bed_limit_applies_only_below_the_fill_line(setup):
+    """Test conditions rev 2.11: a grip wholly on the empty panel takes the panel force limit alone."""
+    space, concepts, lib, sc = setup
+    fs = lib.by_id("gm_cheerios_family_18oz")
+    d = concepts["baseline_paddle"].make(space)
+    shallow = solve_grip(d, fs, sc, depth=0.06)
+    assert shallow.ok and "pressure" not in shallow.margins and "panel" in shallow.margins
+    assert shallow.info["bed_pressure_kPa"] == 0.0 < shallow.info["peak_pressure_kPa"]
+
+
+
+@pytest.fixture(scope="module")
+def batch1():
+    from graspsim2d import batch1 as b
+
+    # The calibrated checks run on the PA12 baseline; the stainless tests switch over themselves.
+    with b.finger_material("pa12"):
+        yield b
+
+
+def test_batch1_specs_build_feasible_jaws(batch1):
+    for key in batch1.SPEC_FILES:
+        j = batch1.get_jaw(key, 45.0)
+        assert j.feasible, (key, j.issues)
+        assert j.right.faces and all(f.width > 0 for f in j.right.faces)
+
+
+def test_batch1_comb_layers_keep_their_widths(batch1):
+    from graspsim2d.jaw import element_layout
+
+    def widths(face):
+        lay = element_layout(face, 2.0, 0.5)
+        return lay["c"][:, 0], lay["w"]
+
+    # body_width_mm already gives each comb step its half of the paddle: S5's 75 mm on both fingers, S4's thumb 70.
+    for rd in (45.0, 90.0):
+        j = batch1.get_jaw("S5", rd)
+        for side in (1, -1):
+            faces = {f.name: f for f in j.sides[side].faces}
+            for name in ("bare0", "bare1", "bare2"):
+                assert widths(faces[name])[1] == pytest.approx(75.0), (rd, side, name)
+    j = batch1.get_jaw("S4", 45.0)
+    thumb = {f.name: f for f in j.sides[-1].faces}
+    for name in ("bare1", "bare2", "bare3"):
+        assert widths(thumb[name])[1] == pytest.approx(70.0), name
+    # S4's outside floor crosses three parts, element by element: the 80 mm layer the relief leaves, half of the 97 mm
+    # station where the thumb's step sweeps past u 78, then the table's 97 and 60.
+    floor = next(f for f in j.sides[1].faces if f.name == "bare9")
+    for u, w in zip(*widths(floor)):
+        assert w == pytest.approx(80.0 if u < 78 else 48.5 if u < 82.8 else 97.0 if u < 90 else 60.0), u
+
+
+def test_batch1_wedged_pads_sit_in_their_drawn_pockets(batch1):
+    from shapely.geometry import Point
+    # SR round 17: a wedged flat pad fills its drawn pocket, the face shifted its thickness along v with its ends square
+    # to the finger, so no block corner overhangs the pocket and no pocket wall is left bare.
+    cases = [("S2", None, "tooth", 4.0, 2.0 / 8.0), ("S2", {"tooth_wedge": 3.0}, "tooth", 4.0, 3.0 / 8.0),
+             ("S5", None, "crank_face", 4.0, 10.0 / 35.0)]
+    for d, values, name, t, slope in cases:
+        j = batch1.get_jaw(d, 45.0, values)
+        for side in (1, -1):
+            js = j.sides[side]
+            pad = next(f.pad for f in js.faces if f.pad.name == name)
+            assert pad.drawn_seat and math.tan(pad.angle) == pytest.approx(slope)
+            face, _, _, th = pad.face_samples(9)
+            assert th == pytest.approx(t * math.cos(pad.angle))
+            back = pad.outline()[-2:]
+            assert back[0] == pytest.approx(face[-1] - [0.0, t]) and back[1] == pytest.approx(face[0] - [0.0, t])
+            u0 = face[0][0]
+            assert js.outline.contains(Point(u0 + 0.1, face[0][1] - t + 0.25)), (d, values, side)
+            walls = [f for f in js.faces if f.rigid and all(abs(p[0] - u0) < 0.05 for p in f.pad.face_samples(5)[0])
+                     and face[0][1] - t - 0.05 < min(p[1] for p in f.pad.face_samples(5)[0]) < face[0][1]]
+            assert not walls, (d, values, side, [f.name for f in walls])
+    # A flat pad square to the finger is the same block either way.
+    for d, name in (("S1", "box_cartridge"), ("S4", "thumb_face")):
+        pad = next(f.pad for s in (1, -1) for f in batch1.get_jaw(d, 45.0).sides[s].faces if f.pad.name == name)
+        assert pad.normal_thickness == pad.thickness
+        assert pad.outline() == pytest.approx(dataclasses.replace(pad, seat="square").outline())
+
+
+def test_batch1_convex_corners_get_a_second_slide(batch1):
+    import re
+
+    from shapely.geometry import box
+    from shapely.ops import unary_union
+
+    from graspsim2d.jaw import convex_corners
+    from graspsim2d.mj1 import E_H, _Builder, _d, body_mass
+    from graspsim2d.t5 import case_object
+
+    # SIM round 12: an element at a convex corner gets a second slide along the next face's normal.
+    j4, j5 = batch1.get_jaw("S4", 45.0), batch1.get_jaw("S5", 45.0)
+    out = convex_corners(j4.sides[1])
+    # S4's outside finger: the tip's three faces, both ends of the land and the floor's drop into the recess; not the
+    # recess's concave corners, nor the floor's end at the heel, where no face meets it.
+    assert set(out) == {("bare1", 0), ("bare2", -1), ("bare2", 0), ("bare3", -1), ("bare4", 0), ("bare5", -1),
+                        ("bare5", 0), ("bare6", -1), ("bare8", 0), ("bare9", -1)}
+    assert out[("bare6", -1)][0].name == "bare5" and out[("bare5", 0)][0].name == "bare6"
+    assert tuple(out[("bare6", -1)][3]) == pytest.approx((132.0, 17.75))
+    assert {k for k in convex_corners(j4.sides[-1]) if k[0] == "bare2"} == {("bare2", 0), ("bare2", -1)}
+    # S5's crank corner turns 15.95 deg, short of the 30 it takes.
+    assert not any("crank_face" in (k[0], v[0].name) for k, v in convex_corners(j5.sides[1]).items())
+    assert ("crank_face", -1) in convex_corners(j5.sides[1], min_turn_deg=10.0)
+
+    c = batch1.ctx()
+    case = case_object(c["b1"]["t5"], "2ft", c["lib"].materials)
+
+    def build(b1):
+        b = _Builder(j4, case, c["sc"], b1, 0.0, {1: 0.5, -1: 0.5}, 1.0, 1.0, 0.0)
+        return b, b.finger_xml(1)[0]
+
+    def joint(xml, name):
+        m = re.search(rf'<joint name="{name}" type="slide" axis="([^"]+)" stiffness="([^"]+)"[^>]* range="([^"]+)"/>', xml)
+        return [float(x) for x in m.group(1).split()], float(m.group(2)), [float(x) for x in m.group(3).split()]
+
+    b, xml = build(c["b1"])
+    el = next(e for e in b.elements if e.face == "bare6" and e.joint2)
+    assert el.adj == "bare5" and el.joint2 == el.joint + "_c"
+    assert {(e.face, e.adj) for e in b.elements if e.joint2} == {(f, v[0].name) for (f, _), v in out.items()}
+    axis, k1, _ = joint(xml, el.joint)
+    axis2, k2, rng2 = joint(xml, el.joint2)
+    # Along the land's normal, at the land's stiffness over the 0.8 mm the element's end presents to it, and with the
+    # land's bare travel.
+    X, Z = _d(0.0, 1.0, 1)
+    assert axis2 == pytest.approx([X, 0.0, Z], abs=1e-6) and axis != pytest.approx(axis2, abs=0.1)
+    assert k2 == pytest.approx(k1 * 2 * E_H / el.seg, rel=1e-4) and rng2 == pytest.approx([-1.5e-3, 2e-4])
+    b, xml = build({**c["b1"], "corner_slide": False})
+    assert not any(e.joint2 for e in b.elements) and "_c\"" not in xml
+
+    # MuJoCo's body is cut back past each bare face's ends too: S4's floor face starts 0.3 mm short of the heel, and
+    # the rigid sliver there took the case's load once its corner gave.
+    js = j4.sides[1]
+    heel = box(49.0, 16.2, 50.0, 17.8)
+    assert unary_union(js.body_mj).intersection(heel).area < 1e-6 < 0.3 < unary_union(js.mass_mj).intersection(heel).area
+    m_flat = body_mass(dataclasses.replace(js, body_mj=js.mass_mj, mass_mj=None), 8000.0)
+    assert body_mass(js, 8000.0) == m_flat != body_mass(dataclasses.replace(js, mass_mj=None), 8000.0)
+
+
+def test_batch1_screen_bed_and_depth_stop(batch1):
+    from graspsim2d.screen1 import Limits, scan_box, solve
+
+    c = batch1.ctx()
+    lim = Limits.from_config(c["b1"], "T1")
+    fs = batch1.get_obj("gm_cheerios_family_18oz")
+    j = batch1.get_jaw("r2-09", 45.0)
+    g = solve(j, fs, c["sc"], lim, 30.0)
+    assert g.ok and "pressure" not in g.margins and g.info["bed_pressure_kPa"] == 0.0
+    r = scan_box(j, fs, c["sc"], lim)
+    assert r.ended.startswith("depth stop") and math.isfinite(r.stop_mm)
+    assert r.depth <= r.stop_mm - lim.placement + 1e-6
+
+
+def test_batch1_screen_moment_goes_to_friction_first(batch1):
+    from graspsim2d.screen1 import Limits, scan_box, solve
+
+    c = batch1.ctx()
+    lim = Limits.from_config(c["b1"], "T1")
+    j = batch1.get_jaw("S2", 45.0)
+    # SIM round 9: on S2's 8 mm tooth pad, 100 mm deep at loose fill, MuJoCo's bed pressure matches the screen with no
+    # moment term (21.8 - 23.4 kPa at 1.75 N m, 32.9 - 34.4 at 3), since the friction couple carries the moment.
+    for tau, lo, hi in ((1.75, 21.5, 23.7), (3.0, 32.6, 34.7)):
+        for box in ("gm_021908455587", "gm_016000275492", "gm_016000222083"):
+            g = solve(j, batch1.get_obj(box, "loose"), c["sc"], lim, 100.0, tau=tau)
+            i = g.info
+            assert g.ok and i["faces"] == "tooth" and i["short_pads"] and lo < i["bed_pressure_kPa"] < hi
+            assert i["bed_moment_Nm"] == pytest.approx(max(0.0, i["moment_Nm"] - i["friction_couple_Nm"]) / 2)
+            # Within 10 deg the short pad's pressure couple gives about 0.035 N m, not 2 N L / 3.
+            assert i["pressure_couple_Nm"] < 0.04 < 2 * i["grip_loaded_N"] * i["contact_length_mm"] * 1e-3 / 3
+    # A long pad keeps its whole pressure couple.
+    g = solve(batch1.get_jaw("r2-09", 45.0), batch1.get_obj("gm_016000275492", "catalog"), c["sc"], lim, 60.0)
+    assert g.ok and not g.info["short_pads"]
+    assert g.info["pressure_couple_Nm"] == pytest.approx(2 * g.info["grip_loaded_N"] * g.info["contact_length_mm"] * 1e-3 / 3)
+    # VAL R9.4: S2's dam top is a contact face, and each row reports its best grip with the pad below the fill line.
+    assert [f for f in j.right.grip_faces if f.rigid and 1.0 < f.pad.length < 3.0
+            and 128.0 < float(f.pad.face_samples(2)[0][0, 0]) < 136.0]
+    row = scan_box(j, batch1.get_obj("gm_021908455587", "loose"), c["sc"], lim).row()
+    assert row["deep_depth_mm"] >= row["depth_mm"] and row["deep_score"] > 0.0 and row["deep_bed_kPa"] > 0.0
+
+
+def test_batch1_brake_holds_the_power_cut(batch1):
+    from graspsim2d import mj1
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("r2-09", 45.0)
+    o = batch1.get_obj("gm_016000275492")
+    b1 = {**c["b1"], "shake_s": 1.0}
+    held = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5)
+    assert held["power_cut_held"] and held["brake_on_s"] - held["power_cut_s"] < 1e-3
+    assert held["drive_hold_Nm"] == pytest.approx(2 * j.torque, rel=0.02)
+    assert held["brake_use_Nm"] == pytest.approx(held["drive_hold_Nm"], rel=0.05)
+    assert held["mount_fatigue_flag"] and held["finger_torque_Nm"] == j.torque
+    # Test conditions 2.16: friction use is both fingers' 10 ms mean, reported but outside every pass rule,
+    # and element pressure comes from the element springs.
+    assert "friction" not in held["margins"] and held["pass_rule"] == "all margins"
+    assert held["substeps"] == 2  # r2-09's short faces split at the 1.5 mm fine pitch
+    assert 0.0 < held["friction_use"] <= held["friction_use_sample_peak"] + 1e-9
+    assert held["pressure_kPa"] > 0.0 and held["pressure_kPa_contact_sample"] > 0.0
+    # Revision 2.36: contacts are read at every physics step. The rated peaks keep one sample per 0.4 ms; the
+    # every-step maxima and the largest 5 ms averages sit beside them.
+    assert held["sample_s"] < held["peak_sample_s"] == pytest.approx(4e-4)
+    assert held["contact_average_s"] == pytest.approx(0.005)
+    for k in ("band", "panel", "body"):
+        assert held[f"{k}_step_N"] >= max(held[f"{k}_N"], held[f"{k}_5ms_N"]) - 1e-9
+        assert held[f"impact_{k}_step_N"] >= max(held[f"impact_{k}_N"], held[f"impact_{k}_5ms_N"]) - 1e-9
+    assert held["pressure_step_kPa"] >= max(held["pressure_kPa"], held["pressure_5ms_kPa"]) - 1e-6
+    assert held["pressure_5ms_kPa"] > 0.0
+    loose = mj1.simulate(j, o, c["sc"], b1, "T1", 60.0, stops=[], power_s=0.5, brake=1.0, friction_scale=0.8)
+    assert not loose["power_cut_held"] and loose["pass_rule"] == "holds: slip and rotation"
+    hold = loose["dropped_in"] != "main" and loose["margins"]["slip"] >= 1.0 and loose["margins"]["rotation"] >= 1.0
+    assert loose["passed"] == hold and loose["limiting"] in ("slip", "rotation")
+
+
+def test_batch1_close_brakes_to_the_slow_speed(batch1):
+    from graspsim2d import mj1
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("r2-09", 45.0)
+    o = batch1.get_obj("c_flute_4mm")
+    cl = c["b1"]["closing"]
+    # Opened 7.9 deg, the jaw closes at the fast speed until it is 5 deg out, then the servo brakes it to the slow
+    # speed (SIM round 19). The push-only governor lets it coast in at the fast speed, with no joint damping.
+    b1 = {**c["b1"], "shake_s": 0.5, "approach_clearance_mm": {**c["b1"]["approach_clearance_mm"], "sheet": 20.0}}
+    on, off = (mj1.simulate(j, o, c["sc"], {**b1, "closing": {**cl, "brakes": b}}, "T2", 30.0, stops=[], power_s=0.2)
+               for b in (True, False))
+    assert on["close_brakes"] and not off["close_brakes"]
+    assert on["approach_opening_deg"] - on["touch_plan_deg"] > cl["slow_deg"]
+    assert on["contact_rad_s"] == pytest.approx(cl["slow_rad_s"], rel=0.15)
+    assert off["contact_rad_s"] == pytest.approx(cl["fast_rad_s"], rel=0.1)
+    # Revision 2.31's edge rule, read at every step over the main phase: each grip face's largest 5 ms average of its
+    # contact force over its width while more than 1 deg off its normal, and the flush faces' rated reading.
+    assert on["edge_off_normal_deg"] == 1.0 and on["contact_average_s"] == pytest.approx(0.005)
+    assert on["edge_5ms_N_per_mm"] == pytest.approx(max(on["edge_faces_5ms_N_per_mm"].values(), default=0.0), abs=1e-3)
+    assert on["flush_kPa"] >= 0.0 and isinstance(on["flush_element"], str)
+
+
+def test_batch1_blown_up_runs_stop_instead_of_restarting(batch1, monkeypatch):
+    from graspsim2d import mj1
+
+    c = batch1.ctx()
+    step, seen = mj1.mujoco.mj_step, {}
+
+    def reset_once(m, d):
+        seen["autoreset_off"] = bool(m.opt.disableflags & int(mj1.mujoco.mjtDisableBit.mjDSBL_AUTORESET))
+        if d.time >= 0.2 and not seen.get("reset"):
+            seen["reset"] = True
+            mj1.mujoco.mj_resetData(m, d)  # what MuJoCo's auto-reset does to a run that blows up
+        step(m, d)
+
+    monkeypatch.setattr(mj1.mujoco, "mj_step", reset_once)
+    j = batch1.get_jaw("r2-09", 45.0)
+    r = mj1.simulate(j, batch1.get_obj("c_flute_4mm"), c["sc"], c["b1"], "T2", 30.0)
+    assert seen["autoreset_off"] and r["reason"].startswith("simulation went unstable") and r["reset_flag"]
+    assert r["unstable_s"] == pytest.approx(0.2, abs=1e-3) and r["unstable_phase"] == "close"
+    assert r["passed"] is None and r["score"] is None and r["finger_torque_Nm"] == j.torque
+    assert r["substeps"] == 2  # sheets run at the fine timestep (test conditions 2.16)
+    job = {"block": "t", "design": "r2-09", "reading": 45.0, "job": "mj", "test": "T2", "object": "c_flute_4mm",
+           "depth_mm": 30.0, "case": "pinch 30"}
+    row = {**job, "kind": "mujoco", **r}
+    again = batch1.rerun_job(job, row)
+    assert again["b1_over"] == {"substeps": 4} and again["rerun_of_reset"] and again["case"] == job["case"]
+    assert batch1.rerun_job(again, {**row, "substeps": 4})["b1_over"] == {"substeps": 8}
+    assert batch1.rerun_job(again, {**row, "substeps": 8}) is None
+    assert batch1.rerun_job(job, {**row, "reset_flag": False}) is None
+
+
+def test_batch1_verdict_needs_the_friction_x08_hold(batch1):
+    base = {"block": "t", "design": "S2", "reading": 45.0, "kind": "mujoco", "test": "T1", "object": "box", "depth_mm": 30.0,
+            "lateral_mm": 0.0}
+    rows = [{**base, "fill": "catalog", "case": "nominal", "passed": True},
+            {**base, "fill": "catalog", "case": "friction x0.8", "friction_scale": 0.8, "power_s": 1.0, "passed": False},
+            {**base, "fill": "loose", "case": "nominal", "passed": True},
+            {**base, "test": "T2", "object": "sheet", "case": "pinch 30", "reset_flag": True, "passed": None, "substeps": 2},
+            {**base, "test": "T2", "object": "sheet", "case": "pinch 30", "rerun_of_reset": True, "passed": True, "substeps": 4},
+            {**base, "test": "T2", "object": "sheet", "case": "friction x0.8", "friction_scale": 0.8, "power_s": 1.0,
+             "passed": True}]
+    batch1.add_verdicts(rows)
+    assert [r.get("verdict") for r in rows] == [False, None, True, None, True, None]
+    assert rows[0]["verdict_basis"] == "nominal passes, x0.8 does not hold"
+    assert rows[2]["verdict_basis"].startswith("nominal only") and "rerun carries" in rows[3]["verdict_basis"]
+
+
+def test_batch1_select_runs_part_of_a_block(batch1):
+    jobs = batch1.block_refs()
+    platform = batch1.select(jobs, ["platform-padded"])
+    assert platform and {j["design"] for j in platform} == {"platform-padded"}
+    assert len(platform) + len(batch1.select(jobs, ["r2-09"])) == len(jobs)
+    one = batch1.select(jobs, ["r2-09"], ["gm_016000163492"])
+    assert one and {(j["design"], j["object"]) for j in one} == {("r2-09", "gm_016000163492")}
+
+
+def test_batch1_s4_block_scans_each_finger(batch1):
+    from graspsim2d.screen1 import Limits, finger_pair, scan_box
+
+    c = batch1.ctx()
+    jobs = batch1.block_s4()
+    scans = [j for j in jobs if j["job"] == "scan"]
+    assert len(scans) == 13 * len(batch1.FILLS) and {j["design"] for j in jobs} == {"S4"}
+    assert len([j for j in jobs if j["job"] == "mj"]) == len([j for j in batch1.block_s2() if j["job"] == "mj"]) == 32
+    # An asymmetric jaw's insertion scan screens each finger as a mirrored pair, the worse finger at each depth,
+    # stopped where either stops. It sets the depth only: the jaw is scored in MuJoCo, with the placement corners on
+    # both sides.
+    row = batch1.run_job(next(j for j in scans if j["object"] == "gm_cheerios_family_18oz" and j["fill"] == "catalog"))
+    assert row["simulate"] and row["scan_basis"].startswith("each finger as a mirrored pair")
+    assert row["depth_mm"] <= row["stop_mm"] - 3.0 + 1e-6
+    cases = {f["case"] for f in batch1.t1_followups(row, False)}
+    assert cases == {"nominal", "corner deep+", "corner shallow+", "corner deep-", "corner shallow-", "friction x0.8"}
+    # A symmetric jaw's mirrored pair is the jaw itself.
+    j2 = batch1.get_jaw("S2", 45.0)
+    o = batch1.get_obj("gm_cheerios_family_18oz", "catalog")
+    lim = Limits.from_config(c["b1"], "T1")
+    a, b = scan_box(j2, o, c["sc"], lim), scan_box(finger_pair(j2, 1), o, c["sc"], lim)
+    assert a.depth == b.depth and a.robust == pytest.approx(b.robust)
+
+
+def test_t4_torque_is_set_per_task(batch1):
+    from graspsim2d.t4 import simulate_t4
+
+    # Revision 2.42: T4a and the bin runs at the drive's 25 N m peak per gripper, T4b at 8 N m per finger. S1's T4a
+    # fails on geometry before any MuJoCo run.
+    c = batch1.ctx()
+    assert c["b1"]["t4"]["torque_Nm_per_finger"] == {"t4a": 12.5, "t4b": 8.0}
+    r = simulate_t4(batch1.get_jaw("S1", 45.0), c["sc"], c["b1"], "t4a")
+    assert r["finger_torque_Nm"] == 12.5 and r["limiting"] == "geometry"
+    assert c["b1"]["drive_duty"] == {"peak_event_s": 10.0, "cycle_rms_Nm": 7.0}
+
+
+def test_batch1_torque_pass_runs_the_platform_band(batch1):
+    # Block C's per-product torque pass: S1 - S6 over the platform's band, T1 nominal at catalog fill and T2 at the
+    # 30 mm pinch, S4 last. S2's grips are judged on MuJoCo's friction x0.8 run, on its boxes and its sheets; by
+    # revision 2.44 the others run it wherever the nominal holds, and S4's corners wait for the set torque.
+    jobs = batch1.block_torque()
+    band = batch1.TORQUE_BAND
+    assert band[0] == 0.25 and band[-1] == 6.0 and len(band) == 24
+    assert jobs[-1]["design"] == "S4" and {j["design"] for j in jobs} == {"S1", "S2", "S3", "S4", "S5", "S6"}
+    scans = [j for j in jobs if j["job"] == "scan"]
+    assert len(scans) == 6 * 24 * 13 and {j["fill"] for j in scans} == {"catalog"}
+    assert all(j["nobrake"] is False and j["values"]["finger_torque"] in band for j in scans)
+    judged = {d: {(bool(j.get("x08_only")), bool(j.get("nominal_only")), bool(j.get("x08_if_held")), j.get("depth_rule"),
+                   j.get("depth_corners", True)) for j in scans if j["design"] == d} for d in batch1.TORQUE_PASS_DESIGNS}
+    assert judged == {"S2": {(True, False, False, None, True)}, "S4": {(False, False, False, "2.43", False)},
+                      **{d: {(False, False, True, None, True)} for d in ("S1", "S3", "S5", "S6")}}
+    t2 = [j for j in jobs if j["job"] == "mj"]
+    assert {j["test"] for j in t2} == {"T2"} and {j["depth_mm"] for j in t2} == {30.0}
+    assert len(t2) == 6 * 24 * 7 + 24 * 7 and {j["design"] for j in t2 if j["case"] == "friction x0.8"} == {"S2"}
+    assert {j["design"] for j in t2 if j.get("x08_if_held")} == {"S1", "S3", "S4", "S5", "S6"}
+    scan = {**next(j for j in scans if j["design"] == "S2"), "simulate": True, "depth_mm": 20.0, "table_cap_mm": 200.0,
+            "stop_mm": None}
+    assert [f["case"] for f in batch1.t1_followups(scan)] == ["nominal", "friction x0.8"]
+    s1 = batch1.t1_followups({**next(j for j in scans if j["design"] == "S1"), "simulate": True, "depth_mm": 20.0,
+                              "table_cap_mm": 200.0, "stop_mm": None})
+    assert [(f["case"], f.get("x08_if_held")) for f in s1] == [("nominal", True)]
+    assert batch1.get_jaw("S6", 45.0, {"finger_torque": 0.25}).torque == pytest.approx(0.25)
+    # Its T3 aims S1's, S2's and S6's squeeze at 12.8 - 15 N per finger, each torque its own verdict.
+    t3 = batch1.block_t3_torque()
+    assert {j["design"] for j in t3} == {"S1", "S2", "S6"} and len(t3) == 3 * 3 * 7
+    rows = [{**j, "kind": "mujoco", "passed": j["values"]["finger_torque"] == 1.75 or j["case"].startswith("corner")}
+            for j in t3 if j["design"] == "S1"]
+    batch1.add_verdicts(rows)
+    assert {r["values"]["finger_torque"]: r["verdict"] for r in rows if r["case"] == "nominal"} == {
+        1.65: False, 1.75: True, 1.85: False}
+
+
+def test_batch1_s4_depth_rule_rates_the_best_held_depth(batch1):
+    # Revision 2.43: S4's T1 nominal at (a) the mirrored-pair scan's robust depth, (b) the stop less 3 mm and (c) the
+    # best depth with the contact below the fill line, coinciding depths once. The rated depth is the best-held nominal
+    # whose x0.8 run and corners hold too, then the next, then (a).
+    jobs = batch1.block_s4_depth()
+    assert len(jobs) == 13 * len(batch1.FILLS) and all(j["depth_rule"] == "2.43" and j["nobrake"] is False for j in jobs)
+    scan = {**jobs[0], "fill": "catalog", "kind": "screen", "test": "T1", "simulate": True, "depth_mm": 27.0,
+            "stop_mm": 46.5, "cap_mm": 110.5, "table_cap_mm": 269.0, "deep_depth_mm": math.nan}
+    assert batch1.t1_depth_candidates(scan) == [("a", 27.0), ("b", 43.5)]
+    assert batch1.t1_depth_candidates({**scan, "depth_mm": 43.5, "deep_depth_mm": 30.0}) == [("a=b", 43.5), ("c", 30.0)]
+    assert batch1.t1_depth_candidates({**scan, "stop_mm": math.nan}) == [("a", 27.0), ("b", 110.5)]
+    # Revision 2.45: (b) is the deepest depth whose +-3 mm neighbours both still grip in the scan, run once where it
+    # is (a); (c) is moot.
+    new = {**scan, "deep_depth_mm": 24.0}
+    assert batch1.t1_depth_candidates({**new, "grip_deep_mm": 27.0}) == [("a=b", 27.0)]
+    assert batch1.t1_depth_candidates({**new, "grip_deep_mm": 30.0}) == [("a", 27.0), ("b", 30.0)]
+    assert batch1.t1_depth_candidates({**new, "grip_deep_mm": math.nan}) == [("a", 27.0)]
+    assert batch1.t1_depth_candidates({**new, "grip_deep_mm": 300.0}) == [("a", 27.0), ("b", 269.0)]
+
+    def grid(grips: set, stop: float, cap: float = 110.5) -> SimpleNamespace:
+        pts = {**{float(d): d in grips for d in range(3, int(stop), 3)}, stop: stop in grips, stop - 3.0: stop - 3.0 in grips}
+        g = {d: SimpleNamespace(ok=ok, status="ok") for d, ok in pts.items()}
+        return SimpleNamespace(grid={**g, stop + 1.5: SimpleNamespace(ok=False, status="stop")}, stop_mm=stop, cap_mm=cap)
+
+    purely_o = set(range(12, 31, 3))
+    assert batch1._grip_deep(grid(purely_o, 46.5), 3.0) == 27.0
+    assert batch1._grip_deep(grid({*range(12, 46, 3), 43.5, 46.5}, 46.5), 3.0) == 43.5
+    assert batch1._grip_deep(grid(purely_o, 46.5, cap=20.0), 3.0) == 20.0
+    assert math.isnan(batch1._grip_deep(grid({12, 15}, 46.5), 3.0))
+    noms = batch1.t1_followups(scan, False)
+    assert [(f["case"], f["depth_mm"], f["depth_candidate"]) for f in noms] == [("nominal", 27.0, "a"), ("nominal", 43.5, "b")]
+    # The follow-ups run only where a nominal holds: x0.8 at catalog fill and the corners on both sides, the deep ones
+    # on the stop.
+    held = [{**noms[0], "kind": "mujoco", "passed": False, "score": 0.0}, {**noms[1], "kind": "mujoco", "passed": True, "score": 1.4}]
+    fu = batch1.t1_depth_followups(scan, held, False)
+    assert {f["depth_candidate"] for f in fu} == {"b"} and sorted(f["case"] for f in fu) == [
+        "corner deep+", "corner deep-", "corner shallow+", "corner shallow-", "friction x0.8"]
+    assert {f["depth_mm"] for f in fu if f["case"].startswith("corner deep")} == {46.5}
+
+    def rated(failing: str = "") -> list[dict]:
+        rows = [dict(r) for r in held] + [{**f, "kind": "mujoco", "passed": f["case"] != failing} for f in fu]
+        batch1.add_verdicts(rows)
+        return rows[:2]
+
+    a, b = rated()
+    assert (a["verdict"], b["verdict"]) == (None, True) and b["verdict_basis"].startswith("rev 2.43: rated at (b)")
+    a, b = rated("corner shallow-")
+    assert (a["verdict"], b["verdict"]) == (False, None) and a["depth_rule_alt"] == "b"
+    assert "no candidate whose nominal holds also holds its x0.8 run and corners" in a["verdict_basis"]
+
+
+def test_batch1_torque_pass_settable_grip_and_extras(batch1):
+    # Revision 2.44: a product is settable on a contiguous run of steps passing nominal and x0.8 with
+    # tau_b >= 1.222 tau_a, set at the run's midpoint, the run read at or below 3.5 N m, then below 3.9, then whole.
+    g = batch1.settable_grip
+
+    def ok(*ts: float) -> dict:
+        return {t: True for t in ts}
+
+    a = g({**ok(2.0, 2.25, 2.5), 2.75: False})
+    assert a["settable"] and (a["set_torque"], a["part"], a["tier"]) == (2.25, [2.0, 2.5], "at or below 3.5 N m")
+    assert not (a["flag_7Nm"] or a["flag_fatigue"])
+    assert g(ok(2.0, 2.25))["label"] == "passes at 2-2.25, not settable"
+    assert g({**ok(2.0, 2.5), 2.25: False})["label"] == "passes at 2, 2.5, not settable"
+    assert g({2.0: False})["label"] == "fails at every step"
+    b = g(ok(2.75, 3.0, 3.25, 3.5, 3.75, 4.0))
+    assert (b["set_torque"], b["part"], b["flag_7Nm"]) == (3.125, [2.75, 3.5], False)
+    c = g(ok(3.0, 3.25, 3.5, 3.75))
+    assert (c["set_torque"], c["tier"], c["flag_7Nm"], c["flag_fatigue"]) == (3.375, "below 3.9 N m", True, False)
+    d = g(ok(3.25, 3.5, 3.75, 4.0, 4.25))
+    assert (d["set_torque"], d["tier"], d["flag_7Nm"], d["flag_fatigue"]) == (3.75, "the whole run", True, True)
+    e = g({**ok(0.5, 0.75), 1.0: False, **ok(2.0, 2.25, 2.5)})
+    assert e["set_torque"] == 0.625 and e["passes_at"] == ["0.5-0.75", "2-2.5"]
+    # Revision 2.45: of runs settable at one tier, the widest by tau_b / tau_a, then the lower set torque, with the
+    # others reported beside it; a set torque off the grid that fails splits its run.
+    w = g({**ok(1.0, 1.25), 1.5: False, **ok(2.0, 2.25, 2.5, 2.75, 3.0)})
+    assert (w["set_torque"], w["others"]) == (2.5, [{"set_torque": 1.125, "part": [1.0, 1.25],
+                                                     "tier": "at or below 3.5 N m"}])
+    t = g({**ok(1.0, 1.25), 1.5: False, **ok(2.0, 2.25, 2.5)})
+    assert (t["set_torque"], [o["set_torque"] for o in t["others"]]) == (1.125, [2.25])
+    assert g({**ok(2.0, 2.25, 2.5, 2.75), 2.375: False})["label"] == "passes at 2-2.25, 2.5-2.75, not settable"
+    assert g({**ok(2.0, 2.25, 2.5, 2.75), 2.375: True})["set_torque"] == 2.375
+    # The x0.8 run follows a band nominal that holds: T1 as run, T2 as run or by the edge rule.
+    nom = {"block": "torque", "design": "S1", "reading": 45.0, "values": {"finger_torque": 2.0}, "job": "mj", "test": "T1",
+           "object": "gm_box", "fill": "catalog", "case": "nominal", "depth_mm": 20.0, "lateral_mm": 0.0,
+           "x08_if_held": True}
+    x = batch1.x08_after(nom, {**nom, "kind": "mujoco", "passed": True})
+    assert (x["case"], x["friction_scale"], x["power_s"], "x08_if_held" in x) == ("friction x0.8", 0.8, 1.0, False)
+    assert batch1.x08_after(nom, {**nom, "kind": "mujoco", "passed": False}) is None
+    assert batch1.x08_after(nom, {**nom, "kind": "mujoco", "passed": True, "reset_flag": True}) is None
+    assert batch1.x08_after({**nom, "x08_if_held": False}, {**nom, "kind": "mujoco", "passed": True}) is None
+    sheet = {**nom, "test": "T2", "object": "b_flute_3mm", "case": "pinch 30", "depth_mm": 30.0, "kind": "mujoco",
+             "passed": False, "pressure_kPa": 100.0, "m_pressure": 0.5, "edge_5ms_N_per_mm": 0.2, "flush_kPa": 40.0,
+             "m_slip": 1.1, "dropped_in": ""}
+    er = batch1.t2_edge_rule(sheet)
+    assert er["passed"] and er["limiting"] == "slip" and er["score"] == pytest.approx(1.1)
+    assert batch1.t2_edge_rule({**sheet, "edge_5ms_N_per_mm": 0.4})["limiting"] == "edge"
+    assert not batch1.t2_edge_rule({**sheet, "dropped_in": "main"})["passed"]
+    assert batch1.t2_edge_rule({**sheet, "object": "chipboard_0p5mm"})["rule"] == "as run"
+    assert batch1.x08_after(sheet, sheet)["case"] == "friction x0.8"
+    # Each step's reading: T1 as run (S4 at its rated candidate), T2 by the edge rule.
+    rows = []
+    for tau in (2.0, 2.25, 2.5, 2.75):
+        at = {**nom, "values": {"finger_torque": tau}, "kind": "mujoco"}
+        rows += [{**at, "passed": True, "score": 1.3}, {**at, "case": "friction x0.8", "passed": tau < 2.6}]
+    for tau, score in ((1.0, 0.9), (1.25, 1.2)):
+        at = {**nom, "test": "T2", "object": "chipboard_0p5mm", "case": "pinch 30", "depth_mm": 30.0,
+              "values": {"finger_torque": tau}, "kind": "mujoco"}
+        rows += [{**at, "passed": score > 1.0, "score": score}, {**at, "case": "friction x0.8", "passed": False}]
+    for tau in (2.0, 2.25, 2.5):
+        at = {**nom, "design": "S4", "values": {"finger_torque": tau}, "kind": "mujoco", "depth_rule": "2.43"}
+        rows += [{**at, "depth_candidate": "a", "passed": True, "score": 1.2},
+                 {**at, "depth_candidate": "b", "depth_mm": 43.5, "passed": True, "score": 1.5},
+                 {**at, "depth_candidate": "a", "case": "friction x0.8", "passed": True},
+                 {**at, "depth_candidate": "b", "depth_mm": 43.5, "case": "friction x0.8", "passed": False}]
+    batch1.add_verdicts(rows)
+    steps = batch1.torque_steps(rows)
+    assert [s["label"] for s in steps[("S1", "T1", "gm_box")].values()] == ["pass", "pass", "pass", "nominal"]
+    assert [s["label"] for s in steps[("S1", "T2", "chipboard_0p5mm")].values()] == ["fail", "nominal"]
+    assert {s["candidate"] for s in steps[("S4", "T1", "gm_box")].values()} == {"a"}
+    assert "rated at (a)" in rows[-4]["depth_rule_basis"] and "x0.8 run too" in rows[-4]["depth_rule_basis"]
+    assert steps[("S4", "T1", "gm_box")][2.0]["candidates"] == {
+        "a": {"depth_mm": 20.0, "nominal": True, "x08": True}, "b": {"depth_mm": 43.5, "nominal": True, "x08": False}}
+
+
+def test_batch1_torque_extras_run_the_set_torque_as_a_step(batch1):
+    # Revision 2.45: a set torque is a band step. Off the grid it runs its scan, nominal and x0.8 first, and failing
+    # them it splits its run, the settable rule applied again. At a set torque that holds: the +-3 mm corners at the
+    # depth chosen there (S4 at its rated candidate's, then the other's where its nominal and x0.8 hold there), and
+    # the carton blanks' 1.5 and 3 Hz shakes at their set torque, or at their best 2 Hz step.
+    box = {"reading": 45.0, "test": "T1", "object": "gm_box", "fill": "catalog", "lateral_mm": 0.0}
+
+    def t1(design: str, tau: float, x08: bool = True, block: str = "torque", **cands: tuple) -> list[dict]:
+        v = {"block": block, "design": design, "values": {"finger_torque": tau}}
+        scan = {**box, **v, "job": "scan", "kind": "screen", "simulate": True, "depth_mm": 20.0, "stop_mm": None,
+                "table_cap_mm": 200.0}
+        mj = {**box, **v, "job": "mj", "kind": "mujoco", "depth_mm": 20.0}
+        if not cands:
+            return [scan, {**mj, "case": "nominal", "passed": True, "score": 1.3}, {**mj, "case": "friction x0.8", "passed": x08}]
+        out = [scan]
+        for tag, (depth, score, held) in cands.items():
+            at = {**mj, "depth_rule": "2.43", "depth_candidate": tag, "depth_mm": depth}
+            out += [{**at, "case": "nominal", "passed": True, "score": score}, {**at, "case": "friction x0.8", "passed": held}]
+        return out
+
+    rows = [r for tau in (2.0, 2.25, 2.5) for r in t1("S1", tau)] + t1("S1", 2.75, x08=False)
+    rows += [r for tau in (1.0, 1.25, 1.5, 1.75) for r in t1("S3", tau)]
+    rows += [r for tau in (2.0, 2.25, 2.5) for r in t1("S4", tau, a=(20.0, 1.2, True), b=(43.5, 1.5, tau == 2.25))]
+    for tau, score in ((1.0, 0.9), (1.25, 1.2)):
+        at = {**box, "block": "torque", "design": "S1", "values": {"finger_torque": tau}, "job": "mj", "kind": "mujoco",
+              "test": "T2", "object": "chipboard_0p5mm", "depth_mm": 30.0}
+        rows += [{**at, "case": "pinch 30", "passed": score > 1.0, "score": score},
+                 {**at, "case": "friction x0.8", "passed": False}]
+
+    def extras() -> list[tuple]:
+        batch1.add_verdicts(rows)
+        return sorted((j["design"], j.get("test", "T1"), j["job"], j.get("case"), j["values"]["finger_torque"],
+                       j.get("depth_mm"), j.get("depth_candidate")) for j in batch1.torque_extras(rows))
+
+    def ran(design: str, tau: float, fail: str = "") -> list[dict]:
+        jobs = [j for j in batch1.torque_extras(rows) if j["design"] == design and j["values"]["finger_torque"] == tau]
+        return [{**j, "kind": "mujoco", "passed": j.get("case") != fail, "friction_scale": j.get("friction_scale") or 1.0,
+                 "band_factor": 50.0} for j in jobs]
+
+    # S1's box sets at 2.25 on the grid and S4's at 2.25 at its rated (b); S3's set torque, 1.375, is off the grid;
+    # S1's blank isn't settable and shakes at its best 2 Hz step.
+    assert extras() == sorted([
+        ("S1", "T1", "mj", "corner deep+", 2.25, 23.0, None), ("S1", "T1", "mj", "corner shallow+", 2.25, 17.0, None),
+        ("S1", "T2", "mj", "shake 1.5 Hz", 1.25, 30.0, None), ("S1", "T2", "mj", "shake 3 Hz", 1.25, 30.0, None),
+        ("S3", "T1", "scan", None, 1.375, None, None),
+        *[("S4", "T1", "mj", f"corner {k}{s}", 2.25, x, "b") for k, x in (("deep", 46.5), ("shallow", 40.5)) for s in "+-"]])
+    step = next(j for j in batch1.torque_extras(rows) if j["job"] == "scan")
+    assert (step["block"], step["fill"], step["x08_if_held"], step["set_step"], step["nobrake"]) == (
+        "torquex", "catalog", True, True, False)
+    # S3's nominal holds at 1.375 and its x0.8 doesn't: the run splits. Its 1.5-1.75 is a near miss (revision 2.46),
+    # refined towards 2.0 first (1.875 fails, 1.8125 holds), and then 1-1.25 sets at 1.125. S4's (b) corners fail one,
+    # so (a)'s run, its nominal and x0.8 holding at 2.25.
+    rows += ran("S1", 2.25) + ran("S1", 1.25) + ran("S4", 2.25, fail="corner shallow-")
+    rows += [{**r, "set_step": True} for r in t1("S3", 1.375, x08=False, block="torquex")]
+    assert extras() == sorted([
+        ("S3", "T1", "scan", None, 1.875, None, None),
+        *[("S4", "T1", "mj", f"corner {k}{s}", 2.25, x, "a") for k, x in (("deep", 23.0), ("shallow", 17.0)) for s in "+-"]])
+    rows += [{**r, "refine_step": True} for r in t1("S3", 1.875, x08=False, block="torquex")]
+    assert [j[4] for j in extras() if j[0] == "S3"] == [1.8125]
+    rows += [{**r, "refine_step": True} for r in t1("S3", 1.8125, block="torquex")]
+    assert [j[2:5] for j in extras() if j[0] == "S3"] == [("scan", None, 1.125)]
+    assert batch1.settable_grip({t: s["label"] == "pass" for t, s in batch1.torque_steps(rows)[
+        ("S3", "T1", "gm_box")].items()})["passes_at"] == ["1-1.25", "1.5-1.8125"]
+    rows += ran("S4", 2.25) + [{**r, "set_step": True} for r in t1("S3", 1.125, block="torquex")]
+    assert extras() == [("S3", "T1", "mj", "corner deep+", 1.125, 23.0, None),
+                        ("S3", "T1", "mj", "corner shallow+", 1.125, 17.0, None)]
+    rows += ran("S3", 1.125)
+    assert extras() == []
+    # A settable blank's shakes wait for its set torque to hold as a step.
+    sheet = {**box, "block": "torque", "design": "S3", "job": "mj", "kind": "mujoco", "test": "T2",
+             "object": "chipboard_0p5mm", "depth_mm": 30.0, "passed": True, "score": 1.4}
+    blank = [{**sheet, "case": c, "values": {"finger_torque": tau}} for tau in (1.0, 1.25, 1.5, 1.75)
+             for c in ("pinch 30", "friction x0.8")]
+    ex = batch1.torque_extras(blank)
+    assert sorted((j["job"], j.get("case"), j["values"]["finger_torque"], j.get("x08_if_held")) for j in ex) == [
+        ("mj", "pinch 30", 1.375, True), ("sheet_screen", "pinch 30", 1.375, True)]
+    blank += [{**r, "values": {"finger_torque": 1.375}, "block": "torquex"} for r in blank[:2]]
+    assert sorted((j["case"], j["values"]["finger_torque"], j["set_torque"]) for j in batch1.torque_extras(blank)) == [
+        ("shake 1.5 Hz", 1.375, True), ("shake 3 Hz", 1.375, True)]
+
+
+def test_batch1_torque_extras_refine_near_misses(batch1):
+    # Revision 2.46: a run short of 1.222 whose failing neighbours allow a settable run, (tau_b + 0.25) >=
+    # 1.222 (tau_a - 0.25), a lone step too, is refined at each edge with a failing neighbour: 0.125 N m out, then
+    # 0.0625 N m further out if that passed or out from the old edge if it failed, never past the band's ends. Each
+    # point runs like a band step (its scan, its x0.8 only where its nominal holds); the settable rule then reads the
+    # refined run, with the set torque as a step and the corners there.
+    rp = batch1.refine_plan
+    band = {0.25 * k: False for k in range(1, 25)}
+    po = {**band, 1.5: True, 1.75: True}
+    assert rp(po) == [{"run": [1.5, 1.75], "bounds": [1.25, 2.0], "points": [1.375, 1.875], "todo": [1.375, 1.875],
+                       "refined": [1.5, 1.75]}]
+    p = rp(po, {1.375: True, 1.875: False})[0]
+    assert (p["todo"], p["refined"]) == ([1.3125, 1.8125], [1.375, 1.75])
+    assert rp(po, {1.375: True, 1.875: False, 1.3125: False, 1.8125: True})[0]["refined"] == [1.375, 1.8125]
+    assert rp({**band, 2.5: True})[0]["points"] == [2.375, 2.625] and rp({**band, 2.75: True}) == []
+    assert rp({**band, 0.25: True})[0]["points"] == [0.375] and rp({**band, 6.0: True}) == []
+    assert rp({**band, 2.0: True, 2.25: True, 2.5: True}) == []
+    assert rp({**band, 1.0: True, 1.25: True, 1.5: True, 1.75: True, 1.375: False})[0]["points"] == [1.875]
+
+    box = {"reading": 45.0, "test": "T1", "object": "gm_box", "fill": "catalog", "lateral_mm": 0.0}
+
+    def step(tau: float, nominal: bool, x08: bool, block: str = "torque", **tag: bool) -> list[dict]:
+        v = {"block": block, "design": "S2", "values": {"finger_torque": tau}}
+        mj = {**box, **v, "job": "mj", "kind": "mujoco", "depth_mm": 20.0}
+        return [{**box, **v, **tag, "job": "scan", "kind": "screen", "simulate": True, "depth_mm": 20.0, "stop_mm": None,
+                 "table_cap_mm": 200.0}, {**mj, "case": "nominal", "passed": nominal, "score": 1.3},
+                {**mj, "case": "friction x0.8", "passed": x08}]
+
+    rows = [r for t in band for r in step(t, t in (1.25, 1.5, 1.75), t in (1.5, 1.75))]
+
+    def extras() -> list[tuple]:
+        batch1.add_verdicts(rows)
+        return sorted((j["job"], j.get("case"), j["values"]["finger_torque"], j.get("x08_if_held"), j.get("refine_step"))
+                      for j in batch1.torque_extras(rows))
+
+    assert extras() == [("scan", None, 1.375, True, True), ("scan", None, 1.875, True, True)]
+    rows += step(1.375, True, True, "torquex", refine_step=True) + step(1.875, True, False, "torquex", refine_step=True)
+    assert extras() == [("scan", None, 1.3125, True, True), ("scan", None, 1.8125, True, True)]
+    rows += step(1.3125, False, False, "torquex", refine_step=True) + step(1.8125, True, True, "torquex", refine_step=True)
+    # 1.375 - 1.8125 is settable (1.318), at 1.59375 off the grid: a step first, then its corners.
+    assert extras() == [("scan", None, 1.5938, None, None)]
+    rows += step(1.5938, True, True, "torquex", set_step=True)
+    assert [(j[1], j[2]) for j in extras()] == [("corner deep+", 1.5938), ("corner shallow+", 1.5938)]
+
+
+def test_batch1_rescore_uses_the_first_pass_objects(batch1):
+    lib = batch1.fp_library()
+    assert len(lib.objects) == 14 and lib.by_id("b_flute_3mm").material.bare_friction == pytest.approx(0.35)
+    assert lib.by_id("cheerios_8p9oz").material.bare_friction == pytest.approx(0.3)
+    readings = {k: v["reading"] for k, v in batch1.pr2_designs().items()}
+    assert readings == {"r2-13 at 90": 90.0, "r2-07 at 90": 90.0, "r2-14 at 45": 45.0, "r2-08 at 45": 45.0}
+    assert batch1.get_jaw("platform-padded", 45.0, {"finger_torque": 1.25}).torque == pytest.approx(1.25)
+    jobs = batch1.block_pr2()
+    assert all(j["library"] == "fp" and j["nobrake"] is False for j in jobs)
+    scan = {**next(j for j in jobs if j["job"] == "scan" and j.get("nominal_only")), "simulate": True, "depth_mm": 20.0,
+            "table_cap_mm": 200.0, "stop_mm": None}
+    assert [f["case"] for f in batch1.t1_followups(scan)] == ["nominal"]
+
+
+def test_batch1_family_size_loose_runs_its_x08(batch1):
+    jobs = batch1.block_fs_loose()
+    lengths = {(j["design"], j.get("reach_cap")) for j in jobs}
+    assert len(jobs) == len(lengths) == 10 and {("S2", None), ("S2", 170.0), ("S5", 170.0)} <= lengths
+    assert all(j["fill"] == "loose" and j["object"] == batch1.FAMILY_SIZE and j["x08_only"] for j in jobs)
+    scan = {**jobs[0], "simulate": True, "depth_mm": 30.0, "table_cap_mm": 200.0, "stop_mm": None}
+    follow = batch1.t1_followups(scan)
+    assert [f["case"] for f in follow] == ["nominal", "friction x0.8"] and follow[1]["fill"] == "loose"
+
+
+def test_batch1_mount_flag_includes_the_limit(batch1):
+    assert batch1.ctx()["b1"]["mount_fatigue_Nm_per_finger"] == pytest.approx(3.9)  # test conditions 2.16
+    j = batch1.get_jaw("S3", 45.0)
+    assert j.torque == pytest.approx(4.0)
+    assert batch1._torque_flag(j) == {"finger_torque_Nm": j.torque, "mount_fatigue_flag": True}
+    assert not batch1._torque_flag(batch1.get_jaw("S1", 45.0))["mount_fatigue_flag"]
+    assert batch1._torque_flag(batch1.get_jaw("platform-padded", 45.0, {"finger_torque": 3.9}))["mount_fatigue_flag"]
+    assert not batch1._torque_flag(batch1.get_jaw("platform-padded", 45.0, {"finger_torque": 3.85}))["mount_fatigue_flag"]
+    failed = batch1.run_job({"block": "t", "design": "S3", "reading": 45.0, "job": "mj", "test": "T1", "object": "nope"})
+    assert failed["kind"] == "error" and failed["finger_torque_Nm"] == pytest.approx(4.0) and failed["mount_fatigue_flag"]
+
+
+def test_t5_two_arm_lift_with_the_mid_move_cut(batch1):
+    from graspsim2d.t5 import case_object, mirrored, simulate_t5
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("S2", 45.0)
+    m = mirrored(j)
+    assert m.sides[1].body_mj == j.sides[-1].body_mj and {f.side for f in m.sides[1].faces} == {1}
+    assert len(m.sides[-1].faces) == len(j.sides[1].faces)
+    case = case_object(c["b1"]["t5"], "1ft", c["lib"].materials)
+    assert (case.thickness, case.height, case.mass) == (pytest.approx(0.305), pytest.approx(0.254), 5.0)
+    assert case.material.allow_pressure == pytest.approx(105e3)
+    assert case_object(c["b1"]["t5"], "shipper", c["lib"].materials).material.allow_pressure == pytest.approx(25e3)
+    r = simulate_t5(j, case, c["sc"], {**c["b1"], "shake_s": 0.0}, cut_before_stop=True, power_s=0.3)
+    assert r["ok"] and r["supported"] and r["power_cut_held"] and r["passed"]
+    assert set(r["margins"]) == {"slip", "tilt", "thumb", "power cut"} and r["score"] == min(r["margins"].values())
+    for g in "AB":
+        # Test conditions, T5: the tips touch at about 33 deg per finger, about 145 mm from each pivot. On the hub
+        # path the outside finger may lift off in the hold, so its bearing is read at its 5 ms peak.
+        assert r[f"{g}_close"] == "both fingers touch" and 28.0 < r[f"{g}_touch_deg"] < 38.0
+        assert 125.0 < r[f"{g}_thumb_bearing_mm"] < 160.0 and 125.0 < r[f"{g}_out_5ms_r_mm"] < 160.0
+    assert r["A_hold_Nm"] == pytest.approx(r["B_hold_Nm"], rel=0.1, abs=0.05)
+    assert r["mu_bare"] == pytest.approx(0.35)
+    # The brake's reading is its friction loss alone, not the gear coupling's or the stroke limits' forces.
+    assert all(0.0 <= r[f"{g}_brake_use_Nm"] <= r["brake_Nm"] + 1e-6 for g in "AB")
+    assert r["A_thumb_peak_N"] >= r["A_thumb_N_hold"] > 0.0 and r["A_thumb_peak_at"]
+    # The stop along W drives the case outward onto A's hub; the run's peak covers the stop's.
+    assert r["A_hub_peak_N"] >= r["A_hub_stop_peak_N"] > 0.0 and r["A_hub_stop_out_N"] > 0.0 and r["A_hub_peak_phase"]
+    # Revision 2.35: sustained over the final hold's last 1 s; peak the largest 5 ms average from the run's first
+    # contact to 5 s after the stop, so it covers revision 2.34's, from the end of the close, and 2.21's, from the stop.
+    assert r["hub_peak_from"] == "first contact" and r["hub_peak_event"] == "stop"
+    assert r["A_hub_peak_5ms_after_s"] <= 5.0 and r["A_hub_peak_5ms_phase"]
+    assert r["A_hub_window_peak_N"] >= r["A_hub_peak_5ms_N"] >= r["A_hub_peak_5ms_from_close_N"]
+    assert r["A_hub_peak_5ms_from_close_N"] >= r["A_hub_peak_5ms_from_event_N"] > 0.0
+    assert r["A_hub_stop_peak_N"] >= r["A_hub_peak_5ms_from_event_N"] >= r["A_hub_sustained_N"] > 0.0
+    assert r["A_hub_peak_5ms_out_N"] > 0.0 and r["B_hub_sustained_N"] > 0.0
+    # Revision 2.31's window: from the end of the close to the power cut, through every phase, as the largest 5 ms average.
+    assert r["contact_average_s"] == pytest.approx(0.005, abs=0.0005)
+    phases = {"squeeze", "settle", "lift", "hold", "shake", "final", "stop", "power"}
+    for g in "AB":
+        for part in ("out", "thumb"):
+            assert r[f"{g}_{part}_window_peak_N"] >= r[f"{g}_{part}_5ms_N"] >= r[f"{g}_{part}_N_hold"] >= 0.0
+            assert r[f"{g}_{part}_5ms_N"] > 0.0
+            assert r[f"{g}_{part}_5ms_phase"] in phases and r[f"{g}_{part}_window_peak_phase"] in phases
+            assert r[f"{g}_{part}_5ms_face"] and 0.0 < r[f"{g}_{part}_5ms_face_N"] <= r[f"{g}_{part}_5ms_N"] + 1e-6
+            assert 0.0 <= r[f"{g}_{part}_5ms_face_res_frac"] <= 1.0
+            # Revision 2.34: each contact's 5 ms peak in every phase; the mid-move cut's window runs through the cut,
+            # so the largest phase is the window's peak.
+            by = r[f"{g}_{part}_phase_5ms_N"]
+            assert {"settle", "lift", "stop", "power"} <= set(by) <= phases
+            assert max(by.values()) == pytest.approx(r[f"{g}_{part}_5ms_N"], abs=0.01)
+        assert set(r[f"{g}_hub_phase_5ms_N"]) <= phases
+        # Revision 2.35's close window, from the first contact through the squeeze, joins the window at the squeeze.
+        close = {"approach", "close", "squeeze"}
+        for part in ("out", "thumb", "hub"):
+            by = r[f"{g}_{part}_close_phase_5ms_N"]
+            assert set(by) <= close and r[f"{g}_{part}_close_5ms_phase"] in close
+            assert max(by.values()) == pytest.approx(r[f"{g}_{part}_close_5ms_N"], abs=0.01)
+        assert r[f"{g}_hub_peak_5ms_from_close_N"] == pytest.approx(max(r[f"{g}_hub_phase_5ms_N"].values()), abs=0.01)
+        assert r[f"{g}_hub_peak_5ms_N"] == pytest.approx(
+            max(r[f"{g}_hub_close_5ms_N"], *r[f"{g}_hub_phase_5ms_N"].values()), abs=0.01)
+        assert r[f"{g}_window_peak_Nm"] >= r[f"{g}_window_5ms_Nm"] > 0.0
+        # SIM round 17: the actuator torque over the whole run, every sample over the drive's 25 N.m peak flagged.
+        assert r[f"{g}_drive_max_Nm"] >= r[f"{g}_window_peak_Nm"] - 1e-9 and r[f"{g}_drive_max_phase"]
+        assert r[f"{g}_drive_over_cap_s"] == 0.0
+        assert r[f"{g}_window_5ms_Nm_phase"] in phases
+        # The wrist sensor: the case's weight share and the arms' squeeze, at least, in the final hold.
+        assert r[f"{g}_sensor_F_N_hold"] > 0.5 * case.mass * 9.81 / 2
+        assert r[f"{g}_sensor_F_N"] >= r[f"{g}_sensor_F_N_hold"] and r[f"{g}_sensor_F_N_phase"] in phases
+        assert max(r[f"{g}_sensor_F_N_by_phase"].values()) == pytest.approx(r[f"{g}_sensor_F_N"], abs=1e-3)
+        assert r[f"{g}_sensor_T_Nm"] > 0.0 and r[f"{g}_sensor_Mb_Nm"] > 0.0
+    assert r["sensor_F_N"] == max(r["A_sensor_F_N"], r["B_sensor_F_N"])
+    assert r["finger_material"] == "pa12" and r["finger_density_kg_m3"] == 1010.0 and r["mu_hub"] == r["mu_bare"]
+
+
+def test_t5_stop_seated_cradle_and_stop_held_runs(batch1):
+    from graspsim2d.t5 import case_object, simulate_t5
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("S4", 45.0)
+    case = case_object(c["b1"]["t5"], "2ft", c["lib"].materials)
+    with pytest.raises(ValueError):
+        simulate_t5(j, case, c["sc"], c["b1"], approach="pinch")
+    r = simulate_t5(j, case, c["sc"], {**c["b1"], "shake_s": 0.0}, approach="seated", hold="stops", stop_g=0.0,
+                    power_s=0.2)
+    assert r["ok"] and (r["approach"], r["hold"]) == ("seated", "stops")
+    # S4's stops are set at 45 deg per finger, never short: half a degree past a stroke read from its -0.5 deg meet.
+    assert r["stop_deg_jaw"] == pytest.approx(45.0) and r["preset_deg"] == pytest.approx(45.0)
+    assert r["start_out_mm"] > 0.0 and r["t_approach_s"] > 0.1
+    for g in "AB":
+        assert r[f"{g}_close"] == "seated on its stops" and abs(r[f"{g}_out_off_stop_deg"]) < 0.5
+        # The cradle carries the case clear of the hub, and the outside finger's moment goes into its own stop.
+        assert r[f"{g}_hub_hold_N"] < 1.0 and r[f"{g}_out_stop_load_hold_Nm"] > 1.0
+        assert r[f"{g}_thumb_N_hold"] > 0.0 and r[f"{g}_thumb_contact_mm"] >= 0.0
+    # The arm lifts the case onto the cradle before it squeezes, so the case doesn't move on the fingers in the lift.
+    assert r["print_slip_mm"] < 1.0
+    # With no stop, the hub's peak window ends 5 s after the power cut.
+    assert r["hub_peak_event"] == "power cut" and r["A_hub_sustained_N"] < 1.0
+    # SIM round 12's corner fix: the floor and the thumb's step face are flush and share their loads, where a riser's
+    # or the land's corner element held the case before, so each 5 ms reading is a flush face's by the footprint rule.
+    for part, face in (("out", "bare9"), ("thumb", "bare2")):
+        p = f"A_{part}_5ms_"
+        assert r[p + "face"] == face and r[p + "face_N"] >= 0.9 * r[p + "N"] > 0.0
+        assert r[p + "footprint"].startswith("flush") and r[p + "rated_unit"] == "kPa"
+        whole = r[p + "footprint"] == "flush"
+        area = r[p + "face_mm2"] if whole else r[p + "face_w_mm"] * 3 * r[p + "face_res_end_mm"]
+        assert r[p + "footprint_mm2"] == pytest.approx(area)
+        assert r[p + "rated"] == pytest.approx((1 if whole else 2) * r[p + "N"] / area * 1e3)
+    # A whole face's area is its drawn area: the thumb's step is an even 70 mm wide, and the floor narrows to 48.5 mm.
+    assert r["A_thumb_5ms_face_mm2"] == pytest.approx(r["A_thumb_5ms_face_w_mm"] * r["A_thumb_5ms_face_len_mm"], rel=1e-3)
+    assert r["A_out_5ms_face_mm2"] == pytest.approx(4497.0, rel=1e-3)
+    # Revision 2.41: the floor is read whole over 4,965 mm² while its resultant lies in u 76 - 104 with under 2 % of the
+    # load off it. Seated on its stops with no shake, the floor carries the load at about u 62, so the face rule reads it.
+    assert r["A_out_5ms_floor_mm2"] == 4965.0 and r["A_out_5ms_floor_N"] == pytest.approx(r["A_out_5ms_N"], rel=0.02)
+    assert r["A_out_5ms_floor_u_mm"] < 76.0 and not r["A_out_5ms_floor_in_band"]
+    # The drive's 25 N*m peak caps each gripper, 12.5 N*m a finger motor; the root is rated against PA12's allowables.
+    assert r["drive_capped_at_Nm"] == pytest.approx(25.0) and r["root_fatigue_factor"] == pytest.approx(1.5)
+    for g in "AB":
+        assert r[f"{g}_drive_capped_s"] >= 0.0 and math.isfinite(r[f"{g}_backdrive_deg"])
+        for part in ("out", "thumb"):
+            assert r[f"{g}_{part}_M_5ms_Nm"] > 0.0 and r[f"{g}_{part}_root_5ms_MPa"] > 0.0
+            assert r[f"{g}_{part}_root_static_margin"] > 0.0 and r[f"{g}_{part}_root_fatigue_margin"] > 0.0
+
+    jobs = batch1.block_t5()
+    assert len(jobs) == len({batch1._job_key(x) for x in jobs}) == 312 and all(x["hub_contact"] for x in jobs)
+    assert {(x["design"], x["reading"]) for x in jobs if x.get("approach") == "seated"} == {("S4", 45.0), ("S5", 45.0)}
+    held = [x for x in jobs if x.get("hold")]
+    assert len(held) == 24 and {(x["design"], x["reading"]) for x in held} == {("S3", 45.0), ("S4", 45.0), ("S5", 45.0)}
+    tips = batch1.block_t5_tips()
+    assert len(tips) == 312 and not any(x["hub_contact"] for x in tips)
+    # Until Parth says whether a case may rest on the hub, the tips-only path rates T5.
+    assert all(x["rated"] and x["t5_path"] == "tips only" for x in tips)
+    assert not any(x["rated"] for x in jobs) and {x["rated"] for x in batch1.block_t5_cut()} == {True, False}
+
+
+def test_t3_tips_enter_the_gap_and_hold(batch1):
+    from graspsim2d.t3 import entry_check, simulate_t3
+
+    c = batch1.ctx()
+    box = batch1.get_obj("gm_cheerios_family_18oz", "catalog")
+    j = batch1.get_jaw("S2", 45.0)
+    g = entry_check(j, box.thickness * 1e3, 1.3, 15.0)
+    # SR's toed-in chisels: on Family Size the tips sweep 2.02 - 2.06 mm, a 0.7 - 0.8 mm push at the 1.3 mm gap.
+    assert g["ok"] and 2.0 < g["sweep_R_mm"] < 2.1 and 0.7 < g["push_need_R_mm"] < 0.8
+    # The entry opening is the least that clears the target over the entry depth, so by SIM's rule (the target-side
+    # clearance over the whole depth) it captures no offset; the tip ends alone would take +-0.11 mm.
+    assert g["clear_R_mm"] == pytest.approx(0.0, abs=0.01)
+    assert g["capture_lo_mm"] == pytest.approx(0.0, abs=0.01) and g["capture_hi_mm"] == pytest.approx(0.0, abs=0.01)
+    assert g["capture_land_lo_mm"] < -0.05 and 0.05 < g["capture_land_hi_mm"] < 0.5
+    # Opened to centre the tip ends in the gaps, the tips clear the target up the depth and capture an offset either way.
+    assert g["centred_opening_deg"] > g["entry_opening_deg"]
+    assert g["centred_land_target_R_mm"] == pytest.approx(g["centred_land_neighbour_R_mm"], abs=0.01)
+    assert g["centred_clear_R_mm"] > 0.0 and g["centred_capture_lo_mm"] < 0.0 < g["centred_capture_hi_mm"]
+    # A tip 3 mm off, or at a closed gap, lands on a box top: the entry fails without a MuJoCo run.
+    for kw in ({"lateral": 3.0}, {"gap": 0.0}):
+        r = simulate_t3(j, box, c["sc"], c["b1"], **kw)
+        assert r["landed"] and not r["passed"] and r["limiting"] == "entry" and "elements" not in r
+        assert r["cam_radius_R_mm"] > 1.0 and r["cam_radius_mm"] >= r["cam_radius_R_mm"]
+        assert not r["enters_at_sensitivity_radius"]
+    # The shoulder 15.5 mm up S2's tips is a depth stop over the target's top: the 20 mm sensitivity reports it.
+    r = simulate_t3(j, box, c["sc"], c["b1"], entry=20.0)
+    assert r["passed"] is None and r["limiting"] == "depth stop" and 15.0 < r["depth_stop_mm"] < 16.0
+    assert r["reason"].startswith("depth stop at 15.") and "elements" not in r
+    assert math.isnan(g["depth_stop_R_mm"])
+    r = simulate_t3(j, box, c["sc"], c["b1"], friction_scale=0.8, drag_scale=1.2, power_s=0.2)
+    assert r["ok"] and not r["reset_flag"] and not r["stalled"] and not r["target_contact_in_entry"] and r["close_brakes"]
+    assert r["entry_reached_mm"] == pytest.approx(15.0, abs=0.05)
+    # The neighbours tip out of the way: the push matches the geometry, under 5 N on the 5 ms average.
+    for s in "RL":
+        assert r[f"push_{s}_mm"] == pytest.approx(g[f"push_need_{s}_mm"], abs=0.15)
+        assert r[f"push_{s}_N"] < 5.0 and r[f"drag_{s}_mm"] < 0.5
+        assert 0.0 < r[f"push_{s}_N_10ms"] <= r[f"push_{s}_N"] + 1e-9 <= r[f"push_{s}_peak_N"] + 1e-9
+    assert r["edge_sensitive"] == (max(r["push_R_N"], r["push_L_N"]) > 4.0)
+    assert r["passed"] and r["pass_rule"].startswith("entry depth, then push") and r["slip_mm"] < 0.5
+    assert r["band_N"] > 10.0 and r["power_cut_held"] and 0.0 <= r["brake_use_Nm"] <= 30.0
+    # SIM round 18: the stall, the first touch and the 5 ms averages read every physics step (100 steps to 5 ms); the
+    # rated single-sample peaks keep their 0.4 ms samples, and their every-step maxima cover them.
+    assert r["sample_s"] < 1e-4 and r["push_average_s"] == pytest.approx(0.005) and r["peak_sample_s"] == pytest.approx(4e-4)
+    for k in ("band_N", "panel_N", "body_N", "impact_band_N", "impact_body_N"):
+        assert r[k.replace("_N", "_step_N")] >= r[k] - 1e-9
+    assert r["bed_step_kPa"] >= r["bed_kPa"] - 1e-9
+
+    jobs = batch1.block_t3()
+    assert len(jobs) == len({batch1._job_key(x) for x in jobs})
+    assert {x["case"] for x in jobs if x["design"] == "S2"} == {
+        "nominal", "friction x0.8", "corner +3 mm", "gap 0 mm", "gap 3 mm", "entry 20 mm", "case wall L"}
+    assert {"corner -3 mm", "case wall R"} <= {x["case"] for x in jobs if x["design"] == "S4"}
+    # Revision 2.23: the corners and the 20 mm entry are reported, not rated.
+    assert {x["case"] for x in jobs if x["design"] == "S4" and not x["rated"]} == {
+        "corner +3 mm", "corner -3 mm", "entry 20 mm"}
+    row = batch1.run_job({**next(x for x in jobs if x["design"] == "S2" and x["case"] == "gap 0 mm")})
+    assert row["kind"] == "mujoco" and row["landed"] and row["gap_mm"] == 0.0 and row["passed"] is False
+    rows = [row, {**row, "case": "nominal", "passed": True}, {**row, "case": "corner +3 mm", "rated": False}]
+    batch1.add_verdicts(rows)
+    assert rows[1]["verdict"] is False and rows[1]["verdict_basis"] == "rated rows fail: gap 0 mm"
+
+
+def test_t4b_s4_seats_both_lips_on_the_tote(batch1):
+    from graspsim2d.t4 import simulate_t4, t4_lip, t4b_pose
+
+    c = batch1.ctx()
+    j = batch1.get_jaw("S4", 45.0)
+    lip = t4_lip(c["b1"])
+    p = t4b_pose(j, lip)
+    # The wall fits between S4's fingers with the outside finger's undercut under the lip, within its 30 mm of free
+    # wall, and the inside finger stays above the contents 50 mm down.
+    assert p["ok"] and 0.0 <= p["seat_gap_mm"] < 1.0 and p["inside_gap_mm"] > 0.0
+    assert p["outside_below_lip_mm"] <= lip["free_wall_mm"] and p["inside_below_rim_mm"] <= 50.0
+    r = simulate_t4(j, c["sc"], {**c["b1"], "shake_s": 0.0}, "t4b", "tote", tau=8.0, stop_g=0.0, power_s=0.2)
+    assert r["ok"] and not r["reset_flag"] and r["finger_torque_Nm"] == 8.0 and r["close_brakes"]
+    # Revision 2.42's duty limit, for information: one event from the close to the power cut, and the shortest work
+    # cycle the 7 N m RMS limit allows at 16 N m per gripper.
+    assert 0.0 < r["drive_event_s"] <= 10.0 and r["drive_event_ok"]
+    assert r["drive_cycle_min_s"] == pytest.approx(r["drive_event_s"] * (16.0 / 7.0) ** 2)
+    assert r["sample_s"] < 1e-4 and r["seat_average_s"] == pytest.approx(0.005)
+    # Each gripper's outside finger seats its own lip, A's right on the +x lip and B's left (the mirrored jaw's
+    # outside finger) on the -x lip, each carrying half the 15 kg.
+    for g in "AB":
+        assert r[f"{g}_seated"] and r[f"{g}_seat_N"] == pytest.approx(15.0 * 9.81 / 2, rel=0.1)
+        # Each wrist sensor reads its half of the crate: the pinch on the wall cancels between the two fingers.
+        assert r[f"{g}_sensor_F_N_hold"] == pytest.approx(15.0 * 9.81 / 2, rel=0.1)
+    assert r["passed"] and r["slip_mm"] < 2.0 and r["power_cut_held"]
+    # Revision 2.25: T4 reads each finger's contact by the footprint rule from the start, on its largest 5 ms average.
+    # The outside fingers' land and hook face share the lip at the corner between them, off the land's middle third;
+    # the inside fingers bear on the wall's inner face with an edge.
+    for nm in ("AR", "AL", "BR", "BL"):
+        assert r[f"{nm}_5ms_N"] > 0.0 and r[f"{nm}_5ms_face"] in r[f"{nm}_5ms_faces"]
+        assert r[f"{nm}_5ms_rated_unit"] == ("N/mm" if r[f"{nm}_5ms_footprint"] == "edge" else "kPa")
+    for nm in ("AR", "BL"):
+        assert set(r[f"{nm}_5ms_faces"]) == {"bare5", "bare6"} and r[f"{nm}_5ms_face"] == "bare5"
+        assert r[f"{nm}_5ms_footprint"] == "flush, off its middle third"
+    for nm in ("AL", "BR"):
+        assert r[f"{nm}_5ms_footprint"] == "edge"
+        assert r[f"{nm}_5ms_rated"] == pytest.approx(r[f"{nm}_5ms_N"] / r[f"{nm}_5ms_face_w_mm"])
+
+
+def test_sensor_sums_the_external_contacts():
+    import mujoco
+
+    from graspsim2d.sensor import Wrench
+
+    # A 2 kg block rests on the jaw's plate 50 mm across from the sensor's axis; the plate sits 50 mm along the axis
+    # from the sensor's centre (74 mm below the datum against the centre's 24).
+    m = mujoco.MjModel.from_xml_string("""<mujoco><option timestep="0.0005" cone="elliptic"/><worldbody>
+      <body name="grip"><geom name="plate" type="box" size="0.12 0.05 0.01" pos="0 0 -0.01"/></body>
+      <body name="load" pos="0.05 0 0.0201"><freejoint/><geom type="box" size="0.02 0.02 0.02" mass="2"/></body>
+      </worldbody></mujoco>""")
+    d = mujoco.MjData(m)
+    w = Wrench(m, {}, "grip", {"plate": 74.0}, m.opt.timestep)
+    while d.time < 0.4:
+        mujoco.mj_step(m, d)
+        w.sample(m, d, d.time, "hold", True, d.time > 0.3)
+    r = w.readings()
+    W = 2.0 * 9.81
+    assert r["sensor_F_N_hold"] == pytest.approx(W, rel=0.01)
+    assert r["sensor_T_Nm_hold"] == pytest.approx(W * 0.05, rel=0.01)
+    assert r["sensor_Mb_Nm_hold"] == pytest.approx(W * 0.05, rel=0.01)
+    assert r["sensor_F_N"] >= r["sensor_F_N_hold"] and r["sensor_F_N_by_phase"]["hold"] == pytest.approx(r["sensor_F_N"], abs=1e-3)
+
+
+def test_batch1_finger_material_switch(batch1):
+    from graspsim2d.mj1 import finger_density
+
+    assert batch1.finger() == "pa12"
+    with batch1.finger_material("stainless"):
+        c = batch1.ctx()
+        mats = c["lib"].materials
+        # Revision 2.34: bare stainless on carton 0.20, corrugated 0.30, HDPE or PP 0.20; T3's drag at the top of its
+        # range; the printed hub keeps PA12's 0.35 on corrugated.
+        assert batch1.finger() == c["b1"]["finger_material"] == "stainless"
+        assert mats["cereal_carton_flakes"].bare_friction == mats["chipboard_20pt"].bare_friction == pytest.approx(0.20)
+        assert mats["c_flute"].bare_friction == mats["bc_double_wall"].bare_friction == pytest.approx(0.30)
+        assert mats["c_flute"].printed == pytest.approx(0.35)
+        assert batch1.get_obj("gm_cheerios_family_18oz").material.bare_friction == pytest.approx(0.20)
+        assert batch1.fp_library().by_id("b_flute_3mm").material.bare_friction == pytest.approx(0.30)
+        assert c["b1"]["t3"]["drag_friction"] == pytest.approx(0.30) and "drag_friction_pa12" not in c["b1"]["t3"]
+        assert c["b1"]["t5"]["midmove_cut"]["bare_mu_sensitivity"] == pytest.approx(0.24)
+        assert c["b1"]["t4"]["materials"]["pp"]["bare_friction"] == pytest.approx(0.2)
+        assert finger_density(c["b1"]) == 8000.0
+    c = batch1.ctx()
+    assert c["b1"]["t3"]["drag_friction"] == pytest.approx(0.5) and finger_density(c["b1"]) == 1010.0
+    assert c["lib"].materials["c_flute"].bare_friction == pytest.approx(0.35)
+    assert c["b1"]["t3"]["robust_drag"] == batch1.ctx("stainless")["b1"]["t3"]["robust_drag"] == pytest.approx(1.2)
+    with pytest.raises(ValueError):
+        with batch1.finger_material("pla"):
+            pass
+    # A job names its finger material, and its row records the one it ran on.
+    job = {"block": "t", "design": "S2", "reading": 45.0, "job": "sheet_screen", "object": "c_flute_4mm", "depth_mm": 30.0}
+    row = batch1.run_job({**job, "finger": "stainless"})
+    assert row["finger_material"] == "stainless"
+    # Revision 2.39: every stainless row carries the edge-break rule, which the model's square corners don't.
+    assert row["edge_note"].startswith("edge break (rev 2.39") and "R = land / 2 >= 0.4 mm" in row["edge_note"]
+    row = batch1.run_job(job)
+    assert row["finger_material"] == "pa12" and batch1.finger() == "pa12" and "edge_note" not in row
+
+
+def test_t5_root_margins_and_footprint_rule(batch1):
+    from graspsim2d.t5 import footprint, root_margins
+
+    # Revision 2.39: stainless at 68 MPa static on the nominal stress, and 43 MPa amplitude at R = 0 with K_t 2 on
+    # the working stress x 1.5; PA12 at 16 MPa static and 10 MPa peak, both with K_t 2.
+    st, pa = batch1.ctx("stainless")["b1"], batch1.ctx()["b1"]
+    m = root_margins(st, 34.0, 10.0, 1.5)
+    assert m["root_static_margin"] == pytest.approx(2.0) and m["root_fatigue_margin"] == pytest.approx(43.0 / 15.0)
+    m = root_margins(pa, 4.0, 2.0, 1.5)
+    assert m["root_static_margin"] == pytest.approx(2.0) and m["root_fatigue_margin"] == pytest.approx(10.0 / 6.0)
+    assert math.isnan(root_margins(st, math.nan, 10.0, 1.5)["root_static_margin"])
+    # SIM round 12's footprint: a flush face read over its whole area with the resultant in its middle third ...
+    best = {"N": 27.2, "face": "bare2", "face_len_mm": 25.9, "face_w_mm": 70.0, "face_res_frac": 0.49,
+            "face_res_end_mm": 12.7, "face_tilt_deg": 0.0}
+    fp = footprint(best, 105.0, 63.0, 8.0, 0.25)
+    assert fp["footprint"] == "flush" and fp["footprint_mm2"] == pytest.approx(1813.0)
+    assert fp["rated"] == pytest.approx(27.2 / 1813.0 * 1e3) and fp["rated_margin"] == pytest.approx(105.0 / fp["rated"])
+    assert fp["rated_margin_humid"] == pytest.approx(63.0 / fp["rated"])
+    # ... else over three times the resultant's distance from the loaded end at twice the mean ...
+    fp = footprint({**best, "face_res_frac": 0.2, "face_res_end_mm": 5.18}, 105.0, 63.0, 8.0, 0.25)
+    assert fp["footprint"] == "flush, off its middle third" and fp["footprint_mm2"] == pytest.approx(3 * 5.18 * 70.0)
+    assert fp["rated"] == pytest.approx(2 * 27.2 / (3 * 5.18 * 70.0) * 1e3)
+    # ... and a face tilted more than 0.25 mm over its length is an edge, against the limit over one 8 mm pitch.
+    fp = footprint({**best, "face_tilt_deg": 1.0}, 105.0, 63.0, 8.0, 0.25)
+    assert fp["footprint"] == "edge" and fp["rated_unit"] == "N/mm" and fp["rated"] == pytest.approx(27.2 / 70.0)
+    assert fp["rated_margin"] == pytest.approx(0.84 / (27.2 / 70.0))
+    assert footprint({"N": 0.0}, 105.0, 63.0, 8.0, 0.25)["footprint"] == ""
+    # A flush face's whole area is its drawn area, where the builder drew one ...
+    assert footprint({**best, "face_mm2": 1800.0}, 105.0, 63.0, 8.0, 0.25)["footprint_mm2"] == 1800.0
+    # ... and revision 2.41 reads S4's floor whole, over its ruled 4,965 mm², while its resultant sits in its band.
+    fp = footprint({**best, "N": 239.0, "floor_in_band": True, "floor_mm2": 4965.0}, 105.0, 63.0, 8.0, 0.25)
+    assert fp["footprint"] == "floor, in its band" and fp["footprint_mm2"] == 4965.0
+    assert fp["rated_margin_humid"] == pytest.approx(63.0 / (239.0 / 4965.0 * 1e3))
+    cfg = batch1.ctx()["b1"]["t5"]["floors"]["S4"]
+    assert cfg["area_mm2"] == 4965.0 and cfg["band_u_mm"] == [76.0, 104.0] and set(cfg["faces"]) == {"bare9", "bare5", "bare6"}
+
+
+def test_drawn_area_integrates_the_face_width(batch1):
+    from graspsim2d.jaw import drawn_area
+
+    # S4's floor, 48.5 - 97 mm wide over its 62 mm, against SIM's 4,497 mm², and its 10 mm land at 60 mm, the
+    # worker's 600; a narrower object caps the width.
+    faces = {f.name: f for f in batch1.get_jaw("S4", 45.0).right.faces}
+    assert drawn_area(faces["bare9"]) == pytest.approx(4497.0, rel=1e-3)
+    assert drawn_area(faces["bare5"]) == pytest.approx(600.0, rel=1e-3)
+    assert drawn_area(faces["bare5"], cap=5.0) == pytest.approx(50.0, rel=1e-3)
+
+
+def test_t5_on_stainless_keeps_the_printed_hub(batch1):
+    from graspsim2d.t5 import case_object, simulate_t5
+
+    with batch1.finger_material("stainless"):
+        c = batch1.ctx()
+        j = batch1.get_jaw("S2", 45.0)
+        case = case_object(c["b1"]["t5"], "1ft", c["lib"].materials)
+        r = simulate_t5(j, case, c["sc"], {**c["b1"], "shake_s": 0.0}, stop_g=0.0, power_s=0.2)
+    assert r["ok"] and r["finger_material"] == "stainless" and r["finger_density_kg_m3"] == 8000.0
+    assert r["mu_bare"] == pytest.approx(0.30) and r["mu_hub"] == pytest.approx(0.35)
+    # The hub's peak window opens at the run's first contact, so the close, the settle and the lift count.
+    assert r["hub_peak_from"] == "first contact" and r["hub_peak_event"] == "power cut"
+    by = r["A_hub_phase_5ms_N"]
+    assert {"squeeze", "settle", "lift", "power"} <= set(by)
+    assert r["A_hub_peak_5ms_from_close_N"] == pytest.approx(max(by.values()), abs=0.01)
+    assert r["A_hub_peak_5ms_N"] == pytest.approx(max(r["A_hub_close_5ms_N"], *by.values()), abs=0.01)
+    assert r["A_hub_peak_5ms_N"] >= max(by["settle"], by["lift"]) - 0.01
+    for g in "AB":
+        assert r[f"{g}_sensor_F_N_hold"] > 0.0 and r[f"{g}_sensor_Mb_Nm_hold"] > 0.0
+
+
+def test_t5_close_dump_keeps_the_close(batch1, tmp_path):
+    import gzip
+    import json
+
+    from graspsim2d.t5 import case_object, simulate_t5
+
+    with batch1.finger_material("stainless"):
+        c = batch1.ctx()
+        short = {"shake_s": 0.0, "t5": {**c["b1"]["t5"], "final_hold_s": 0.3}}
+        fine = {**short, "t5": {**short["t5"], "close_dump_sample_s": 0.0}}
+        j = batch1.get_jaw("S2", 45.0)
+        case = case_object(c["b1"]["t5"], "1ft", c["lib"].materials)
+        on, off = (simulate_t5(j, case, c["sc"], {**c["b1"], **fine}, stop_g=0.0, power_s=0.1, close_dump=d)
+                   for d in (True, False))
+        only = simulate_t5(j, case, c["sc"], c["b1"], close_dump=True, close_only=True)
+        slow = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_rad_s": 0.15}},
+                           close_dump=True, close_only=True)
+        push = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_brakes": False}}, close_only=True)
+        low = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_torque_Nm": 1.5,
+                                                                  "close_gear_friction": True}},
+                          close_dump=True, close_only=True)
+    d = on.pop("close_dump")
+    # The close alone stops at the end of the squeeze, rates nothing, and reads the same close as the whole run, which
+    # had a different timeline.
+    od = only.pop("close_dump")
+    assert only["ok"] and only["close_only"] and only["supported"] is None and only["margins"] == {}
+    assert od["complete"] and "settle" not in od["samples"]["phase"]
+    assert only["t_squeeze_end_s"] - od["sample_s"] < od["to_s"] <= only["t_squeeze_end_s"] + 1e-6
+    for k in [k for k in on if k.endswith(("_close_5ms_N", "_close_5ms_phase", "_close_phase_5ms_N"))] + [
+            "t_first_contact_s", "t_close_s", "t_squeeze_end_s", "sample_s"]:
+        assert only[k] == on[k], k
+    # The record keeps a sample every 0.4 ms by default, the steps an every-step record keeps.
+    assert od["sample_s"] == pytest.approx(4e-4) and on["sample_s"] == d["sample_s"] < 1e-4
+    assert np.allclose(np.diff(od["samples"]["t"]), od["sample_s"], atol=1e-6)
+    at = {t: k for k, t in enumerate(d["samples"]["t"])}
+    kept = [t for t in od["samples"]["t"] if t >= d["samples"]["t"][0]]
+    assert len(kept) > 1000 and all(t in at for t in kept)
+    assert od["samples"]["AL_N"][-len(kept):] == [d["samples"]["AL_N"][at[t]] for t in kept]
+    # The record only reads the run.
+    assert json.dumps(on, sort_keys=True, default=str) == json.dumps(off, sort_keys=True, default=str)
+    s = d["samples"]
+    assert d["complete"] and d["from_s"] < d["t_first_contact_s"] <= d["t_approach_s"] < d["t_close_s"]
+    assert d["t_close_s"] < d["t_squeeze_end_s"] < d["to_s"]
+    assert d["to_s"] == pytest.approx(d["t_squeeze_end_s"] + d["margin_s"], abs=2 * d["sample_s"])
+    assert set(s["phase"]) == {"approach", "close", "squeeze", "settle"}
+    assert len(s["t"]) == len(s["AL_N"]) == len(s["A_drive_Nm"]) == len(d["faces"]["AL"]["tooth"])
+    assert np.all(np.diff(s["t"]) > 0) and max(s["A_drive_Nm"]) > 0.0
+    # Revision 2.35's close window in the row is the dump's largest 5 ms average from the first contact through
+    # the squeeze; on the hub path the hub's first impact ends the arm's approach, and its 5 ms average falls in
+    # the close.
+    t, n = np.array(s["t"]), round(0.005 / d["sample_s"])
+    sel = (t >= d["t_first_contact_s"] - 1e-9) & (t <= d["t_squeeze_end_s"] + 1e-9)
+    for col, key in ((d["fingers"]["A"]["out"], "A_out"), (d["fingers"]["A"]["thumb"], "A_thumb"), ("A_hub", "A_hub")):
+        v = np.array(s[f"{col}_N"])[sel]
+        assert np.convolve(v, np.ones(n) / n, "valid").max() == pytest.approx(on[f"{key}_close_5ms_N"], rel=1e-3)
+    assert on["A_hub_close_5ms_phase"] == "close" and on["A_hub_peak_5ms_N"] >= on["A_hub_close_5ms_N"] - 0.01
+    # The whole window is scored: the settle's and the lift's samples reach the single-sample peaks.
+    assert on["A_hub_peak_N"] >= on["A_hub_phase_5ms_N"]["lift"] - 0.01
+    assert on["A_drive_max_Nm"] >= max(on["A_window_peak_Nm"], max(s["A_drive_Nm"]) - 1e-3)
+    assert not on["drive_over_cap"] and on["drive_cap_Nm"] == 25.0
+    # On the hub path the hub meets the case on the arm's approach, and each finger in the close at the closing speed.
+    fc = d["first_contact"]
+    assert fc["A_hub"]["phase"] == "approach"
+    assert fc["A_hub"]["speed_before_m_s"] == pytest.approx(d["approach_m_s"], rel=0.1)
+    for f in ("AL", "AR", "BL", "BR"):
+        assert fc[f]["phase"] == "close" and fc[f]["closing_before_m_s"] > 0.0
+        assert abs(fc[f]["w_rad_s"]) == pytest.approx(d["close_rad_s"], rel=0.15)
+    # A design's own lower closing speed (SIM round 18 b): the drive brakes the fingers to it.
+    sd = slow.pop("close_dump")
+    assert sd["close_brakes"] and d["close_brakes"] and sd["close_rad_s"] == 0.15
+    for f in ("AL", "AR", "BL", "BR"):
+        assert sd["first_contact"][f]["phase"] == "close"
+        assert abs(sd["first_contact"][f]["w_rad_s"]) == pytest.approx(0.15, rel=0.15)
+    # At the rated speed the brake changes nothing (SIM round 19): the push-only governor's close is the same.
+    assert not push["close_brakes"] and only["close_brakes"]
+    for g in "AB":
+        assert push[f"{g}_touch_deg"] == pytest.approx(only[f"{g}_touch_deg"], abs=0.05)
+        for part in ("out", "thumb", "hub"):
+            assert push[f"{g}_{part}_close_5ms_N"] == pytest.approx(only[f"{g}_{part}_close_5ms_N"], rel=0.05, abs=0.5)
+    # SIM round 20's two-stage close: the drive closes at the named torque, against the gear's friction, until both
+    # fingers touch or the jaw stalls; then the stiff servo holds the angle, as it does after the rated close.
+    ld = low.pop("close_dump")
+    assert low["ok"] and low["close_torque_Nm"] == 1.5 and low["close_gear_friction_Nm"] == pytest.approx(0.5)
+    assert only["close_torque_Nm"] == j.torque and only["close_gear_friction_Nm"] == 0.0
+    s = ld["samples"]
+    for g, fs in ld["fingers"].items():
+        assert ld["t_approach_s"] < ld["hold_s"][g] <= ld["t_close_s"] and low[f"{g}_hold_s"] == ld["hold_s"][g]
+        assert math.isfinite(low[f"{g}_touch_deg"]) and low[f"{g}_close"]
+        for f in fs.values():
+            tq = [abs(v) for v, t, ph in zip(s[f"{f}_tau_Nm"], s["t"], s["phase"]) if ph == "close" and t < ld["hold_s"][g]]
+            assert tq and max(tq) <= 1.5 + 1e-9
+
+    # Through the batch runner on the stop-seated cradle, at a design's own 50 mm/s approach (SIM round 18 b): the
+    # dump goes to its own file, named in the row.
+    job = batch1._base("test", "S4", 45.0, job="t5", test="T5", finger="stainless", stop_g=0.0, power_s=0.1,
+                       case="close dump", object="1ft", hub_contact=False, approach="seated", t5_path="tips",
+                       dump_dir=str(tmp_path), b1_over=short, approach_m_s=0.05)
+    row = batch1.run_job(job)
+    assert row["kind"] == "mujoco" and row["ok"], row.get("reason")
+    path = Path(row["close_dump"])
+    assert path.parent == tmp_path and path.name.startswith("S4_1ft_5kg_tips_0g_") and path.suffixes == [".json", ".gz"]
+    with gzip.open(path, "rt") as fh:
+        d = json.load(fh)
+    assert d["job"]["design"] == "S4" and "dump_dir" not in d["job"] and d["row"]["finger_material"] == "stainless"
+    assert d["sample_s"] == pytest.approx(4e-4) and d["row"]["sample_s"] < 1e-4
+    assert d["approach_m_s"] == row["approach_m_s"] == 0.05 and not d["row"]["deck_off_before_squeeze"]
+    assert d["approach"] == "seated" and set(d["samples"]["phase"]) == {"approach", "seat", "squeeze", "settle"}
+    assert row["A_thumb_close_5ms_phase"] in ("approach", "seat", "squeeze") and row["A_thumb_close_5ms_N"] > 0.0
+    # The thumb meets the wall on the arm's approach; the outside finger meets the case's bottom as the cradle rises.
+    fc = d["first_contact"]
+    assert fc["AL"]["phase"] == "approach" and fc["AL"]["closing_before_m_s"] == pytest.approx(d["approach_m_s"], rel=0.1)
+    assert fc["AR"]["phase"] == "seat" and fc["AR"]["closing_before_m_s"] == pytest.approx(d["seat_m_s"], rel=0.1)
+
+
+def test_t5_reads_every_step(batch1):
+    """The model's first impacts last less than the close record's 0.4 ms. The arms' and the jaws' contact detection
+    and every 5 ms average read every physics step, so on the hub path the arm stops on the hub's first impact, the
+    case stays on the deck, and the hub's close is that impact's 5 ms average."""
+    from graspsim2d.t5 import case_object, simulate_t5
+
+    with batch1.finger_material("stainless"):
+        c = batch1.ctx()
+        j = batch1.get_jaw("S2", 45.0)
+        case = case_object(c["b1"]["t5"], "2ft", c["lib"].materials)
+        r = simulate_t5(j, case, c["sc"], {**c["b1"], "t5": {**c["b1"]["t5"], "close_dump_sample_s": 0.0}},
+                        close_dump=True, close_only=True)
+    d = r.pop("close_dump")
+    s = {k: np.array(v) for k, v in d["samples"].items() if k != "phase"}
+    assert r["ok"] and r["sample_s"] == d["sample_s"] < 1e-4 and r["contact_average_s"] == pytest.approx(0.005)
+    # The hub's first impact: kilonewtons for less than 0.4 ms.
+    k0 = int(np.searchsorted(s["t"], d["t_first_contact_s"] - 1e-9))
+    k1 = k0 + int(np.argmax(s["A_hub_N"][k0:] <= 1.0))
+    assert s["A_hub_N"][k0:k1].max() > 1000.0 and 0 < (k1 - k0) * d["sample_s"] < 4e-4
+    assert d["first_contact"]["A_hub"]["phase"] == "approach"
+    # The arm stops inside it. The impact makes the case hop off the deck for a few milliseconds, short of SIM round
+    # 18's flag for a missed detection.
+    assert d["t_first_contact_s"] <= d["t_approach_s"] < s["t"][k1]
+    assert s["cz_mm"][s["t"] <= d["t_close_s"]].max() < 0.0
+    assert r["deck_off_phase"] == "approach" and 0.0 < r["deck_off_longest_s"] < 0.02 and not r["deck_off_before_squeeze"]
+    sel = (s["t"] >= d["t_first_contact_s"] - 1e-9) & (s["t"] <= d["t_squeeze_end_s"] + 1e-9)
+    n = round(0.005 / d["sample_s"])
+    avg = np.convolve(s["A_hub_N"][sel], np.ones(n) / n, "valid")
+    assert int(np.argmax(avg)) < k1 - k0 and avg.max() == pytest.approx(r["A_hub_close_5ms_N"], rel=1e-3)
+    # The wrist sensor through the close, for information: only the hub touches in the impact's 5 ms.
+    assert r["A_close_sensor_F_N"] == pytest.approx(r["A_hub_close_5ms_N"], rel=0.02)
+    assert r["A_close_sensor_F_N_phase"] == r["A_hub_close_5ms_phase"]
+    assert set(r["A_close_sensor_F_N_by_phase"]) <= {"approach", "close", "squeeze"}
+
+
+def test_batch1_t5_cut_block_runs_revision_2_18(batch1):
+    jobs = batch1.block_t5_cut()
+    assert len(jobs) == len({batch1._job_key(j) for j in jobs}) == 40
+    assert {j["design"] for j in jobs} == {"S1", "S2", "S3", "S6"}
+    assert all(j["job"] == "t5" and j["cut_before_stop"] and j["object"] == "2ft" and j["reading"] == 45.0 for j in jobs)
+    assert {j["mass_kg"] for j in jobs if j["design"] == "S2"} == {12.8}
+    assert {(j["friction_scale"], j["bare_mu"]) for j in jobs} == {(1.0, None), (0.8, None), (1.0, 0.24)}
+    assert {j["hub_contact"] for j in jobs} == {True, False}
