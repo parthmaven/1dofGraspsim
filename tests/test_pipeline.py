@@ -1,6 +1,7 @@
 import dataclasses
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -957,6 +958,24 @@ def test_batch1_s4_depth_rule_rates_the_best_held_depth(batch1):
     assert batch1.t1_depth_candidates(scan) == [("a", 27.0), ("b", 43.5)]
     assert batch1.t1_depth_candidates({**scan, "depth_mm": 43.5, "deep_depth_mm": 30.0}) == [("a=b", 43.5), ("c", 30.0)]
     assert batch1.t1_depth_candidates({**scan, "stop_mm": math.nan}) == [("a", 27.0), ("b", 110.5)]
+    # Revision 2.45: (b) is the deepest depth whose +-3 mm neighbours both still grip in the scan, run once where it
+    # is (a); (c) is moot.
+    new = {**scan, "deep_depth_mm": 24.0}
+    assert batch1.t1_depth_candidates({**new, "grip_deep_mm": 27.0}) == [("a=b", 27.0)]
+    assert batch1.t1_depth_candidates({**new, "grip_deep_mm": 30.0}) == [("a", 27.0), ("b", 30.0)]
+    assert batch1.t1_depth_candidates({**new, "grip_deep_mm": math.nan}) == [("a", 27.0)]
+    assert batch1.t1_depth_candidates({**new, "grip_deep_mm": 300.0}) == [("a", 27.0), ("b", 269.0)]
+
+    def grid(grips: set, stop: float, cap: float = 110.5) -> SimpleNamespace:
+        pts = {**{float(d): d in grips for d in range(3, int(stop), 3)}, stop: stop in grips, stop - 3.0: stop - 3.0 in grips}
+        g = {d: SimpleNamespace(ok=ok, status="ok") for d, ok in pts.items()}
+        return SimpleNamespace(grid={**g, stop + 1.5: SimpleNamespace(ok=False, status="stop")}, stop_mm=stop, cap_mm=cap)
+
+    purely_o = set(range(12, 31, 3))
+    assert batch1._grip_deep(grid(purely_o, 46.5), 3.0) == 27.0
+    assert batch1._grip_deep(grid({*range(12, 46, 3), 43.5, 46.5}, 46.5), 3.0) == 43.5
+    assert batch1._grip_deep(grid(purely_o, 46.5, cap=20.0), 3.0) == 20.0
+    assert math.isnan(batch1._grip_deep(grid({12, 15}, 46.5), 3.0))
     noms = batch1.t1_followups(scan, False)
     assert [(f["case"], f["depth_mm"], f["depth_candidate"]) for f in noms] == [("nominal", 27.0, "a"), ("nominal", 43.5, "b")]
     # The follow-ups run only where a nominal holds: x0.8 at catalog fill and the corners on both sides, the deep ones
@@ -1001,6 +1020,15 @@ def test_batch1_torque_pass_settable_grip_and_extras(batch1):
     assert (d["set_torque"], d["tier"], d["flag_7Nm"], d["flag_fatigue"]) == (3.75, "the whole run", True, True)
     e = g({**ok(0.5, 0.75), 1.0: False, **ok(2.0, 2.25, 2.5)})
     assert e["set_torque"] == 0.625 and e["passes_at"] == ["0.5-0.75", "2-2.5"]
+    # Revision 2.45: of runs settable at one tier, the widest by tau_b / tau_a, then the lower set torque, with the
+    # others reported beside it; a set torque off the grid that fails splits its run.
+    w = g({**ok(1.0, 1.25), 1.5: False, **ok(2.0, 2.25, 2.5, 2.75, 3.0)})
+    assert (w["set_torque"], w["others"]) == (2.5, [{"set_torque": 1.125, "part": [1.0, 1.25],
+                                                     "tier": "at or below 3.5 N m"}])
+    t = g({**ok(1.0, 1.25), 1.5: False, **ok(2.0, 2.25, 2.5)})
+    assert (t["set_torque"], [o["set_torque"] for o in t["others"]]) == (1.125, [2.25])
+    assert g({**ok(2.0, 2.25, 2.5, 2.75), 2.375: False})["label"] == "passes at 2-2.25, 2.5-2.75, not settable"
+    assert g({**ok(2.0, 2.25, 2.5, 2.75), 2.375: True})["set_torque"] == 2.375
     # The x0.8 run follows a band nominal that holds: T1 as run, T2 as run or by the edge rule.
     nom = {"block": "torque", "design": "S1", "reading": 45.0, "values": {"finger_torque": 2.0}, "job": "mj", "test": "T1",
            "object": "gm_box", "fill": "catalog", "case": "nominal", "depth_mm": 20.0, "lateral_mm": 0.0,
@@ -1019,8 +1047,7 @@ def test_batch1_torque_pass_settable_grip_and_extras(batch1):
     assert not batch1.t2_edge_rule({**sheet, "dropped_in": "main"})["passed"]
     assert batch1.t2_edge_rule({**sheet, "object": "chipboard_0p5mm"})["rule"] == "as run"
     assert batch1.x08_after(sheet, sheet)["case"] == "friction x0.8"
-    # After the band: the corners at each settable box's set torque, and the carton blanks' 1.5 and 3 Hz shakes at
-    # theirs, or at their best 2 Hz step.
+    # Each step's reading: T1 as run (S4 at its rated candidate), T2 by the edge rule.
     rows = []
     for tau in (2.0, 2.25, 2.5, 2.75):
         at = {**nom, "values": {"finger_torque": tau}, "kind": "mujoco"}
@@ -1041,19 +1068,84 @@ def test_batch1_torque_pass_settable_grip_and_extras(batch1):
     assert [s["label"] for s in steps[("S1", "T2", "chipboard_0p5mm")].values()] == ["fail", "nominal"]
     assert {s["candidate"] for s in steps[("S4", "T1", "gm_box")].values()} == {"a"}
     assert "rated at (a)" in rows[-4]["depth_rule_basis"] and "x0.8 run too" in rows[-4]["depth_rule_basis"]
-    ex = batch1.block_torque_extras(rows)
-    scans = {j["design"]: j for j in ex if j["job"] == "scan"}
-    assert {d: (j["values"]["finger_torque"], j["corners_only"], j.get("depth_rule")) for d, j in scans.items()} == {
-        "S1": (2.25, True, None), "S4": (2.25, True, "2.43")}
-    shakes = [(j["case"], j["values"]["finger_torque"], j["set_torque"]) for j in ex if j["job"] == "mj"]
-    assert shakes == [("shake 1.5 Hz", 1.25, False), ("shake 3 Hz", 1.25, False)]
-    s4 = {**scans["S4"], "simulate": True, "depth_mm": 27.0, "stop_mm": 46.5, "cap_mm": 110.5, "table_cap_mm": 269.0,
-          "deep_depth_mm": 30.0}
-    corners = batch1.t1_followups(s4, False)
-    assert {(f["depth_candidate"], f["case"]) for f in corners} == {
-        (t, f"corner {k}{s}") for t in "ab" for k in ("deep", "shallow") for s in "+-"}
-    sym = batch1.t1_followups({**scans["S1"], "simulate": True, "depth_mm": 20.0, "table_cap_mm": 200.0, "stop_mm": None})
-    assert [(f["case"], f["depth_mm"]) for f in sym] == [("corner deep+", 23.0), ("corner shallow+", 17.0)]
+    assert steps[("S4", "T1", "gm_box")][2.0]["candidates"] == {
+        "a": {"depth_mm": 20.0, "nominal": True, "x08": True}, "b": {"depth_mm": 43.5, "nominal": True, "x08": False}}
+
+
+def test_batch1_torque_extras_run_the_set_torque_as_a_step(batch1):
+    # Revision 2.45: a set torque is a band step. Off the grid it runs its scan, nominal and x0.8 first, and failing
+    # them it splits its run, the settable rule applied again. At a set torque that holds: the +-3 mm corners at the
+    # depth chosen there (S4 at its rated candidate's, then the other's where its nominal and x0.8 hold there), and
+    # the carton blanks' 1.5 and 3 Hz shakes at their set torque, or at their best 2 Hz step.
+    box = {"reading": 45.0, "test": "T1", "object": "gm_box", "fill": "catalog", "lateral_mm": 0.0}
+
+    def t1(design: str, tau: float, x08: bool = True, block: str = "torque", **cands: tuple) -> list[dict]:
+        v = {"block": block, "design": design, "values": {"finger_torque": tau}}
+        scan = {**box, **v, "job": "scan", "kind": "screen", "simulate": True, "depth_mm": 20.0, "stop_mm": None,
+                "table_cap_mm": 200.0}
+        mj = {**box, **v, "job": "mj", "kind": "mujoco", "depth_mm": 20.0}
+        if not cands:
+            return [scan, {**mj, "case": "nominal", "passed": True, "score": 1.3}, {**mj, "case": "friction x0.8", "passed": x08}]
+        out = [scan]
+        for tag, (depth, score, held) in cands.items():
+            at = {**mj, "depth_rule": "2.43", "depth_candidate": tag, "depth_mm": depth}
+            out += [{**at, "case": "nominal", "passed": True, "score": score}, {**at, "case": "friction x0.8", "passed": held}]
+        return out
+
+    rows = [r for tau in (2.0, 2.25, 2.5) for r in t1("S1", tau)] + t1("S1", 2.75, x08=False)
+    rows += [r for tau in (1.0, 1.25, 1.5, 1.75) for r in t1("S3", tau)]
+    rows += [r for tau in (2.0, 2.25, 2.5) for r in t1("S4", tau, a=(20.0, 1.2, True), b=(43.5, 1.5, tau == 2.25))]
+    for tau, score in ((1.0, 0.9), (1.25, 1.2)):
+        at = {**box, "block": "torque", "design": "S1", "values": {"finger_torque": tau}, "job": "mj", "kind": "mujoco",
+              "test": "T2", "object": "chipboard_0p5mm", "depth_mm": 30.0}
+        rows += [{**at, "case": "pinch 30", "passed": score > 1.0, "score": score},
+                 {**at, "case": "friction x0.8", "passed": False}]
+
+    def extras() -> list[tuple]:
+        batch1.add_verdicts(rows)
+        return sorted((j["design"], j.get("test", "T1"), j["job"], j.get("case"), j["values"]["finger_torque"],
+                       j.get("depth_mm"), j.get("depth_candidate")) for j in batch1.torque_extras(rows))
+
+    def ran(design: str, tau: float, fail: str = "") -> list[dict]:
+        jobs = [j for j in batch1.torque_extras(rows) if j["design"] == design and j["values"]["finger_torque"] == tau]
+        return [{**j, "kind": "mujoco", "passed": j.get("case") != fail, "friction_scale": j.get("friction_scale") or 1.0,
+                 "band_factor": 50.0} for j in jobs]
+
+    # S1's box sets at 2.25 on the grid and S4's at 2.25 at its rated (b); S3's set torque, 1.375, is off the grid;
+    # S1's blank isn't settable and shakes at its best 2 Hz step.
+    assert extras() == sorted([
+        ("S1", "T1", "mj", "corner deep+", 2.25, 23.0, None), ("S1", "T1", "mj", "corner shallow+", 2.25, 17.0, None),
+        ("S1", "T2", "mj", "shake 1.5 Hz", 1.25, 30.0, None), ("S1", "T2", "mj", "shake 3 Hz", 1.25, 30.0, None),
+        ("S3", "T1", "scan", None, 1.375, None, None),
+        *[("S4", "T1", "mj", f"corner {k}{s}", 2.25, x, "b") for k, x in (("deep", 46.5), ("shallow", 40.5)) for s in "+-"]])
+    step = next(j for j in batch1.torque_extras(rows) if j["job"] == "scan")
+    assert (step["block"], step["fill"], step["x08_if_held"], step["set_step"], step["nobrake"]) == (
+        "torquex", "catalog", True, True, False)
+    # S3's nominal holds at 1.375 and its x0.8 doesn't: the run splits, and 1-1.25 sets at 1.125. S4's (b) corners
+    # fail one, so (a)'s run, its nominal and x0.8 holding at 2.25.
+    rows += ran("S1", 2.25) + ran("S1", 1.25) + ran("S4", 2.25, fail="corner shallow-")
+    rows += [{**r, "set_step": True} for r in t1("S3", 1.375, x08=False, block="torquex")]
+    assert extras() == sorted([
+        ("S3", "T1", "scan", None, 1.125, None, None),
+        *[("S4", "T1", "mj", f"corner {k}{s}", 2.25, x, "a") for k, x in (("deep", 23.0), ("shallow", 17.0)) for s in "+-"]])
+    assert batch1.settable_grip({t: s["label"] == "pass" for t, s in batch1.torque_steps(rows)[
+        ("S3", "T1", "gm_box")].items()})["passes_at"] == ["1-1.25", "1.5-1.75"]
+    rows += ran("S4", 2.25) + [{**r, "set_step": True} for r in t1("S3", 1.125, block="torquex")]
+    assert extras() == [("S3", "T1", "mj", "corner deep+", 1.125, 23.0, None),
+                        ("S3", "T1", "mj", "corner shallow+", 1.125, 17.0, None)]
+    rows += ran("S3", 1.125)
+    assert extras() == []
+    # A settable blank's shakes wait for its set torque to hold as a step.
+    sheet = {**box, "block": "torque", "design": "S3", "job": "mj", "kind": "mujoco", "test": "T2",
+             "object": "chipboard_0p5mm", "depth_mm": 30.0, "passed": True, "score": 1.4}
+    blank = [{**sheet, "case": c, "values": {"finger_torque": tau}} for tau in (1.0, 1.25, 1.5, 1.75)
+             for c in ("pinch 30", "friction x0.8")]
+    ex = batch1.torque_extras(blank)
+    assert sorted((j["job"], j.get("case"), j["values"]["finger_torque"], j.get("x08_if_held")) for j in ex) == [
+        ("mj", "pinch 30", 1.375, True), ("sheet_screen", "pinch 30", 1.375, True)]
+    blank += [{**r, "values": {"finger_torque": 1.375}, "block": "torquex"} for r in blank[:2]]
+    assert sorted((j["case"], j["values"]["finger_torque"], j["set_torque"]) for j in batch1.torque_extras(blank)) == [
+        ("shake 1.5 Hz", 1.375, True), ("shake 3 Hz", 1.375, True)]
 
 
 def test_batch1_rescore_uses_the_first_pass_objects(batch1):
